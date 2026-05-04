@@ -60,8 +60,31 @@ body { background: #0d0d12; font-family: -apple-system, BlinkMacSystemFont, 'Int
 .filter-group-label { font-size: 10px; font-weight: 600; letter-spacing: 0.07em; text-transform: uppercase; color: #3f3f46; margin-right: 2px; }
 .filter-tag { font-size: 11px; font-weight: 500; color: #a1a1aa; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.07); border-radius: 6px; padding: 3px 9px; }
 .filter-sep { color: #3f3f46; font-size: 12px; }
+.lead-diag { margin-top: 14px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; padding: 14px 16px; }
+.lead-diag-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.lead-diag-title { font-size: 12px; font-weight: 700; color: #e4e4e7; }
+.lead-diag-pill { font-size: 10px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; border-radius: 999px; padding: 5px 9px; }
+.lead-diag-pill.ok { color: #86efac; background: rgba(34,197,94,0.12); border: 1px solid rgba(34,197,94,0.24); }
+.lead-diag-pill.warn { color: #fbbf24; background: rgba(251,191,36,0.12); border: 1px solid rgba(251,191,36,0.24); }
+.lead-diag-pill.bad { color: #fca5a5; background: rgba(239,68,68,0.12); border: 1px solid rgba(239,68,68,0.24); }
+.lead-diag-pill.neutral { color: #93c5fd; background: rgba(59,130,246,0.12); border: 1px solid rgba(59,130,246,0.24); }
+.lead-diag-copy { font-size: 12px; color: #a1a1aa; line-height: 1.55; margin-bottom: 10px; }
+.lead-diag-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 18px; }
+.lead-diag-item { font-size: 11px; color: #71717a; line-height: 1.5; }
+.lead-diag-label { display: block; font-size: 10px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: #3f3f46; margin-bottom: 2px; }
+.lead-diag-value { color: #d4d4d8; }
+.lead-diag-attempts { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 6px; }
+.lead-diag-chip { font-size: 10px; color: #cbd5e1; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 999px; padding: 4px 8px; }
 .tam-blurb { font-size: 13px; color: #71717a; line-height: 1.65; padding-top: 16px; border-top: 1px solid rgba(255,255,255,0.05); }
 .tam-blurb strong { color: #a1a1aa; }
+.tam-stat-value.is-loading { color: #71717a; animation: loadingPulse 1.4s ease-in-out infinite; }
+.lead-loader { display: inline-flex; align-items: center; gap: 10px; color: #71717a; }
+.lead-loader-copy { display: inline-flex; flex-direction: column; align-items: flex-start; gap: 2px; }
+.lead-loader-title { font-size: 13px; color: #a1a1aa; font-weight: 500; }
+.lead-loader-sub { font-size: 11px; color: #52525b; letter-spacing: 0.02em; }
+.loading-spinner { display: inline-block; width: 14px; height: 14px; animation: spin 1s linear infinite; }
+@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+@keyframes loadingPulse { 0%, 100% { opacity: 0.5; } 50% { opacity: 1; } }
 
 .lead-table { width: 100%; border-collapse: collapse; }
 .lead-table th { font-size: 11px; font-weight: 600; letter-spacing: 0.07em; text-transform: uppercase; color: #52525b; padding: 0 14px 12px; text-align: left; }
@@ -714,6 +737,7 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
         <span class="filter-tag" style="color:#52525b;background:none;border:none;">Loading ICP parameters...</span>
       </div>
       <div id="tam-kpi-line" style="display:none;font-size:12px;color:#52525b;margin-top:10px;line-height:1.5;"></div>
+      <div id="lead-diagnostics-panel" class="lead-diag" style="display:none;"></div>
 
     </div>
 
@@ -722,8 +746,13 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
       <thead><tr><th>#</th><th class="th-match">Match</th><th>Name</th><th>Title</th><th>Company</th><th>Size</th><th>Website</th><th>LinkedIn</th></tr></thead>
       <tbody id="leads-tbody">
         <tr id="leads-loading-row"><td colspan="7" style="text-align:center;padding:28px 0;color:#52525b;font-size:13px;">
-          <svg style="display:inline;width:14px;height:14px;vertical-align:-2px;margin-right:6px;animation:spin 1s linear infinite;" fill="none" viewBox="0 0 24 24"><circle style="opacity:0.2" cx="12" cy="12" r="10" stroke="#34b433" stroke-width="3"/><path style="opacity:0.9" fill="#34b433" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
-          Generating verified lead list…
+          <div class="lead-loader">
+            <svg class="loading-spinner" fill="none" viewBox="0 0 24 24"><circle style="opacity:0.2" cx="12" cy="12" r="10" stroke="#34b433" stroke-width="3"/><path style="opacity:0.9" fill="#34b433" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+            <span class="lead-loader-copy">
+              <span class="lead-loader-title" id="lead-loader-title">Generating verified lead list…</span>
+              <span class="lead-loader-sub" id="lead-loader-sub">Searching Apollo and validating ICP fit</span>
+            </span>
+          </div>
         </td></tr>
       </tbody>
     </table>
@@ -1600,6 +1629,19 @@ function fmt(n) {
   return '$' + Math.round(n).toLocaleString();
 }
 function fmtN(n) { return Math.round(n).toLocaleString(); }
+function parseKM(v) {
+  if (v == null || v === '') return null;
+  const m = String(v).replace(/[$,\s]/g, '').match(/(\d+(?:\.\d+)?)(k|m)?/i);
+  if (!m) return null;
+  let n = parseFloat(m[1]);
+  const unit = (m[2] || '').toLowerCase();
+  if (unit === 'k') n *= 1000;
+  if (unit === 'm') n *= 1000000;
+  return isNaN(n) ? null : Math.round(n);
+}
+function normalizeDomain(value) {
+  return value ? String(value).replace(/^https?:\/\//, '').split('/')[0] : '';
+}
 
 // ── Prospect config (set per prospect before sharing) ──
 const PROSPECT = { name: 'Acme Corp', domain: 'acme.com' };
@@ -1930,7 +1972,9 @@ function buildCompatSession(job) {
   }, ext._overrides);
   return {
     email:      job.prospect_email || '',
-    domain:     job.prospect_website || '',
+    domain:     normalizeDomain(job.prospect_website || ''),
+    brand:      job.brand_data || null,
+    research:   job.research_data || null,
     transcript: meta.transcript || { found: false },
     website:    meta.website    || { domain: job.prospect_website, scraped: false },
     extracted:  ext,
@@ -2163,14 +2207,17 @@ function wireROIEditMode() {
           window.SESSION = session2;
           runPersonalization(session2);
           console.log('[Deal Forge] Lead list complete — personalization updated with real leads');
+        } else if (llStatus === 'pending' || llStatus === 'processing') {
+          setLeadListLoadingState(llStatus);
         } else if (llStatus === 'failed' || llStatus === 'needs_input') {
           assetsChecked['leads'] = true;
+          clearLeadListLoadingState();
           var tbody2 = document.querySelector('.lead-table tbody');
           if (tbody2) {
             var errMsg = llStatus === 'failed'
               ? 'Lead search failed — check Apollo API key or ICP filters'
               : 'Lead search needs input — check ICP fields in the brief';
-            tbody2.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:28px 0;color:#71717a;font-size:13px;">' + errMsg + '</td></tr>';
+            tbody2.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:28px 0;color:#71717a;font-size:13px;">' + errMsg + '</td></tr>';
           }
           console.log('[Deal Forge] Lead list ' + llStatus);
         }
@@ -2411,15 +2458,18 @@ function selectFeaturedImage(url) {
 function runPersonalization(session) {
   try {
     const ext = session.extracted || {};
+    const overrides = ext._overrides || {};
     const prospect = ext.prospect || {};
     const icp = ext.icp || {};
+    const brand = session.brand || {};
     // Brief schema stores financials under metrics; spec schema uses business — merge both
     const business = Object.assign({}, ext.business || {}, ext.metrics || {});
 
     // Override PROSPECT object
     if (prospect.company) PROSPECT.name = prospect.company;
-    if (prospect.website) PROSPECT.domain = prospect.website.replace(/^https?:\/\//, '').split('/')[0];
-    else if (session.domain) PROSPECT.domain = session.domain;
+    if (prospect.website) PROSPECT.domain = normalizeDomain(prospect.website);
+    else if (brand.domain) PROSPECT.domain = normalizeDomain(brand.domain);
+    else if (session.domain) PROSPECT.domain = normalizeDomain(session.domain);
 
     // Apply branding + populate intelligence panels
     applyProspectBranding(typeof SESSION !== "undefined" ? SESSION.brand : null);
@@ -2503,7 +2553,8 @@ function runPersonalization(session) {
     }
 
     // ── Host elements (calendar event + webinar slide) ────────────────────────
-    const hostName = prospect.company || prospect.name || 'Your Host';
+    const prospectContactName = prospect.contact_name || prospect.name || '';
+    const hostName = prospect.company || prospectContactName || 'Your Host';
     const hostCompany = prospect.company || '';
 
     const calHostName = document.getElementById('cal-host-name');
@@ -2746,6 +2797,7 @@ function runPersonalization(session) {
       kpiLine.style.display = 'block';
       kpiLine.innerHTML = '→ These are the <strong>' + icpRoleShort + 's</strong> you could be helping improve their <strong>' + kpiText + '</strong>.';
     }
+    renderLeadDiagnostics(gen);
 
     // ── Live chat personalization ─────────────────────────────────────────────
     const chatPanel = document.querySelector('.chat-messages');
@@ -2784,9 +2836,9 @@ function runPersonalization(session) {
     }
 
     // ── Reminder emails — personalize prospect name + host ────────────────────
-    const prospectFirst = (prospect.name || '').split(' ')[0] ||
+    const prospectFirst = (prospectContactName || '').split(' ')[0] ||
                           (session.email || '').split('@')[0] || '';
-    const hostFirst = prospect.name ? prospect.name.split(' ')[0] :
+    const hostFirst = prospectContactName ? prospectContactName.split(' ')[0] :
                       (prospect.company ? prospect.company.split(' ')[0] : 'Your host');
 
     const e1preview = document.getElementById('email-1-preview');
