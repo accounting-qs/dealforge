@@ -7,6 +7,7 @@ const https   = require('https');
 const fs      = require('fs');
 const path    = require('path');
 const Anthropic = require('@anthropic-ai/sdk');
+const sharp = require('sharp');
 
 const PORT = process.env.PORT || 3000;
 const MIME = { '.html': 'text/html', '.css': 'text/css', '.js': 'application/javascript', '.png': 'image/png', '.jpg': 'image/jpeg' };
@@ -1700,6 +1701,49 @@ async function handleProspectResearch(task, job) {
   }
 }
 
+// ── Image-based color extraction — extract dominant colors from an image URL ──
+async function extractColorsFromImage(imageUrl) {
+  try {
+    const response = await fetch(imageUrl, { signal: AbortSignal.timeout(5000) });
+    if (!response.ok) return [];
+    const buffer = Buffer.from(await response.arrayBuffer());
+    const { data } = await sharp(buffer)
+      .resize(50, 50, { fit: 'cover' })
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+
+    // Count quantized color frequencies
+    const colorCounts = {};
+    for (let i = 0; i < data.length; i += 3) {
+      const r = Math.round(data[i] / 16) * 16;
+      const g = Math.round(data[i+1] / 16) * 16;
+      const b = Math.round(data[i+2] / 16) * 16;
+      const hex = `#${r.toString(16).padStart(2,'0')}${g.toString(16).padStart(2,'0')}${b.toString(16).padStart(2,'0')}`;
+      colorCounts[hex] = (colorCounts[hex] || 0) + 1;
+    }
+
+    // Filter out near-white, near-black, near-gray
+    const isNearNeutral = (hex) => {
+      const r = parseInt(hex.slice(1,3), 16);
+      const g = parseInt(hex.slice(3,5), 16);
+      const b = parseInt(hex.slice(5,7), 16);
+      const max = Math.max(r, g, b), min = Math.min(r, g, b);
+      const saturation = max === 0 ? 0 : (max - min) / max;
+      if (saturation < 0.15 && (max > 200 || max < 50)) return true; // near white/black/gray
+      return false;
+    };
+
+    return Object.entries(colorCounts)
+      .sort((a, b) => b[1] - a[1])
+      .filter(([hex]) => !isNearNeutral(hex))
+      .slice(0, 3)
+      .map(([hex]) => hex);
+  } catch(e) {
+    console.warn('[extractColorsFromImage] error:', e.message);
+    return [];
+  }
+}
+
 async function handleBrandScrape(task, job) {
   const website = job.prospect_website;
   console.log(`[brand_scrape] ${website ? 'Scraping ' + website : 'No website — completing with null'}`);
@@ -1820,6 +1864,20 @@ async function handleBrandScrape(task, job) {
   if (!primaryColor) {
     const bgMatches = [...html.matchAll(/background(?:-color)?\s*:\s*(#[0-9a-fA-F]{3,8})/gi)].map(m=>m[1]).filter(isValidColor);
     if (bgMatches[0]) { primaryColor = bgMatches[0]; allColors.push(bgMatches[0]); }
+  }
+
+  // Path 5: Extract dominant colors from hero/og:image pixels (no external API)
+  if (!primaryColor) {
+    const imgUrl = ogImage ? resolveUrl(ogImage) : null;
+    if (imgUrl) {
+      try {
+        const imgColors = await extractColorsFromImage(imgUrl);
+        if (imgColors.length >= 1 && !primaryColor)   { primaryColor   = imgColors[0]; allColors.push(imgColors[0]); }
+        if (imgColors.length >= 2 && !secondaryColor)  { secondaryColor = imgColors[1]; allColors.push(imgColors[1]); }
+        if (imgColors.length >= 3 && !accentColor)     { accentColor    = imgColors[2]; allColors.push(imgColors[2]); }
+        console.log(`[brand_scrape] Image color extraction: ${imgColors.length} colors from og:image`);
+      } catch(e) { console.warn('[brand_scrape] Image color extraction failed:', e.message); }
+    }
   }
 
   // ── 3. IMAGE COLLECTION (max 8, typed: hero / team / general) ────────────────
@@ -2081,6 +2139,10 @@ async function handleWebinarMock(task, job) {
   const companyName    = brandData.company_name     || extracted.prospect?.company || job.prospect_company || 'Your Company';
   const hostName       = research.name              || extracted.prospect?.name    || companyName;
 
+  // Find best hero image from brand scrape
+  const heroImage = (brandData.images || []).find(i => i.type === 'hero') || (brandData.images || [])[0];
+  const heroImageUrl = heroImage?.url || '';
+
   // Generate chat messages
   const chatResult = await generateChatMessages(variant.title, extracted.icp,
     extracted.customer_pain   || extracted.angle?.pain,
@@ -2110,7 +2172,8 @@ async function handleWebinarMock(task, job) {
   const slide2Title = 'What You\'ll Learn Today';
   const bulletsList = (variant.bullets || ['Proven system for getting clients', 'Step-by-step framework', 'How to scale predictably']).slice(0, 4);
 
-  const htmlContent = interpolate(WEBINAR_MOCK_TEMPLATE, {
+  // Build the template — handle mustache-like sections for logo
+  let htmlContent = interpolate(WEBINAR_MOCK_TEMPLATE, {
     EVENT_TITLE:      slide1Title.replace(/</g, '&lt;').replace(/>/g, '&gt;'),
     SLIDE1_TITLE:     slide1Title.replace(/</g, '&lt;').replace(/>/g, '&gt;'),
     SLIDE1_SUBTITLE:  slide1Subtitle.replace(/</g, '&lt;').replace(/>/g, '&gt;'),
@@ -2121,9 +2184,19 @@ async function handleWebinarMock(task, job) {
     PRIMARY_COLOR:    primaryColor,
     SECONDARY_COLOR:  secondaryColor,
     LOGO_URL:         logoUrl,
+    HERO_IMAGE_URL:   heroImageUrl,
     ATTENDEE_COUNT:   attendeeCount,
     MESSAGES_JSON:    JSON.stringify(timedMessages)
   });
+
+  // Handle {{#LOGO_URL}}...{{/LOGO_URL}} and {{^LOGO_URL}}...{{/LOGO_URL}} blocks
+  if (logoUrl) {
+    htmlContent = htmlContent.replace(/\{\{#LOGO_URL\}\}([\s\S]*?)\{\{\/LOGO_URL\}\}/g, '$1');
+    htmlContent = htmlContent.replace(/\{\{\^LOGO_URL\}\}[\s\S]*?\{\{\/LOGO_URL\}\}/g, '');
+  } else {
+    htmlContent = htmlContent.replace(/\{\{#LOGO_URL\}\}[\s\S]*?\{\{\/LOGO_URL\}\}/g, '');
+    htmlContent = htmlContent.replace(/\{\{\^LOGO_URL\}\}([\s\S]*?)\{\{\/LOGO_URL\}\}/g, '$1');
+  }
 
   const storagePath = `${job.id}/webinar_mock.html`;
   const publicUrl   = await storageUpload(storagePath, htmlContent);
@@ -2958,6 +3031,89 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // ── GET /api/prompts — list all prompts ─────────────────────────────────────
+  if (req.method === 'GET' && urlPath === '/api/prompts') {
+    setCors(res);
+    try {
+      const r = await supabaseRequest('GET', '/rest/v1/prompts?order=category.asc,slug.asc');
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(r.body));
+    } catch(e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  // ── GET /api/prompts/:slug — single prompt ──────────────────────────────────
+  if (req.method === 'GET' && urlPath.startsWith('/api/prompts/') && !urlPath.endsWith('/history')) {
+    setCors(res);
+    const slug = decodeURIComponent(urlPath.slice('/api/prompts/'.length));
+    try {
+      const r = await supabaseRequest('GET', `/rest/v1/prompts?slug=eq.${encodeURIComponent(slug)}&limit=1`);
+      const prompt = Array.isArray(r.body) ? r.body[0] : null;
+      if (!prompt) { res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'Not found' })); return; }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(prompt));
+    } catch(e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  // ── GET /api/prompts/:slug/history — version history ────────────────────────
+  if (req.method === 'GET' && urlPath.startsWith('/api/prompts/') && urlPath.endsWith('/history')) {
+    setCors(res);
+    const slug = decodeURIComponent(urlPath.slice('/api/prompts/'.length, -'/history'.length));
+    try {
+      const pr = await supabaseRequest('GET', `/rest/v1/prompts?slug=eq.${encodeURIComponent(slug)}&limit=1`);
+      const prompt = Array.isArray(pr.body) ? pr.body[0] : null;
+      if (!prompt) { res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'Not found' })); return; }
+      const vr = await supabaseRequest('GET', `/rest/v1/prompt_versions?prompt_id=eq.${prompt.id}&order=version.desc`);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(vr.body));
+    } catch(e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  // ── PUT /api/prompts/:slug — update prompt + save version ───────────────────
+  if (req.method === 'PUT' && urlPath.startsWith('/api/prompts/')) {
+    setCors(res);
+    const slug = decodeURIComponent(urlPath.slice('/api/prompts/'.length));
+    try {
+      const body = await parseBody(req);
+      const pr = await supabaseRequest('GET', `/rest/v1/prompts?slug=eq.${encodeURIComponent(slug)}&limit=1`);
+      const prompt = Array.isArray(pr.body) ? pr.body[0] : null;
+      if (!prompt) { res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'Not found' })); return; }
+      const newVersion = prompt.version + 1;
+      // Save current version to history
+      await supabaseRequest('POST', '/rest/v1/prompt_versions', {
+        prompt_id: prompt.id, version: prompt.version,
+        content: prompt.content, notes: prompt.notes, updated_by: prompt.updated_by
+      });
+      // Update the prompt
+      await supabaseRequest('PATCH', `/rest/v1/prompts?id=eq.${prompt.id}`, {
+        content: body.content || prompt.content,
+        notes: body.notes || null,
+        updated_by: body.updated_by || 'sales_rep',
+        version: newVersion,
+        updated_at: new Date().toISOString()
+      }, { 'Prefer': 'return=minimal' });
+      console.log(`[prompts] Updated ${slug} to v${newVersion}`);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, version: newVersion }));
+    } catch(e) {
+      console.error('[PUT /api/prompts]', e.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
   // ── GET /api/portal-data — legacy session endpoint ────────────────────────
   if (req.method === 'GET' && urlPath === '/api/portal-data') {
     setCors(res);
@@ -3012,6 +3168,7 @@ const server = http.createServer(async (req, res) => {
   if (urlPath === '/' || urlPath === '') urlPath = '/mockup-portal.html';
   if (urlPath === '/dashboard')          urlPath = '/mockup-dashboard.html';
   if (urlPath === '/calls')              urlPath = '/calls.html';
+  if (urlPath === '/prompts')            urlPath = '/prompts.html';
   if (urlPath === '/prospect' || urlPath.startsWith('/prospect?')) urlPath = '/prospect.html';
   const filePath = path.join(__dirname, urlPath);
   const ext      = path.extname(filePath);

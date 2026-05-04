@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Prompt Management — Deal Forge</title>
+<style>
+*{box-sizing:border-box;-webkit-font-smoothing:antialiased}
+body{background:#0a0a0f;font-family:-apple-system,BlinkMacSystemFont,'Inter',sans-serif;color:#e4e4e7;margin:0}
+.glow{position:fixed;top:0;left:50%;transform:translateX(-50%);width:700px;height:300px;background:radial-gradient(ellipse at 50% 0%,rgba(245,158,11,0.09) 0%,transparent 70%);pointer-events:none;z-index:0}
+nav{height:48px;background:rgba(10,10,15,0.88);backdrop-filter:blur(12px);border-bottom:1px solid rgba(255,255,255,0.06);position:fixed;top:0;left:0;right:0;z-index:50;display:flex;align-items:center;justify-content:space-between;padding:0 24px}
+.logo{height:22px;width:auto}
+.page{max-width:900px;margin:0 auto;padding:72px 24px 64px;position:relative;z-index:1}
+h1{font-size:28px;font-weight:700;letter-spacing:-0.025em;color:#fff;margin:0 0 4px}
+.sub{font-size:13px;color:#52525b;margin-bottom:28px}
+
+/* Category tabs */
+.tabs{display:flex;gap:8px;margin-bottom:24px}
+.tab{font-size:12px;font-weight:500;padding:6px 14px;border-radius:20px;cursor:pointer;border:1px solid rgba(255,255,255,0.07);color:#71717a;background:none;transition:all 100ms;font-family:inherit}
+.tab.active{background:rgba(245,158,11,0.14);border-color:rgba(245,158,11,0.4);color:#fbbf24}
+.tab:hover:not(.active){border-color:rgba(255,255,255,0.14);color:#a1a1aa}
+
+/* Prompt card */
+.prompt-card{background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.07);border-radius:12px;padding:20px;margin-bottom:16px;transition:border-color 200ms}
+.prompt-card:hover{border-color:rgba(255,255,255,0.14)}
+.prompt-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
+.prompt-label{font-size:15px;font-weight:600;color:#fff}
+.prompt-meta{display:flex;align-items:center;gap:10px}
+.prompt-version{font-size:11px;color:#52525b;background:rgba(255,255,255,0.04);padding:2px 8px;border-radius:4px}
+.prompt-slug{font-size:11px;color:#3f3f46;font-family:monospace}
+.prompt-category{font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:0.06em;padding:2px 7px;border-radius:4px}
+.cat-agent{background:rgba(139,92,246,0.12);color:#a78bfa;border:1px solid rgba(139,92,246,0.25)}
+.cat-email{background:rgba(59,130,246,0.12);color:#93c5fd;border:1px solid rgba(59,130,246,0.25)}
+.cat-calendar{background:rgba(34,197,94,0.12);color:#4ade80;border:1px solid rgba(34,197,94,0.25)}
+
+/* Textarea */
+.prompt-content{width:100%;min-height:120px;background:rgba(0,0,0,0.3);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:12px 14px;font-size:13px;color:#d1d5db;line-height:1.6;font-family:'Fira Code','SF Mono',monospace;resize:vertical;outline:none;transition:border-color 200ms}
+.prompt-content:focus{border-color:rgba(245,158,11,0.4)}
+
+/* Actions */
+.prompt-actions{display:flex;align-items:center;justify-content:space-between;margin-top:12px}
+.btn{font-size:12px;font-weight:500;padding:7px 16px;border-radius:8px;cursor:pointer;border:1px solid;font-family:inherit;transition:all 100ms}
+.btn-save{background:rgba(245,158,11,0.12);border-color:rgba(245,158,11,0.35);color:#fbbf24}
+.btn-save:hover{background:rgba(245,158,11,0.22)}
+.btn-save:disabled{opacity:0.4;cursor:not-allowed}
+.btn-history{background:none;border-color:rgba(255,255,255,0.08);color:#71717a}
+.btn-history:hover{border-color:rgba(255,255,255,0.18);color:#a1a1aa}
+
+/* Notes input */
+.notes-input{background:rgba(0,0,0,0.2);border:1px solid rgba(255,255,255,0.06);border-radius:6px;padding:6px 10px;font-size:11px;color:#a1a1aa;outline:none;width:200px;font-family:inherit}
+.notes-input:focus{border-color:rgba(245,158,11,0.3)}
+
+/* History panel */
+.history-panel{display:none;margin-top:12px;padding:12px;background:rgba(0,0,0,0.2);border:1px solid rgba(255,255,255,0.06);border-radius:8px}
+.history-item{padding:8px 0;border-bottom:1px solid rgba(255,255,255,0.04);font-size:12px;color:#71717a}
+.history-item:last-child{border-bottom:none}
+.history-ver{font-weight:600;color:#fbbf24;margin-right:8px}
+.history-btn{font-size:11px;color:#60a5fa;cursor:pointer;background:none;border:none;font-family:inherit;padding:0}
+.history-btn:hover{text-decoration:underline}
+
+/* Status */
+.status-msg{font-size:12px;margin-top:8px;min-height:18px}
+
+/* Toast */
+.toast{position:fixed;bottom:28px;left:50%;transform:translateX(-50%) translateY(20px);background:#18181b;border:1px solid rgba(255,255,255,0.1);border-radius:10px;padding:12px 20px;font-size:13px;color:#e4e4e7;z-index:400;opacity:0;transition:all 300ms;white-space:nowrap;box-shadow:0 8px 32px rgba(0,0,0,0.5)}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+
+.loading{padding:60px;text-align:center;color:#52525b;font-size:13px}
+</style>
+</head>
+<body>
+<div class="glow"></div>
+
+<nav>
+  <img class="logo" src="https://cdn.prod.website-files.com/68f946bb8c1a312becb429c6/69332f8bb26fb636e5ff3553_QS%20white.png" alt="QS">
+  <div style="display:flex;align-items:center;gap:10px">
+    <a href="/dashboard" style="font-size:13px;color:#71717a;text-decoration:none;padding:5px 10px;border-radius:7px;border:1px solid rgba(255,255,255,0.08);" onmouseover="this.style.color='#e4e4e7'" onmouseout="this.style.color='#71717a'">← Dashboard</a>
+    <a href="/calls" style="font-size:13px;color:#71717a;text-decoration:none;padding:5px 10px;border-radius:7px;border:1px solid rgba(255,255,255,0.08);" onmouseover="this.style.color='#e4e4e7'" onmouseout="this.style.color='#71717a'">Calls</a>
+  </div>
+</nav>
+
+<div class="page">
+  <h1>⚙️ Prompt Management</h1>
+  <p class="sub">Edit agent prompts, email templates, and calendar invite copy. Changes are versioned automatically.</p>
+
+  <div class="tabs">
+    <button class="tab active" onclick="filterCategory('all')">All</button>
+    <button class="tab" onclick="filterCategory('agent')">🤖 Agents</button>
+    <button class="tab" onclick="filterCategory('email')">📧 Email</button>
+    <button class="tab" onclick="filterCategory('calendar')">📅 Calendar</button>
+  </div>
+
+  <div id="prompts-list">
+    <div class="loading">Loading prompts…</div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+var ALL_PROMPTS = [];
+var categoryFilter = 'all';
+
+function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+function filterCategory(cat) {
+  categoryFilter = cat;
+  document.querySelectorAll('.tab').forEach(function(t) { t.classList.remove('active'); });
+  event.target.classList.add('active');
+  renderPrompts();
+}
+
+function loadPrompts() {
+  fetch('/api/prompts')
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      ALL_PROMPTS = Array.isArray(data) ? data : [];
+      renderPrompts();
+    })
+    .catch(function(e) {
+      document.getElementById('prompts-list').innerHTML = '<div class="loading">Error loading prompts: ' + esc(e.message) + '</div>';
+    });
+}
+
+function renderPrompts() {
+  var filtered = categoryFilter === 'all' ? ALL_PROMPTS : ALL_PROMPTS.filter(function(p) { return p.category === categoryFilter; });
+  if (!filtered.length) {
+    document.getElementById('prompts-list').innerHTML = '<div class="loading">No prompts found</div>';
+    return;
+  }
+  var html = filtered.map(function(p) {
+    var catClass = 'cat-' + (p.category || 'agent');
+    var updated = p.updated_at ? new Date(p.updated_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
+    return '<div class="prompt-card" id="card-' + esc(p.slug) + '">' +
+      '<div class="prompt-header">' +
+        '<div>' +
+          '<div class="prompt-label">' + esc(p.label) + '</div>' +
+          '<div class="prompt-slug">' + esc(p.slug) + ' · ' + updated + '</div>' +
+        '</div>' +
+        '<div class="prompt-meta">' +
+          '<span class="prompt-category ' + catClass + '">' + esc(p.category) + '</span>' +
+          '<span class="prompt-version">v' + p.version + '</span>' +
+        '</div>' +
+      '</div>' +
+      '<textarea class="prompt-content" id="content-' + esc(p.slug) + '" oninput="markDirty(\'' + esc(p.slug) + '\')">' + esc(p.content) + '</textarea>' +
+      '<div class="prompt-actions">' +
+        '<div style="display:flex;align-items:center;gap:8px">' +
+          '<input class="notes-input" id="notes-' + esc(p.slug) + '" placeholder="Version notes (optional)">' +
+          '<button class="btn btn-save" id="save-' + esc(p.slug) + '" disabled onclick="savePrompt(\'' + esc(p.slug) + '\')">Save</button>' +
+        '</div>' +
+        '<button class="btn btn-history" onclick="toggleHistory(\'' + esc(p.slug) + '\')">📜 History</button>' +
+      '</div>' +
+      '<div class="status-msg" id="status-' + esc(p.slug) + '"></div>' +
+      '<div class="history-panel" id="history-' + esc(p.slug) + '"></div>' +
+    '</div>';
+  }).join('');
+  document.getElementById('prompts-list').innerHTML = html;
+}
+
+function markDirty(slug) {
+  var btn = document.getElementById('save-' + slug);
+  if (btn) btn.disabled = false;
+}
+
+function savePrompt(slug) {
+  var content = document.getElementById('content-' + slug).value;
+  var notes = document.getElementById('notes-' + slug).value;
+  var statusEl = document.getElementById('status-' + slug);
+  var saveBtn = document.getElementById('save-' + slug);
+  statusEl.textContent = 'Saving…';
+  statusEl.style.color = '#a1a1aa';
+  saveBtn.disabled = true;
+
+  fetch('/api/prompts/' + encodeURIComponent(slug), {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content: content, notes: notes || null })
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(d) {
+    if (d.ok) {
+      statusEl.textContent = '✓ Saved as v' + d.version;
+      statusEl.style.color = '#4ade80';
+      showToast('Prompt "' + slug + '" saved (v' + d.version + ')');
+      // Update local version
+      var p = ALL_PROMPTS.find(function(x) { return x.slug === slug; });
+      if (p) { p.version = d.version; p.content = content; }
+      var verEl = document.querySelector('#card-' + slug + ' .prompt-version');
+      if (verEl) verEl.textContent = 'v' + d.version;
+      document.getElementById('notes-' + slug).value = '';
+    } else {
+      statusEl.textContent = 'Error: ' + (d.error || 'unknown');
+      statusEl.style.color = '#f87171';
+      saveBtn.disabled = false;
+    }
+  })
+  .catch(function(e) {
+    statusEl.textContent = 'Error: ' + e.message;
+    statusEl.style.color = '#f87171';
+    saveBtn.disabled = false;
+  });
+}
+
+function toggleHistory(slug) {
+  var panel = document.getElementById('history-' + slug);
+  if (panel.style.display === 'block') { panel.style.display = 'none'; return; }
+  panel.innerHTML = '<div style="font-size:12px;color:#52525b">Loading…</div>';
+  panel.style.display = 'block';
+
+  fetch('/api/prompts/' + encodeURIComponent(slug) + '/history')
+    .then(function(r) { return r.json(); })
+    .then(function(versions) {
+      if (!versions.length) { panel.innerHTML = '<div style="font-size:12px;color:#52525b">No previous versions</div>'; return; }
+      panel.innerHTML = versions.map(function(v) {
+        var dt = new Date(v.created_at).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+        return '<div class="history-item">' +
+          '<span class="history-ver">v' + v.version + '</span>' +
+          '<span>' + dt + '</span>' +
+          (v.notes ? ' · <span style="color:#a1a1aa">' + esc(v.notes) + '</span>' : '') +
+          (v.updated_by ? ' · <span style="color:#3f3f46">' + esc(v.updated_by) + '</span>' : '') +
+          ' <button class="history-btn" onclick="restoreVersion(\'' + esc(slug) + '\',\'' + esc(v.content).replace(/'/g, "\\'") + '\')">Restore</button>' +
+        '</div>';
+      }).join('');
+    })
+    .catch(function(e) { panel.innerHTML = '<div style="font-size:12px;color:#f87171">Error: ' + esc(e.message) + '</div>'; });
+}
+
+function restoreVersion(slug, content) {
+  document.getElementById('content-' + slug).value = content;
+  markDirty(slug);
+  showToast('Version restored — click Save to apply');
+}
+
+function showToast(msg) {
+  var t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(function() { t.classList.remove('show'); }, 3000);
+}
+
+loadPrompts();
+</script>
+</body>
+</html>
