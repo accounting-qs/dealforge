@@ -996,6 +996,9 @@ function normalizePerson(p, source) {
     || (p.first_name && (p.last_name || p.last_name_obfuscated)
         ? `${p.first_name} ${p.last_name || p.last_name_obfuscated}`.trim()
         : (p.first_name || null));
+  const company = p.organization_name || org.name || org.short_description || null;
+  const website = p.website_url || org.website_url || org.primary_domain || null;
+  const employeeCount = p.organization_num_employees || org.estimated_num_employees || org.employees || null;
   return {
     name,
     title: p.title,
@@ -1007,8 +1010,6 @@ function normalizePerson(p, source) {
     // than org.industry tags. "VP Strategy at Gov of Estonia | EU Policy Advisor" is
     // an instant sector signal without any additional web request.
     _headline: p.headline || null,
-    _slice: orgMeta?.sliceLabel || null,
-    _slice_priority: orgMeta?.slicePriority ?? 999,
     _source: source
   };
 }
@@ -1147,29 +1148,17 @@ async function fetchLeadsFromApollo(icp) {
     ? icp.apollo_employee_ranges
     : (icp?.company_size ? mapCompanySize(icp.company_size) : null);
   const seniorities   = Array.isArray(icp?.person_seniorities) && icp.person_seniorities.length ? icp.person_seniorities : null;
-  const searchSlices = buildApolloSearchSlices(brief, leadProfile, sizeRanges);
 
-  console.log('[Apollo] Starting org-first lead search:', JSON.stringify({ apolloIndustries, apolloTitles, apolloGeo, searchSlices }));
+  console.log('[Apollo] Starting progressive relaxation search:', JSON.stringify({ apolloIndustries, apolloTitles, apolloGeo, sizeRanges, seniorities }));
   const timeout270s = new Promise(resolve => setTimeout(() => { console.warn('[Apollo] 4.5min timeout'); resolve(null); }, 270000));
 
   const apolloCore = async () => {
     let total = null;
-    let orgIds = [];
-    const orgMetaLookup = { byId: new Map(), byName: new Map() };
-    let geoUsed = 'original'; // tracks which geo tier was actually used for org search
     const debug = {
-      leadProfile,
-      searchSlices,
       geoRequested: rawGeo || [],
       geoPrimaryLocations: apolloGeo || [],
-      geoFallbackChain: geoPlan.fallbackSets.map(f => ({ key: f.key, reason: f.reason, locations: f.locations })),
-      geoUsed: 'original',
-      orgSearch: { httpStatus: null, totalEntries: null, orgIds: 0 },
-      euRetry: { attempted: false, httpStatus: null, totalEntries: null, orgIds: 0 },
-      orgAttempts: [],
-      peopleSearch: { attempted: false, httpStatus: null, candidates: 0 },
-      directPeople: { attempted: false, attempts: [], candidates: 0 },
-      contactsSearch: { attempted: false, pagesFetched: 0, candidates: 0 },
+      relaxationLevel: null,
+      levelResults: [],
       classification: { excerptCount: 0, outage: false, rejectedAll: false },
       preFilterCount: 0,
       classifiedCount: 0,
@@ -1177,414 +1166,208 @@ async function fetchLeadsFromApollo(icp) {
       source: null
     };
 
-    // ── Step 1: organizations/search — validates companies AND gets org IDs for Step 2 ──
-    // This is the quality anchor: we confirm company industry+size+geo BEFORE finding people.
-    // GEO FALLBACK: small geographic markets (e.g. Baltic states) have sparse Apollo coverage.
-    // If geo-restricted search returns < 5 orgs, retry without geo and let the classifier
-    // do geo verification via website content + headline. Better to over-fetch and classify
-    // than to under-fetch and show 0 leads.
-    const runOrgSearch = async (withGeo) => {
-      const orgBody = { per_page: 50 };
-      // Use the PRIMARY industry tag only (single tag) — Apollo applies AND logic across all values,
-      // so using 5 tags returns near-0 results. Single tag gives industry-relevant orgs.
-      // Haiku classifier still verifies sector fit for any edge cases.
-      const primaryIndustry = apolloIndustries?.[0] || null;
-      if (primaryIndustry)  orgBody.q_organization_keyword_tags   = [primaryIndustry];
-      if (sizeRanges)       orgBody.organization_num_employees_ranges = sizeRanges;
-      if (withGeo && apolloGeo) orgBody.q_organization_locations   = apolloGeo;
-      const orgRes = await fetch('https://api.apollo.io/v1/organizations/search', {
-        method: 'POST', headers: apolloHeaders,
-        body: JSON.stringify(orgBody), signal: AbortSignal.timeout(10000)
-      });
-      if (!orgRes.ok) return { orgCount: null, orgIds: [] };
-      const orgData = await orgRes.json();
-      return {
-        orgCount,
-        orgIds: uniqueOrgIds,
-        slice
+    // ── Helper: run a single people search with given filters ──
+    const searchPeople = async (filters, label) => {
+      const body = {
+        per_page: 50,
+        page: 1,
+        sort_by_field: 'person_name',
+        sort_ascending: true,
+        ...filters
       };
-    };
-    const runSliceSet = async (locations, labelPrefix) => {
-      let orgCount = null;
-      let mergedOrgIds = [];
-      const slicesUsed = [];
-      for (const slice of searchSlices) {
-        const sliceResult = await runOrgSearch(locations, `${labelPrefix}:${slice.key}`, slice);
-        if (sliceResult.orgCount != null) orgCount = orgCount == null ? sliceResult.orgCount : Math.max(orgCount, sliceResult.orgCount);
-        if (sliceResult.orgIds.length) {
-          mergedOrgIds = [...new Set([...mergedOrgIds, ...sliceResult.orgIds])].slice(0, 150);
-          slicesUsed.push({
-            key: slice.key,
-            label: slice.label,
-            orgIds: sliceResult.orgIds.length,
-            industryTag: slice.industryTag || null,
-            qKeywords: slice.qKeywords || null
-          });
-        }
-        if (mergedOrgIds.length >= 40) break;
-      }
-      return { orgCount, orgIds: mergedOrgIds, slicesUsed };
-    };
-    try {
-      let result = await runSliceSet(apolloGeo, 'primary');
-      if (result.orgIds.length < 5 && geoPlan.fallbackSets.length) {
-        for (const fallback of geoPlan.fallbackSets) {
-          console.log(`[Apollo] Only ${result.orgIds.length} orgs for primary geo — retrying ${fallback.label} (${fallback.reason})`);
-          if (fallback.key === 'europe') debug.euRetry.attempted = true;
-          const fallbackResult = await runSliceSet(fallback.locations, fallback.key);
-          if (fallback.key === 'europe') {
-            debug.euRetry.httpStatus = debug.orgSearch.httpStatus;
-            debug.euRetry.totalEntries = fallbackResult.orgCount;
-            debug.euRetry.orgIds = fallbackResult.orgIds.length;
-          }
-          if (fallbackResult.orgIds.length > result.orgIds.length) {
-            result = fallbackResult;
-            geoUsed = fallback.key;
-            debug.geoUsed = geoUsed;
-          }
-          if (result.orgIds.length >= 5) break;
-        }
-      }
-
-      if (result.orgIds.length === 0 && apolloGeo?.length) {
-        console.log('[Apollo] Geo-constrained org search returned 0 — switching to direct person-location fallback ladder');
-        geoUsed = 'direct_person_geo';
-        debug.geoUsed = geoUsed;
-      }
-      const { orgCount, orgIds: fetchedIds } = result;
-      orgIds = fetchedIds;
-      debug.orgSearch.totalEntries = orgCount;
-      debug.orgSearch.orgIds = orgIds.length;
-      debug.selectedSlices = result.slicesUsed || [];
-      console.log(`[Apollo] Org search: ${orgCount} orgs found; extracted ${orgIds.length} org IDs for people search`);
-
-      // ── Dedicated TAM count query ─────────────────────────────────────────────
-      // Run a separate broad org search (geo + size only, NO industry keyword tags)
-      // to get Apollo's real pagination count as the TAM source.
-      // This is MORE accurate than the lead-finding search (which may be filtered)
-      // and MORE accurate than estimateGlobalTAM() (which uses hardcoded heuristics).
       try {
-        const tamBody = { per_page: 1 }; // We only need pagination.total_entries
-        if (sizeRanges)  tamBody.organization_num_employees_ranges = sizeRanges;
-        if (apolloGeo?.length) tamBody.q_organization_locations = apolloGeo;
-        const tamRes = await fetch('https://api.apollo.io/v1/organizations/search', {
+        const res = await fetch('https://api.apollo.io/api/v1/mixed_people/search', {
           method: 'POST', headers: apolloHeaders,
-          body: JSON.stringify(tamBody), signal: AbortSignal.timeout(8000)
+          body: JSON.stringify(body), signal: AbortSignal.timeout(15000)
         });
-        if (tamRes.ok) {
-          const tamData = await tamRes.json();
-          const realCount = tamData.pagination?.total_entries;
-          if (realCount && realCount > 0) {
-            total = realCount;
-            console.log(`[Apollo] TAM (Apollo real count, geo+size broad): ${total}`);
-          }
-        }
-      } catch(e) { console.warn('[Apollo] TAM count query failed:', e.message); }
-      // total falls back to estimateGlobalTAM(icp) at the end if still null
-    } catch(e) { console.warn('[Apollo] Org search error:', e.message); }
-
-    // ── Step 2: people search — direct geo+titles (reliable on all Apollo plans) ──
-    // IMPORTANT: mixed_people/api_search with organization_ids returns 0 contacts on the basic plan.
-    // The reliable path is geo+titles directly, which works and returns real results.
-    // We still try org-constrained first (it's more precise), but immediately fall back
-    // to geo+titles when it returns <5 results.
-    let allPeople = [];
-    let usedPeopleSearch = false;
-
-    const runDirectGeoTitlesSearch = async (label) => {
-      if (!apolloTitles?.length && !apolloGeo?.length) return [];
-      const directBody = {
-        per_page: 25,
-        page: 1,               // explicit page 1 — prevents Apollo rotating results across calls
-        sort_by_field: 'person_name', // deterministic sort so same ICP always returns same people
-        sort_ascending: true
-      };
-      if (apolloTitles?.length)      directBody.person_titles        = apolloTitles;
-      if (seniorities)               directBody.person_seniorities   = seniorities;
-      if (apolloGeo?.length)         directBody.person_locations     = apolloGeo;
-      if (sizeRanges)                directBody.organization_num_employees_ranges = sizeRanges;
-      try {
-        const dr = await fetch('https://api.apollo.io/api/v1/mixed_people/search', {
-          method: 'POST', headers: apolloHeaders,
-          body: JSON.stringify(directBody), signal: AbortSignal.timeout(15000)
-        });
-        if (!dr.ok) {
-          const errText = await dr.text().catch(() => '');
-          console.warn(`[Apollo] ${label} HTTP ${dr.status}: ${errText.slice(0,120)}`);
+        if (!res.ok) {
+          console.warn(`[Apollo] ${label} HTTP ${res.status}`);
           return [];
         }
-        const dd = await dr.json();
-        const dp = (dd.people || []).filter(p => {
-          const firstName = p.first_name || '';
-          const n = (p.name || (firstName + ' ' + (p.last_name || p.last_name_obfuscated || '')).trim() || firstName).trim();
-          const company = p.organization_name || p.organization?.name || '';
-          return n.length > 2 && p.title && company;
+        const data = await res.json();
+        const people = (data.people || []).filter(p => {
+          const n = normalizePerson(p, label);
+          return n.name && n.name.length > 2 && n.title && n.company;
         }).map(p => normalizePerson(p, label));
-        console.log(`[Apollo] ${label}: ${dp.length} candidates`);
-        return dp;
+        console.log(`[Apollo] ${label}: ${people.length} candidates`);
+        return people;
       } catch(e) {
         console.warn(`[Apollo] ${label} error:`, e.message);
         return [];
       }
     };
 
-    if (orgIds.length) {
-      try {
-        const peopleBody = {
-          organization_ids: orgIds,
-          per_page: 25,
-          page: 1,               // deterministic — always return same first page
-          sort_by_field: 'person_name',
-          sort_ascending: true
-        };
-        if (apolloTitles?.length) peopleBody.person_titles      = apolloTitles;
-        if (seniorities)          peopleBody.person_seniorities = seniorities;
-        const peopleRes = await fetch('https://api.apollo.io/api/v1/mixed_people/search', {
-          method: 'POST', headers: apolloHeaders,
-          body: JSON.stringify(peopleBody), signal: AbortSignal.timeout(15000)
-        });
-        if (peopleRes.ok) {
-          const peopleData = await peopleRes.json();
-          const people = (peopleData.people || []).filter(p => {
-            const firstName = p.first_name || '';
-            const n = (p.name || (firstName + ' ' + (p.last_name || p.last_name_obfuscated || '')).trim() || firstName).trim();
-            const company = p.organization_name || p.organization?.name || '';
-            return n.length > 2 && p.title && company;
-          });
-          allPeople = people.map(p => normalizePerson(p, 'mixed_people/search'));
-          console.log(`[Apollo] mixed_people/search (org-constrained): ${allPeople.length} contacts from ${orgIds.length} orgs`);
+    // ── Progressive Relaxation Cascade ──
+    // Each level drops filters progressively until we get ≥25 contacts.
+    // Classifier still enforces ICP quality on broad results.
+    const MIN_TARGET = 25;
+    let allPeople = [];
 
-          // If org-constrained returns thin results (<5), fall back to direct geo+titles.
-          // This happens on Apollo basic plans where organization_ids is not fully supported.
-          if (allPeople.length < 5) {
-            console.log('[Apollo] Org-constrained thin — falling back to direct geo+titles search');
-            const direct = await runDirectGeoTitlesSearch('mixed_people/search-geo');
-            if (direct.length > allPeople.length) { allPeople = direct; }
-          }
-          usedPeopleSearch = allPeople.length > 0;
-        } else {
-          const errText = await peopleRes.text().catch(() => '');
-          console.warn(`[Apollo] people/search HTTP ${peopleRes.status} — falling back to geo+titles. ${errText.slice(0,120)}`);
-          allPeople = await runDirectGeoTitlesSearch('mixed_people/search-geo-fallback');
-          usedPeopleSearch = allPeople.length > 0;
+    const levels = [
+      {
+        key: 'L1_tight',
+        label: 'Level 1 (titles+industry+geo+size+seniority)',
+        filters: () => {
+          const f = {};
+          if (apolloTitles?.length)    f.person_titles = apolloTitles;
+          if (apolloIndustries?.length) f.q_organization_keyword_tags = [apolloIndustries[0]];
+          if (apolloGeo?.length)       f.person_locations = apolloGeo;
+          if (sizeRanges)              f.organization_num_employees_ranges = sizeRanges;
+          if (seniorities)             f.person_seniorities = seniorities;
+          return f;
         }
-      } catch(e) {
-        console.warn('[Apollo] mixed_people/search error:', e.message);
-        allPeople = await runDirectGeoTitlesSearch('mixed_people/search-geo-catch');
-        usedPeopleSearch = allPeople.length > 0;
+      },
+      {
+        key: 'L2_medium',
+        label: 'Level 2 (titles+geo+size)',
+        filters: () => {
+          const f = {};
+          if (apolloTitles?.length)    f.person_titles = apolloTitles;
+          if (apolloGeo?.length)       f.person_locations = apolloGeo;
+          if (sizeRanges)              f.organization_num_employees_ranges = sizeRanges;
+          return f;
+        }
+      },
+      {
+        key: 'L3_broad',
+        label: 'Level 3 (titles+geo only)',
+        filters: () => {
+          const f = {};
+          if (apolloTitles?.length)    f.person_titles = apolloTitles;
+          if (apolloGeo?.length)       f.person_locations = apolloGeo;
+          return f;
+        }
+      },
+      {
+        key: 'L4_wider',
+        label: 'Level 4 (titles+similar, no geo)',
+        filters: () => {
+          const f = { include_similar_titles: true };
+          if (apolloTitles?.length)    f.person_titles = apolloTitles;
+          return f;
+        }
+      },
+      {
+        key: 'L5_widest',
+        label: 'Level 5 (seniority+industry+geo, no titles)',
+        filters: () => {
+          const f = {};
+          if (seniorities)             f.person_seniorities = seniorities;
+          if (apolloIndustries?.length) f.q_organization_keyword_tags = [apolloIndustries[0]];
+          if (apolloGeo?.length)       f.person_locations = apolloGeo;
+          // If nothing above, at least search by seniority broadly
+          if (!Object.keys(f).length && seniorities) f.person_seniorities = ['c_suite', 'vp', 'director', 'owner'];
+          return f;
+        }
       }
-    } else {
-      // No org IDs — go directly to geo+titles search
-      console.log('[Apollo] No org IDs — running direct geo+titles search');
-      allPeople = await runDirectGeoTitlesSearch('mixed_people/search-direct');
-      usedPeopleSearch = allPeople.length > 0;
-    }
+    ];
 
-    // ── Fallback 1: direct People API search (net-new) ───────────────────────
-    // This uses Apollo's current prospecting endpoint and bypasses the org-ID dependency.
-    // It is especially important for sparse EU/Baltic markets where org search may return 0
-    // even though net-new people exist in Apollo's global database.
-    if (!usedPeopleSearch || allPeople.length < 20 || (debug.orgSearch.totalEntries && debug.orgSearch.totalEntries > 5000 && allPeople.length < 60)) {
-      const titleVariants = buildTitleVariants(apolloTitles);
-      const locationVariants = buildDirectLocationVariants(geoPlan);
-      const buildDirectPeopleBody = (titleVariant, locationVariant) => {
-        const body = {
-          per_page: 50,
-          include_similar_titles: titleVariant.includeSimilarTitles,
-          sort_by_field: 'person_name',  // stable sort — prevents result rotation between runs
-          sort_ascending: true
-        };
-        if (titleVariant.titles?.length) body.person_titles = titleVariant.titles;
-        if (seniorities) body.person_seniorities = seniorities;
-        if (sizeRanges)  body.organization_num_employees_ranges = sizeRanges;
-        if (locationVariant.field && locationVariant.locations?.length) {
-          body[locationVariant.field] = locationVariant.locations;
-        }
-        return body;
-      };
-      try {
-        debug.directPeople.attempted = true;
-        let directPeople = allPeople.length >= 10 ? allPeople.slice() : [];
-        for (const locationVariant of locationVariants) {
-          for (const titleVariant of titleVariants) {
-            if (directPeople.length >= 20) break;
-            const directPeopleBody = buildDirectPeopleBody(titleVariant, locationVariant);
-            const attemptPeople = [];
-            console.log(`[Apollo] direct people API attempt: ${locationVariant.key} + ${titleVariant.key}`);
-            for (let page = 1; page <= 2; page++) {
-              const res = await fetch('https://api.apollo.io/api/v1/mixed_people/api_search', {
-                method: 'POST', headers: apolloHeaders,
-                body: JSON.stringify({ ...directPeopleBody, page }), signal: AbortSignal.timeout(15000)
-              });
-              debug.directPeople.attempts.push({
-                key: `${locationVariant.key}:${titleVariant.key}`,
-                page,
-                httpStatus: res.status,
-                field: locationVariant.field || null,
-                locations: locationVariant.locations || []
-              });
-              if (!res.ok) {
-                const errText = await res.text().catch(() => '');
-                console.warn(`[Apollo] direct people API HTTP ${res.status} ${locationVariant.key}/${titleVariant.key} p${page}: ${errText.slice(0,160)}`);
-                break;
-              }
-              const data = await res.json();
-              const batch = (data.people || []).filter(p => {
-                const normalized = normalizePerson(p, 'mixed_people/api_search', orgMetaLookup);
-                return normalized.name && normalized.title && normalized.company;
-              });
-              attemptPeople.push(...batch.map(p => normalizePerson(p, 'mixed_people/api_search', orgMetaLookup)));
-              console.log(`[Apollo] direct people API ${locationVariant.key}/${titleVariant.key} p${page}: ${batch.length} people`);
-              if (batch.length < 50) break;
-            }
-            if (attemptPeople.length > directPeople.length) directPeople = attemptPeople;
-          }
-          if (directPeople.length >= 20) break;
-        }
-        if (directPeople.length > allPeople.length) {
-          allPeople = directPeople;
-          usedPeopleSearch = true;
-          debug.directPeople.candidates = allPeople.length;
-          debug.source = 'people_search_direct';
-          console.log(`[Apollo] direct people API fallback: ${allPeople.length} candidates`);
-        }
-      } catch(e) {
-        console.warn('[Apollo] direct people API fallback error:', e.message);
+    for (const level of levels) {
+      const filters = level.filters();
+      if (!Object.keys(filters).length) {
+        console.log(`[Apollo] Skipping ${level.label} — no filters available`);
+        continue;
       }
-    }
-
-    // ── Fallback 2: contacts/search (CRM-only, weakest path) ─────────────────
-    if (!usedPeopleSearch) {
-      const contactsBody = {
-        per_page: 25,
-        sort_by_field: 'contact_name', // stable sort — same ICP always returns same contacts
-        sort_ascending: true
-      };
-
-      if (apolloTitles?.length) contactsBody.person_titles      = apolloTitles;
-      if (seniorities)          contactsBody.person_seniorities = seniorities;
-      if (sizeRanges)           contactsBody.organization_num_employees_ranges = sizeRanges;
-      // IMPORTANT: Do NOT add q_organization_keyword_tags here — Apollo applies AND logic
-      // across all values, returning 0 results when multiple industry tags are combined.
-      // We rely on Jina + Haiku classifier for sector verification instead.
-      //
-      // Geo: for EU/Baltic ICPs that exhausted org search, use full EU country list.
-      // For other ICPs, use original apollo geo if present.
-      if (geoUsed === 'europe') {
-        contactsBody.person_locations = EUROPE_COUNTRIES;
-      } else if (activeGeoFallback?.locations?.length) {
-        contactsBody.person_locations = activeGeoFallback.locations;
-      } else if (geoPlan.primaryLocations?.length) {
-        contactsBody.person_locations = geoPlan.primaryLocations;
+      const people = await searchPeople(filters, level.label);
+      debug.levelResults.push({ key: level.key, label: level.label, count: people.length, filters: Object.keys(filters) });
+      if (people.length > allPeople.length) {
+        allPeople = people;
+        debug.relaxationLevel = level.key;
+        debug.source = level.key;
       }
-      try {
-        for (let page = 1; page <= 4; page++) {
-          const res = await fetch('https://api.apollo.io/v1/contacts/search', {
-            method: 'POST', headers: apolloHeaders,
-            body: JSON.stringify({ ...contactsBody, page }), signal: AbortSignal.timeout(12000)
-          });
-          if (!res.ok) { console.warn(`[Apollo] contacts/search HTTP ${res.status} p${page}`); break; }
-          debug.contactsSearch.pagesFetched = page;
-          const data = await res.json();
-          const batch = (data.contacts || []).filter(p => {
-            const normalized = normalizePerson(p, 'contacts/search', orgMetaLookup);
-            return normalized.name && normalized.title && normalized.company;
-          });
-          allPeople.push(...batch.map(p => normalizePerson(p, 'contacts/search', orgMetaLookup)));
-          if (batch.length < 25) break;
-        }
-        debug.contactsSearch.candidates = allPeople.length;
-        debug.source = 'contacts_search';
-        console.log(`[Apollo] contacts/search fallback: ${allPeople.length} candidates`);
-      } catch(e) {
-        console.warn('[Apollo] contacts/search error:', e.message);
-        if (!allPeople.length) return { leads: [], total: total || estimateGlobalTAM(icp), source: debug.source, diagnostics: debug };
-      }
-    }
-
-    if (!allPeople.length) return { leads: [], total: total || estimateGlobalTAM(icp), source: debug.source, diagnostics: debug };
-
-    // ── Path A: Industry keyword pre-filter ───────────────────────────────────
-    const rawLeads = preFilterLeadsByIndustry(allPeople, icp);
-    debug.preFilterCount = rawLeads.length;
-    if (!rawLeads.length) return { leads: [], total: total || estimateGlobalTAM(icp), source: debug.source, diagnostics: debug };
-    const prioritizedLeads = prioritizeLeadCandidates(rawLeads, 72);
-    debug.prioritizedCount = prioritizedLeads.length;
-
-    // ── Website excerpts — bonus signal, not a gate ───────────────────────────
-    console.log(`[Apollo] Fetching website excerpts for ${prioritizedLeads.length} prioritized leads...`);
-    const qualityResults = [];
-    // 3d. Larger batches (15) + reduced timeout (4s) + early exit at 25 excerpts
-    for (let i = 0; i < rawLeads.length; i += 15) {
-      if (qualityResults.filter(Boolean).length >= 25) {
-        console.log('[Apollo] Early exit: 25+ excerpts collected, skipping remaining Jina checks');
-        // Pad remaining with nulls so indices align
-        while (qualityResults.length < rawLeads.length) qualityResults.push(null);
+      if (allPeople.length >= MIN_TARGET) {
+        console.log(`[Apollo] ✓ ${level.label} returned ${allPeople.length} contacts — stopping cascade`);
         break;
       }
-      const batch = rawLeads.slice(i, i + 15);
+      console.log(`[Apollo] ${level.label} returned ${people.length} — trying next level`);
+    }
+
+    // ── Dedicated TAM count query ──
+    try {
+      const tamBody = { per_page: 1 };
+      if (sizeRanges) tamBody.organization_num_employees_ranges = sizeRanges;
+      if (apolloGeo?.length) tamBody.q_organization_locations = apolloGeo;
+      const tamRes = await fetch('https://api.apollo.io/v1/organizations/search', {
+        method: 'POST', headers: apolloHeaders,
+        body: JSON.stringify(tamBody), signal: AbortSignal.timeout(8000)
+      });
+      if (tamRes.ok) {
+        const tamData = await tamRes.json();
+        const realCount = tamData.pagination?.total_entries;
+        if (realCount && realCount > 0) {
+          total = realCount;
+          console.log(`[Apollo] TAM (Apollo real count): ${total}`);
+        }
+      }
+    } catch(e) { console.warn('[Apollo] TAM count query failed:', e.message); }
+
+    if (!allPeople.length) {
+      console.log('[Apollo] All levels returned 0 — no leads found');
+      return { leads: [], total: total || estimateGlobalTAM(icp), source: debug.source, diagnostics: debug };
+    }
+
+    // ── Industry pre-filter ──
+    const rawLeads = preFilterLeadsByIndustry(allPeople, icp);
+    debug.preFilterCount = rawLeads.length;
+    if (!rawLeads.length) {
+      // Pre-filter rejected everything — use allPeople instead (classifier will sort)
+      console.log('[Apollo] Pre-filter rejected all — sending all candidates to classifier');
+    }
+    const leadsForClassification = (rawLeads.length ? rawLeads : allPeople).slice(0, 72);
+
+    // ── Website excerpts — bonus signal, not a gate ──
+    console.log(`[Apollo] Fetching website excerpts for ${leadsForClassification.length} leads...`);
+    const qualityResults = [];
+    for (let i = 0; i < leadsForClassification.length; i += 15) {
+      if (qualityResults.filter(Boolean).length >= 25) break;
+      const batch = leadsForClassification.slice(i, i + 15);
       const batchResults = await Promise.all(batch.map(l => websiteQualityCheck(l.website, 4000)));
       qualityResults.push(...batchResults);
     }
-    const leadsForClassification = prioritizedLeads.map((l, i) =>
+    while (qualityResults.length < leadsForClassification.length) qualityResults.push(null);
+    const enrichedLeads = leadsForClassification.map((l, i) =>
       qualityResults[i] ? { ...l, _excerpt: qualityResults[i].excerpt } : l
     );
-    console.log(`[Apollo] Classifying ${leadsForClassification.length} leads (${leadsForClassification.filter(l => l._excerpt).length} with excerpts, source: ${usedPeopleSearch ? 'mixed_people/api_search' : 'contacts/search'})...`);
+    debug.classification.excerptCount = qualityResults.filter(Boolean).length;
 
-    // ── Haiku ICP classifier — always runs, fail-closed by default ──────────
-    // When we fell back to EU or global search, pass the effective geo so the
-    // classifier can apply appropriate strictness (EU-wide accept vs hard Baltic-only).
-    // Pass effective geo to classifier — if we broadened to EU, accept all EU companies
-    const activeGeoFallback = geoPlan.fallbackSets.find(f => f.key === geoUsed);
-    const icpForClassifier = activeGeoFallback?.locations?.length
-      ? { ...brief, icp: { ...icp, apollo_geography: activeGeoFallback.locations } }
-      : (geoUsed === 'europe')
-        ? { ...brief, icp: { ...icp, apollo_geography: EUROPE_COUNTRIES } }
-        : (geoUsed === 'global' ? { ...brief, icp: { ...icp, apollo_geography: null, geography: null } } : brief);
-    const classifications = await classifyLeadsWithHaiku(leadsForClassification, icpForClassifier);
+    // ── Haiku ICP classifier ──
+    const classifications = await classifyLeadsWithHaiku(enrichedLeads, { icp });
     debug.classifiedCount = classifications.length;
     const classMap = {};
     classifications.forEach(c => { classMap[c.index] = c; });
     const anyMatch = classifications.some(c => c.match);
-    // Outage detection: classifier returns all match:false with reason 'classification unavailable'
-    // (from the catch block in classifyLeadsWithHaiku). Distinguish from genuine rejection.
     const isClassifierOutage = !anyMatch && classifications.length > 0 &&
       classifications.every(c => c.reason === 'classification unavailable');
     if (!anyMatch && !isClassifierOutage) {
       debug.classification.rejectedAll = true;
-      console.log('[Apollo] Classifier rejected all leads (genuine mismatch — not outage). Returning 0 leads.');
+      console.log('[Apollo] Classifier rejected all leads.');
     }
     if (isClassifierOutage) {
       debug.classification.outage = true;
-      console.warn('[Apollo] Classifier outage detected — returning pre-filtered leads unverified.');
+      console.warn('[Apollo] Classifier outage — returning pre-filtered leads unverified.');
     }
-    // 3c. Confidence floor — accept low-confidence leads as backfill when high+medium count is <10
-    // This prevents returning 0 leads when geo signals are ambiguous but sector looks correct
-    const highMediumCount = leadsForClassification.filter((l, i) => {
+
+    const highMediumCount = enrichedLeads.filter((l, i) => {
       const c = classMap[i+1];
       return c && c.match && c.confidence !== 'low';
     }).length;
     const useLowAsBackfill = highMediumCount < 10;
-    if (useLowAsBackfill && highMediumCount > 0) {
-      console.log(`[Apollo] Only ${highMediumCount} high/medium leads — including low-confidence as backfill`);
-    }
-    const classified = leadsForClassification
+
+    const classified = enrichedLeads
       .map((l, i) => {
         const c = classMap[i+1] || { match: false, confidence: 'low', reason: 'unclassified' };
         return { ...l, _match: c.match, confidence: c.confidence, match_reason: c.reason };
       })
-      // Confidence floor: prefer high+medium. Backfill with low only when high+medium < 10.
-      // Outage exception: classifier down → show pre-filtered leads (better than nothing).
       .filter(l => isClassifierOutage ? true : (l._match && (l.confidence !== 'low' || useLowAsBackfill)));
 
     const ORDER = { high: 0, medium: 1, low: 2 };
     classified.sort((a, b) => (ORDER[a.confidence] || 1) - (ORDER[b.confidence] || 1));
     const finalLeads = classified.slice(0, 25).map(({ _match, _excerpt, _source, ...l }) => l);
-    // TAM source: real Apollo count (from dedicated TAM query) or heuristic fallback
+    debug.finalLeadCount = finalLeads.length;
     const tam = total || estimateGlobalTAM(icp);
     const tamSource = total ? 'apollo' : 'estimated';
-    console.log(`[Apollo] Final: ${finalLeads.length} leads, TAM: ${tam} (source: ${tamSource})`);
-    return { leads: finalLeads, total: tam, tamSource };
+    console.log(`[Apollo] Final: ${finalLeads.length} leads, TAM: ${tam} (source: ${tamSource}), relaxation: ${debug.relaxationLevel}`);
+    return { leads: finalLeads, total: tam, tamSource, diagnostics: debug };
   };
   return Promise.race([apolloCore(), timeout270s]);
 }
@@ -3034,6 +2817,91 @@ const server = http.createServer(async (req, res) => {
       res.end(JSON.stringify({ ok: true, overrides: mergedOverrides }));
     } catch(e) {
       console.error('[PATCH /api/jobs/overrides]', e.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  // ── PATCH /api/jobs/:id/icp — update Apollo ICP filters manually ──────────
+  if (req.method === 'PATCH' && urlPath.startsWith('/api/jobs/') && urlPath.endsWith('/icp')) {
+    setCors(res);
+    const jobId = urlPath.slice('/api/jobs/'.length, -'/icp'.length);
+    try {
+      const body = await parseBody(req);
+      const job = await getJob(jobId);
+      if (!job) { res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'Job not found' })); return; }
+      const existingData = job.extracted_data || {};
+      const existingIcp = existingData.icp || {};
+      const ICP_FIELDS = ['apollo_titles', 'apollo_industries', 'apollo_geography', 'apollo_employee_ranges', 'person_seniorities'];
+      const updatedIcp = { ...existingIcp };
+      for (const k of ICP_FIELDS) {
+        if (body[k] !== undefined) updatedIcp[k] = body[k];
+      }
+      const updatedData = { ...existingData, icp: updatedIcp };
+      const r = await supabaseRequest('PATCH', `/rest/v1/jobs?id=eq.${jobId}`,
+        { extracted_data: updatedData, updated_at: new Date().toISOString() },
+        { 'Prefer': 'return=minimal' }
+      );
+      if (r.status >= 400) throw new Error(`Supabase PATCH failed: ${r.status}`);
+      console.log(`[PATCH /api/jobs/${jobId}/icp] Updated ICP filters`);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, icp: updatedIcp }));
+    } catch(e) {
+      console.error('[PATCH /api/jobs/icp]', e.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  // ── POST /api/jobs/:id/rerun-apollo — re-run lead search with current ICP ──
+  if (req.method === 'POST' && urlPath.startsWith('/api/jobs/') && urlPath.endsWith('/rerun-apollo')) {
+    setCors(res);
+    const jobId = urlPath.slice('/api/jobs/'.length, -'/rerun-apollo'.length);
+    try {
+      const job = await getJob(jobId);
+      if (!job) { res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'Job not found' })); return; }
+      const icp = (job.extracted_data || {}).icp || {};
+      if (!icp.apollo_titles?.length && !icp.apollo_industries?.length) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'No ICP filters set — nothing to search' }));
+        return;
+      }
+      // Run the Apollo search (async — respond immediately, save results when done)
+      res.writeHead(202, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, message: 'Apollo search started — poll job status for results' }));
+      // Background: run search and save results
+      (async () => {
+        try {
+          console.log(`[rerun-apollo] Starting for job ${jobId}`);
+          const result = await fetchLeadsFromApollo(icp);
+          if (result && result.leads) {
+            const existingData = job.extracted_data || {};
+            const updatedData = {
+              ...existingData,
+              _generated: {
+                ...(existingData._generated || {}),
+                lead_list: result.leads,
+                tam_total: result.total,
+                tam_source: result.tamSource,
+                apollo_diagnostics: result.diagnostics
+              }
+            };
+            await supabaseRequest('PATCH', `/rest/v1/jobs?id=eq.${jobId}`,
+              { extracted_data: updatedData, updated_at: new Date().toISOString() },
+              { 'Prefer': 'return=minimal' }
+            );
+            console.log(`[rerun-apollo] Job ${jobId}: saved ${result.leads.length} leads`);
+          } else {
+            console.warn(`[rerun-apollo] Job ${jobId}: search returned no result`);
+          }
+        } catch(e) {
+          console.error(`[rerun-apollo] Job ${jobId} error:`, e.message);
+        }
+      })();
+    } catch(e) {
+      console.error('[POST /api/jobs/rerun-apollo]', e.message);
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: e.message }));
     }

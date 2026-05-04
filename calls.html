@@ -100,6 +100,14 @@ option{background:#111116;color:#e4e4e7}
 /* Toast */
 .toast{position:fixed;bottom:28px;left:50%;transform:translateX(-50%) translateY(20px);background:#18181b;border:1px solid rgba(255,255,255,0.1);border-radius:10px;padding:12px 20px;font-size:13px;color:#e4e4e7;z-index:400;opacity:0;transition:all 300ms;white-space:nowrap;box-shadow:0 8px 32px rgba(0,0,0,0.5)}
 .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+
+/* ICP filter tags */
+.tag-container{display:flex;flex-wrap:wrap;gap:5px;min-height:24px}
+.tag-item{display:inline-flex;align-items:center;gap:4px;background:rgba(59,130,246,0.1);border:1px solid rgba(59,130,246,0.22);border-radius:5px;padding:2px 7px;font-size:11px;color:#93c5fd}
+.tag-item .tag-remove{display:none;cursor:pointer;color:#f87171;font-weight:700;margin-left:2px}
+.tag-item.editable .tag-remove{display:inline}
+.tag-input{display:none;width:100%;margin-top:4px;background:rgba(10,10,15,0.7);border:1px solid rgba(59,130,246,0.25);border-radius:6px;padding:5px 8px;font-size:11px;color:#e4e4e7;outline:none;font-family:inherit}
+.tag-input:focus{border-color:rgba(59,130,246,0.5)}
 </style>
 </head>
 <body>
@@ -236,6 +244,46 @@ option{background:#111116;color:#e4e4e7}
       <button onclick="overrideStatus('approved')" class="pill" style="border-color:rgba(34,197,94,0.35);color:#4ade80;background:rgba(34,197,94,0.08)">✓ Approve</button>
       <button onclick="overrideStatus('skipped')" class="pill" style="border-color:rgba(239,68,68,0.3);color:#f87171;background:rgba(239,68,68,0.07)">✕ Skip</button>
       <button onclick="overrideStatus('pending_review')" class="pill">Reset to Pending</button>
+    </div>
+
+    <!-- ICP Filters Panel (editable Apollo search parameters) -->
+    <div id="d-icp-panel" style="display:none;margin-top:24px;padding:16px;background:rgba(59,130,246,0.06);border:1px solid rgba(59,130,246,0.2);border-radius:10px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+        <div style="font-size:11px;font-weight:700;letter-spacing:0.07em;text-transform:uppercase;color:#60a5fa">🎯 Apollo Filters</div>
+        <button onclick="toggleIcpEdit()" id="icp-edit-btn" class="pill" style="font-size:10px;padding:3px 10px">Edit</button>
+      </div>
+      <div id="icp-fields">
+        <div class="icp-field">
+          <label style="font-size:11px;color:#94a3b8;margin-bottom:4px;display:block">Titles</label>
+          <div id="icp-titles" class="tag-container"></div>
+          <input id="icp-titles-input" class="tag-input" placeholder="Add title…" style="display:none" onkeydown="if(event.key==='Enter'){addIcpTag('titles',this.value);this.value=''}">
+        </div>
+        <div class="icp-field" style="margin-top:10px">
+          <label style="font-size:11px;color:#94a3b8;margin-bottom:4px;display:block">Industries</label>
+          <div id="icp-industries" class="tag-container"></div>
+          <input id="icp-industries-input" class="tag-input" placeholder="Add industry…" style="display:none" onkeydown="if(event.key==='Enter'){addIcpTag('industries',this.value);this.value=''}">
+        </div>
+        <div class="icp-field" style="margin-top:10px">
+          <label style="font-size:11px;color:#94a3b8;margin-bottom:4px;display:block">Geography</label>
+          <div id="icp-geography" class="tag-container"></div>
+          <input id="icp-geography-input" class="tag-input" placeholder="Add location…" style="display:none" onkeydown="if(event.key==='Enter'){addIcpTag('geography',this.value);this.value=''}">
+        </div>
+        <div class="icp-field" style="margin-top:10px">
+          <label style="font-size:11px;color:#94a3b8;margin-bottom:4px;display:block">Employee Ranges</label>
+          <div id="icp-emp-ranges" class="tag-container"></div>
+          <input id="icp-emp-ranges-input" class="tag-input" placeholder="e.g. 51,200" style="display:none" onkeydown="if(event.key==='Enter'){addIcpTag('emp-ranges',this.value);this.value=''}">
+        </div>
+        <div class="icp-field" style="margin-top:10px">
+          <label style="font-size:11px;color:#94a3b8;margin-bottom:4px;display:block">Seniorities</label>
+          <div id="icp-seniorities" class="tag-container"></div>
+          <input id="icp-seniorities-input" class="tag-input" placeholder="e.g. c_suite" style="display:none" onkeydown="if(event.key==='Enter'){addIcpTag('seniorities',this.value);this.value=''}">
+        </div>
+      </div>
+      <div id="icp-actions" style="display:none;margin-top:14px;display:flex;gap:8px">
+        <button onclick="saveIcpOnly()" class="pill" style="flex:1;border-color:rgba(59,130,246,0.3);color:#60a5fa;background:rgba(59,130,246,0.08);padding:8px;font-size:12px">💾 Save Only</button>
+        <button onclick="rerunApollo()" class="pill" style="flex:1;border-color:rgba(34,197,94,0.3);color:#4ade80;background:rgba(34,197,94,0.08);padding:8px;font-size:12px">🔄 Re-run Apollo</button>
+      </div>
+      <div id="icp-status" style="display:none;font-size:12px;margin-top:8px;color:#a1a1aa"></div>
     </div>
 
     <!-- Phase 3: Create Job CTA (shown only for approved BEC calls) -->
@@ -503,6 +551,21 @@ function openDrawer(id) {
     intelWrap.style.display = 'none';
   }
 
+  // ICP Filters panel — show if call has extracted_data with icp
+  var icpPanel = document.getElementById('d-icp-panel');
+  var ed = c.extracted_data;
+  if (typeof ed === 'string') { try { ed = JSON.parse(ed); } catch(e) { ed = null; } }
+  if (icpPanel && ed && ed.icp) {
+    icpPanel.style.display = 'block';
+    icpEditMode = false;
+    currentIcp = JSON.parse(JSON.stringify(ed.icp));
+    renderIcpTags();
+    document.getElementById('icp-actions').style.display = 'none';
+    document.getElementById('icp-status').style.display = 'none';
+  } else if (icpPanel) {
+    icpPanel.style.display = 'none';
+  }
+
   document.getElementById('drawer-overlay').classList.add('open');
 }
 
@@ -649,6 +712,107 @@ function pollBell() {
 }
 pollBell();
 setInterval(pollBell, 30000);
+// ── ICP Filters Panel Logic ──────────────────────────────────────────────────
+var icpEditMode = false;
+var currentIcp = {};
+var ICP_MAP = {
+  'titles': 'apollo_titles',
+  'industries': 'apollo_industries',
+  'geography': 'apollo_geography',
+  'emp-ranges': 'apollo_employee_ranges',
+  'seniorities': 'person_seniorities'
+};
+
+function renderIcpTags() {
+  var fields = ['titles', 'industries', 'geography', 'emp-ranges', 'seniorities'];
+  fields.forEach(function(f) {
+    var container = document.getElementById('icp-' + f);
+    var key = ICP_MAP[f];
+    var vals = currentIcp[key] || [];
+    container.innerHTML = vals.map(function(v) {
+      return '<span class="tag-item' + (icpEditMode ? ' editable' : '') + '">' + esc(v) + '<span class="tag-remove" onclick="removeIcpTag(\'' + f + '\',\'' + esc(v).replace(/'/g, "\\'") + '\')">&times;</span></span>';
+    }).join('');
+    if (!vals.length) container.innerHTML = '<span style="font-size:11px;color:#3f3f46">(none)</span>';
+    var input = document.getElementById('icp-' + f + '-input');
+    if (input) input.style.display = icpEditMode ? 'block' : 'none';
+  });
+}
+
+function toggleIcpEdit() {
+  icpEditMode = !icpEditMode;
+  document.getElementById('icp-edit-btn').textContent = icpEditMode ? 'Done' : 'Edit';
+  document.getElementById('icp-actions').style.display = icpEditMode ? 'flex' : 'none';
+  renderIcpTags();
+}
+
+function addIcpTag(field, val) {
+  val = val.trim();
+  if (!val) return;
+  var key = ICP_MAP[field];
+  if (!currentIcp[key]) currentIcp[key] = [];
+  if (currentIcp[key].indexOf(val) === -1) currentIcp[key].push(val);
+  renderIcpTags();
+}
+
+function removeIcpTag(field, val) {
+  var key = ICP_MAP[field];
+  if (!currentIcp[key]) return;
+  currentIcp[key] = currentIcp[key].filter(function(v) { return v !== val; });
+  renderIcpTags();
+}
+
+function getJobIdForCall() {
+  // Try to find a job associated with this call
+  var c = ALL_CALLS.find(function(x) { return x.id === openCallId; });
+  if (!c) return null;
+  return c.job_id || null;
+}
+
+function saveIcpOnly() {
+  var jobId = getJobIdForCall();
+  if (!jobId) { showIcpStatus('⚠️ No job found for this call — create a job first', '#fbbf24'); return; }
+  showIcpStatus('Saving filters...', '#a1a1aa');
+  fetch('/api/jobs/' + jobId + '/icp', {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(currentIcp)
+  }).then(function(r) { return r.json(); })
+    .then(function(d) {
+      if (d.ok) showIcpStatus('✓ Filters saved', '#4ade80');
+      else showIcpStatus('Error: ' + (d.error || 'unknown'), '#f87171');
+    })
+    .catch(function(e) { showIcpStatus('Error: ' + e.message, '#f87171'); });
+}
+
+function rerunApollo() {
+  var jobId = getJobIdForCall();
+  if (!jobId) { showIcpStatus('⚠️ No job found for this call — create a job first', '#fbbf24'); return; }
+  showIcpStatus('Saving & starting Apollo search...', '#60a5fa');
+  // First save, then re-run
+  fetch('/api/jobs/' + jobId + '/icp', {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(currentIcp)
+  }).then(function(r) { return r.json(); })
+    .then(function(d) {
+      if (!d.ok) { showIcpStatus('Save failed: ' + (d.error || 'unknown'), '#f87171'); return; }
+      return fetch('/api/jobs/' + jobId + '/rerun-apollo', { method: 'POST' });
+    })
+    .then(function(r) { if (r) return r.json(); })
+    .then(function(d) {
+      if (d && d.ok) showIcpStatus('🔄 Apollo search running — check job status in a few minutes', '#4ade80');
+      else if (d) showIcpStatus('Error: ' + (d.error || 'unknown'), '#f87171');
+    })
+    .catch(function(e) { showIcpStatus('Error: ' + e.message, '#f87171'); });
+}
+
+function showIcpStatus(msg, color) {
+  var el = document.getElementById('icp-status');
+  el.textContent = msg;
+  el.style.color = color || '#a1a1aa';
+  el.style.display = 'block';
+}
+
 </script>
 </body>
 </html>
