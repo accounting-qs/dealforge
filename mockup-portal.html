@@ -60,6 +60,25 @@ body { background: #0d0d12; font-family: -apple-system, BlinkMacSystemFont, 'Int
 .filter-group-label { font-size: 10px; font-weight: 600; letter-spacing: 0.07em; text-transform: uppercase; color: #3f3f46; margin-right: 2px; }
 .filter-tag { font-size: 11px; font-weight: 500; color: #a1a1aa; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.07); border-radius: 6px; padding: 3px 9px; }
 .filter-sep { color: #3f3f46; font-size: 12px; }
+
+/* Editable filter mode */
+.filter-edit-btn { font-size: 10px; font-weight: 600; color: #71717a; background: none; border: 1px solid rgba(255,255,255,0.08); border-radius: 6px; padding: 3px 10px; cursor: pointer; font-family: inherit; transition: all 100ms; margin-left: auto; }
+.filter-edit-btn:hover { border-color: rgba(245,158,11,0.4); color: #fbbf24; }
+.filter-edit-btn.active { background: rgba(245,158,11,0.12); border-color: rgba(245,158,11,0.35); color: #fbbf24; }
+.filter-tag.editable { cursor: default; padding-right: 4px; }
+.filter-tag .ft-remove { display: none; cursor: pointer; margin-left: 5px; color: #ef4444; font-size: 13px; font-weight: 700; line-height: 1; }
+.filter-tag.editable .ft-remove { display: inline; }
+.filter-tag .ft-remove:hover { color: #fca5a5; }
+.filter-add-input { display: none; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.1); border-radius: 6px; padding: 3px 8px; font-size: 11px; color: #d1d5db; outline: none; width: 130px; font-family: inherit; }
+.filter-add-input:focus { border-color: rgba(245,158,11,0.4); }
+.filter-actions { display: none; gap: 8px; align-items: center; margin-top: 10px; }
+.filter-actions.show { display: flex; }
+.filter-action-btn { font-size: 11px; font-weight: 600; padding: 6px 14px; border-radius: 8px; cursor: pointer; border: 1px solid; font-family: inherit; transition: all 100ms; }
+.filter-action-save { background: rgba(245,158,11,0.12); border-color: rgba(245,158,11,0.35); color: #fbbf24; }
+.filter-action-save:hover { background: rgba(245,158,11,0.22); }
+.filter-action-rerun { background: rgba(59,130,246,0.12); border-color: rgba(59,130,246,0.25); color: #93c5fd; }
+.filter-action-rerun:hover { background: rgba(59,130,246,0.22); }
+.filter-status { font-size: 11px; margin-left: 8px; }
 .lead-diag { margin-top: 14px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; padding: 14px 16px; }
 .lead-diag-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
 .lead-diag-title { font-size: 12px; font-weight: 700; color: #e4e4e7; }
@@ -732,9 +751,17 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
         </div>
       </div>
 
-      <div style="font-size:10px;font-weight:600;letter-spacing:0.07em;text-transform:uppercase;color:#3f3f46;margin-bottom:10px;">ICP Parameters Used</div>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+        <div style="font-size:10px;font-weight:600;letter-spacing:0.07em;text-transform:uppercase;color:#3f3f46;">ICP Parameters Used</div>
+        <button class="filter-edit-btn" id="filter-edit-btn" onclick="toggleFilterEdit()" style="display:none;">✏️ Edit Filters</button>
+      </div>
       <div class="tam-filters-row">
         <span class="filter-tag" style="color:#52525b;background:none;border:none;">Loading ICP parameters...</span>
+      </div>
+      <div class="filter-actions" id="filter-actions">
+        <button class="filter-action-btn filter-action-save" onclick="saveFiltersOnly()">💾 Save Filters</button>
+        <button class="filter-action-btn filter-action-rerun" onclick="rerunApolloSearch()">🔄 Re-run Apollo Search</button>
+        <span class="filter-status" id="filter-status"></span>
       </div>
       <div id="tam-kpi-line" style="display:none;font-size:12px;color:#52525b;margin-top:10px;line-height:1.5;"></div>
       <div id="lead-diagnostics-panel" class="lead-diag" style="display:none;"></div>
@@ -2750,37 +2777,25 @@ function runPersonalization(session) {
     const displaySize = icp.company_size || null;
 
     if (icpFiltersRow) {
-      if (displayTitles || displayIndustries || displaySize || displayGeos) {
-        function makeFilterTags(arr) {
-          return arr.map(function(s) { return '<span class="filter-tag">' + s + '</span>'; }).join('');
-        }
+      // Store ICP data globally for filter editing
+      window._icpEditData = {
+        apollo_titles: displayTitles ? displayTitles.slice() : [],
+        apollo_industries: displayIndustries ? displayIndustries.slice() : [],
+        apollo_geography: displayGeos ? displayGeos.slice() : [],
+        apollo_employee_ranges: (icp.apollo_employee_ranges || []).slice(),
+        person_seniorities: (icp.person_seniorities || []).slice(),
+        company_size: displaySize || ''
+      };
+      window._filterEditMode = false;
 
-        let filtersHTML = '';
-        if (displayTitles) {
-          filtersHTML += '<span class="filter-group-label">Titles</span>';
-          filtersHTML += makeFilterTags(displayTitles);
-          filtersHTML += '<span class="filter-sep">&middot;</span>';
+      if (displayTitles || displayIndustries || displaySize || displayGeos) {
+        renderFilterTags();
+        // Show edit button if we have a job ID
+        var fEditBtn = document.getElementById('filter-edit-btn');
+        if (fEditBtn && new URLSearchParams(window.location.search).get('job')) {
+          fEditBtn.style.display = 'inline-flex';
         }
-        if (displaySize) {
-          filtersHTML += '<span class="filter-group-label">Company Size</span>';
-          filtersHTML += '<span class="filter-tag">' + displaySize + '</span>';
-          filtersHTML += '<span class="filter-sep">&middot;</span>';
-        }
-        if (displayIndustries) {
-          filtersHTML += '<span class="filter-group-label">Industries</span>';
-          filtersHTML += makeFilterTags(displayIndustries);
-          filtersHTML += '<span class="filter-sep">&middot;</span>';
-        }
-        if (displayGeos) {
-          filtersHTML += '<span class="filter-group-label">Geographies</span>';
-          filtersHTML += makeFilterTags(displayGeos);
-        } else {
-          // strip trailing separator
-          filtersHTML = filtersHTML.replace(/<span class="filter-sep">&middot;<\/span>$/, '');
-        }
-        icpFiltersRow.innerHTML = filtersHTML;
       } else {
-        // No ICP data at all — clear the loading placeholder so it doesn't stay forever
         icpFiltersRow.innerHTML = '<span class="filter-tag" style="color:#52525b;background:none;border:none;">ICP parameters unavailable</span>';
       }
     }
@@ -2966,6 +2981,159 @@ function runPersonalization(session) {
     applyProspectBranding(typeof SESSION !== "undefined" ? SESSION.brand : null);
   }
 }
+// ── Editable ICP Filter Tags ──────────────────────────────────────────────────
+function escHtml(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+
+function renderFilterTags() {
+  var row = document.querySelector('.tam-filters-row');
+  if (!row || !window._icpEditData) return;
+  var d = window._icpEditData;
+  var editMode = window._filterEditMode;
+  var editClass = editMode ? ' editable' : '';
+
+  function makeTag(val, group) {
+    var removeBtn = '<span class="ft-remove" onclick="removeFilter(\'' + escHtml(group) + '\',\'' + escHtml(val).replace(/'/g,"&#39;") + '\')">&times;</span>';
+    return '<span class="filter-tag' + editClass + '">' + escHtml(val) + removeBtn + '</span>';
+  }
+  function makeAddInput(group, placeholder) {
+    if (!editMode) return '';
+    return '<input class="filter-add-input" style="display:inline-block" placeholder="+ ' + placeholder + '" onkeydown="if(event.key===\'Enter\'){addFilter(\'' + group + '\',this.value);this.value=\'\'}">';
+  }
+
+  var html = '';
+  // Titles
+  if (d.apollo_titles && d.apollo_titles.length) {
+    html += '<span class="filter-group-label">Titles</span>';
+    html += d.apollo_titles.map(function(v){ return makeTag(v, 'apollo_titles'); }).join('');
+    html += makeAddInput('apollo_titles', 'Add title…');
+    html += '<span class="filter-sep">&middot;</span>';
+  } else if (editMode) {
+    html += '<span class="filter-group-label">Titles</span>';
+    html += makeAddInput('apollo_titles', 'Add title…');
+    html += '<span class="filter-sep">&middot;</span>';
+  }
+  // Company Size
+  if (d.company_size) {
+    html += '<span class="filter-group-label">Company Size</span>';
+    html += '<span class="filter-tag">' + escHtml(d.company_size) + '</span>';
+    html += '<span class="filter-sep">&middot;</span>';
+  }
+  // Employee Ranges
+  if (d.apollo_employee_ranges && d.apollo_employee_ranges.length) {
+    html += '<span class="filter-group-label">Employee Ranges</span>';
+    html += d.apollo_employee_ranges.map(function(v){ return makeTag(v, 'apollo_employee_ranges'); }).join('');
+    html += makeAddInput('apollo_employee_ranges', 'e.g. 11,50');
+    html += '<span class="filter-sep">&middot;</span>';
+  }
+  // Industries
+  if (d.apollo_industries && d.apollo_industries.length) {
+    html += '<span class="filter-group-label">Industries</span>';
+    html += d.apollo_industries.map(function(v){ return makeTag(v, 'apollo_industries'); }).join('');
+    html += makeAddInput('apollo_industries', 'Add industry…');
+    html += '<span class="filter-sep">&middot;</span>';
+  } else if (editMode) {
+    html += '<span class="filter-group-label">Industries</span>';
+    html += makeAddInput('apollo_industries', 'Add industry…');
+    html += '<span class="filter-sep">&middot;</span>';
+  }
+  // Geographies
+  if (d.apollo_geography && d.apollo_geography.length) {
+    html += '<span class="filter-group-label">Geographies</span>';
+    html += d.apollo_geography.map(function(v){ return makeTag(v, 'apollo_geography'); }).join('');
+    html += makeAddInput('apollo_geography', 'Add location…');
+  } else if (editMode) {
+    html += '<span class="filter-group-label">Geographies</span>';
+    html += makeAddInput('apollo_geography', 'Add location…');
+  } else {
+    html = html.replace(/<span class="filter-sep">&middot;<\/span>$/, '');
+  }
+  // Seniorities
+  if (d.person_seniorities && d.person_seniorities.length) {
+    html += '<span class="filter-sep">&middot;</span>';
+    html += '<span class="filter-group-label">Seniorities</span>';
+    html += d.person_seniorities.map(function(v){ return makeTag(v, 'person_seniorities'); }).join('');
+    html += makeAddInput('person_seniorities', 'Add seniority…');
+  } else if (editMode) {
+    html += '<span class="filter-sep">&middot;</span>';
+    html += '<span class="filter-group-label">Seniorities</span>';
+    html += makeAddInput('person_seniorities', 'e.g. director');
+  }
+
+  row.innerHTML = html;
+}
+
+function toggleFilterEdit() {
+  window._filterEditMode = !window._filterEditMode;
+  var btn = document.getElementById('filter-edit-btn');
+  if (btn) {
+    btn.textContent = window._filterEditMode ? '✓ Done Editing' : '✏️ Edit Filters';
+    btn.classList.toggle('active', window._filterEditMode);
+  }
+  document.getElementById('filter-actions').classList.toggle('show', window._filterEditMode);
+  document.getElementById('filter-status').textContent = '';
+  renderFilterTags();
+}
+
+function removeFilter(group, val) {
+  if (!window._icpEditData[group]) return;
+  window._icpEditData[group] = window._icpEditData[group].filter(function(v){ return v !== val; });
+  renderFilterTags();
+}
+
+function addFilter(group, val) {
+  val = (val || '').trim();
+  if (!val) return;
+  if (!window._icpEditData[group]) window._icpEditData[group] = [];
+  if (window._icpEditData[group].indexOf(val) === -1) window._icpEditData[group].push(val);
+  renderFilterTags();
+}
+
+function _getPortalJobId() {
+  return new URLSearchParams(window.location.search).get('job');
+}
+
+function _showFilterStatus(msg, color) {
+  var el = document.getElementById('filter-status');
+  if (el) { el.textContent = msg; el.style.color = color || '#a1a1aa'; }
+}
+
+function saveFiltersOnly() {
+  var jobId = _getPortalJobId();
+  if (!jobId) { _showFilterStatus('⚠️ No job ID in URL', '#fbbf24'); return; }
+  _showFilterStatus('Saving…', '#a1a1aa');
+  fetch('/api/jobs/' + encodeURIComponent(jobId) + '/icp', {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(window._icpEditData)
+  }).then(function(r){ return r.json(); })
+    .then(function(d){
+      if (d.ok) _showFilterStatus('✓ Filters saved', '#4ade80');
+      else _showFilterStatus('Error: ' + (d.error || 'unknown'), '#f87171');
+    })
+    .catch(function(e){ _showFilterStatus('Error: ' + e.message, '#f87171'); });
+}
+
+function rerunApolloSearch() {
+  var jobId = _getPortalJobId();
+  if (!jobId) { _showFilterStatus('⚠️ No job ID in URL', '#fbbf24'); return; }
+  _showFilterStatus('Saving & starting Apollo search…', '#60a5fa');
+  fetch('/api/jobs/' + encodeURIComponent(jobId) + '/icp', {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(window._icpEditData)
+  }).then(function(r){ return r.json(); })
+    .then(function(d){
+      if (!d.ok) { _showFilterStatus('Save failed: ' + (d.error || 'unknown'), '#f87171'); return; }
+      return fetch('/api/jobs/' + encodeURIComponent(jobId) + '/rerun-apollo', { method: 'POST' });
+    })
+    .then(function(r){ if (r) return r.json(); })
+    .then(function(d){
+      if (d && d.ok) _showFilterStatus('🔄 Apollo search running — refresh in a few minutes to see new leads', '#4ade80');
+      else if (d) _showFilterStatus('Error: ' + (d.error || 'unknown'), '#f87171');
+    })
+    .catch(function(e){ _showFilterStatus('Error: ' + e.message, '#f87171'); });
+}
+
 </script>
 </body>
 </html>
