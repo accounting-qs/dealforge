@@ -131,6 +131,32 @@ option{background:#111116;color:#e4e4e7}
 .job-action-btn.primary{border-color:rgba(139,92,246,0.3);color:#a78bfa}
 .job-action-btn.primary:hover{background:rgba(139,92,246,0.1)}
 .job-empty{font-size:12px;color:#52525b;padding:8px 0}
+
+/* ═══ Brief Review Modal ═══ */
+#brief-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);backdrop-filter:blur(6px);z-index:500;align-items:center;justify-content:center}
+#brief-overlay.open{display:flex}
+#brief-modal{background:#111116;border:1px solid rgba(255,255,255,0.1);border-radius:16px;padding:28px 32px;width:780px;max-width:95vw;max-height:90vh;overflow-y:auto}
+.brief-section-label{font-size:10px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:#3f3f46;margin:18px 0 8px}
+.brief-section-label:first-child{margin-top:0}
+.brief-grid{display:grid;gap:10px}
+.brief-grid-2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.brief-grid-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}
+.brief-label{font-size:11px;font-weight:600;letter-spacing:0.05em;text-transform:uppercase;color:#52525b;margin-bottom:4px}
+.brief-input{width:100%;background:rgba(10,10,15,0.7);border:1px solid rgba(255,255,255,0.1);border-radius:8px;padding:8px 12px;font-size:13px;color:#e4e4e7;outline:none;font-family:inherit;resize:vertical}
+.brief-input:focus{border-color:rgba(139,92,246,0.5)}
+.brief-input::placeholder{color:#3f3f46}
+.brief-full{grid-column:1/-1}
+.brief-contact-card{display:flex;align-items:center;gap:14px;padding:12px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.07);border-radius:10px}
+.brief-avatar{width:40px;height:40px;border-radius:50%;background:linear-gradient(135deg,#8b5cf6,#6d28d9);display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:700;color:#fff;flex-shrink:0}
+.brief-transcript-ok{display:flex;align-items:flex-start;gap:10px;padding:10px;background:rgba(34,197,94,0.06);border:1px solid rgba(34,197,94,0.2);border-radius:8px;font-size:13px;color:#4ade80}
+.brief-transcript-missing{display:flex;align-items:flex-start;gap:10px;padding:10px;background:rgba(245,158,11,0.06);border:1px solid rgba(245,158,11,0.18);border-radius:8px;font-size:13px;color:#fcd34d}
+.brief-gen-btn{width:100%;padding:11px 0;border-radius:10px;border:none;font-size:14px;font-weight:600;cursor:pointer;font-family:inherit;background:linear-gradient(135deg,#7c3aed,#6d28d9);color:#fff;transition:opacity 150ms}
+.brief-gen-btn:hover{opacity:0.92}
+.brief-gen-btn:disabled{opacity:0.45;cursor:not-allowed}
+.brief-back-btn{background:none;border:1px solid rgba(255,255,255,0.1);color:#71717a;font-size:12px;padding:5px 12px;border-radius:6px;cursor:pointer;font-family:inherit}
+.brief-back-btn:hover{border-color:rgba(255,255,255,0.2);color:#e4e4e7}
+@keyframes spin{to{transform:rotate(360deg)}}
+.spinner{animation:spin 1s linear infinite}
 </style>
 </head>
 <body>
@@ -330,6 +356,170 @@ option{background:#111116;color:#e4e4e7}
         📂 View Intelligence File
       </a>
     </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<!-- BRIEF REVIEW MODAL (Onboarding Flow from Dashboard)                    -->
+<!-- ═══════════════════════════════════════════════════════════════════════ -->
+<div id="brief-overlay" onclick="if(event.target===this)briefClose()">
+  <div id="brief-modal">
+
+    <!-- STEP 1: Contact + Transcript + Loading -->
+    <div id="brief-step1">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:22px">
+        <div>
+          <div style="font-size:16px;font-weight:700;color:#ffffff;letter-spacing:-0.01em">New Job</div>
+          <div style="font-size:12px;color:#52525b;margin-top:2px" id="brief-subtitle">Extracting brief from transcript & website…</div>
+        </div>
+        <button onclick="briefClose()" style="width:28px;height:28px;border-radius:7px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.08);color:#71717a;font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center;line-height:1">×</button>
+      </div>
+
+      <!-- Loading spinner -->
+      <div id="brief-loading" style="text-align:center;padding:32px 0">
+        <svg class="spinner" style="width:24px;height:24px;color:#8b5cf6;display:inline-block" fill="none" viewBox="0 0 24 24">
+          <circle style="opacity:0.2" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3"></circle>
+          <path style="opacity:0.9" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+        </svg>
+        <div style="font-size:13px;color:#52525b;margin-top:10px">Searching GHL & Fireflies, then extracting brief…</div>
+      </div>
+
+      <!-- Contact card (shown after prefetch) -->
+      <div id="brief-contact" style="display:none">
+        <div class="brief-contact-card">
+          <div class="brief-avatar" id="brief-avatar"></div>
+          <div style="flex:1;min-width:0">
+            <div id="brief-name" style="font-size:14px;font-weight:600;color:#ffffff"></div>
+            <div id="brief-role-company" style="font-size:12px;color:#71717a;margin-top:2px"></div>
+            <div id="brief-website-display" style="font-size:11px;color:#52525b;margin-top:2px"></div>
+          </div>
+          <span style="font-size:10px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:#22c55e;background:rgba(34,197,94,0.1);border:1px solid rgba(34,197,94,0.2);border-radius:5px;padding:3px 8px">In GHL</span>
+        </div>
+
+        <!-- Transcript status -->
+        <div id="brief-transcript-ok" class="brief-transcript-ok" style="display:none;margin-top:12px">
+          <svg style="width:15px;height:15px;color:#22c55e;flex-shrink:0;margin-top:1px" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+          <div>
+            <div id="brief-transcript-title" style="font-size:13px;font-weight:500;color:#e4e4e7"></div>
+            <div id="brief-transcript-date" style="font-size:11px;color:#52525b;margin-top:2px"></div>
+          </div>
+        </div>
+        <div id="brief-transcript-miss" class="brief-transcript-missing" style="display:none;margin-top:12px">
+          <svg style="width:15px;height:15px;color:#f59e0b;flex-shrink:0;margin-top:1px" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01M12 2a10 10 0 100 20A10 10 0 0012 2z"/></svg>
+          <div>
+            <div style="font-size:13px;font-weight:500;color:#fcd34d">No transcript bound</div>
+            <div style="font-size:11px;color:#71717a;margin-top:2px">No Fireflies transcript found. Assets can still be generated without a Call 1 summary.</div>
+          </div>
+        </div>
+
+        <!-- Website URL input -->
+        <div style="margin-top:16px">
+          <div class="brief-label">Website URL <span style="font-weight:400;text-transform:none;letter-spacing:0;color:#3f3f46">(recommended — used for branding)</span></div>
+          <input id="brief-website-url" type="url" class="brief-input" placeholder="https://company.com">
+        </div>
+
+        <!-- Continue button -->
+        <button onclick="briefShowStep2()" style="width:100%;margin-top:18px;padding:11px 0;border-radius:10px;border:none;font-size:14px;font-weight:600;cursor:pointer;font-family:inherit;background:linear-gradient(135deg,#3f3f46,#27272a);border:1px solid rgba(255,255,255,0.1);color:#e4e4e7;transition:background 100ms">
+          Continue to Brief Review →
+        </button>
+      </div>
+
+      <!-- Error state -->
+      <div id="brief-error" style="display:none;padding:16px;background:rgba(239,68,68,0.06);border:1px solid rgba(239,68,68,0.2);border-radius:8px">
+        <div style="font-size:13px;color:#fca5a5;font-weight:500">No contact found</div>
+        <div style="font-size:12px;color:#71717a;margin-top:3px">No GHL contact matched that email. Double-check and try again.</div>
+      </div>
+    </div>
+
+    <!-- STEP 2: Brief Review (editable fields) -->
+    <div id="brief-step2" style="display:none">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:24px">
+        <button onclick="briefBackToStep1()" class="brief-back-btn">← Back</button>
+        <div>
+          <div style="font-size:15px;font-weight:600;color:#ffffff">Prospect Brief</div>
+          <div style="font-size:11px;color:#52525b;margin-top:1px">Review and correct — this drives every asset</div>
+        </div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:32px;align-items:start">
+        <!-- LEFT COLUMN -->
+        <div>
+          <div class="brief-section-label" style="margin-top:0">Prospect</div>
+          <div class="brief-grid-2">
+            <div><div class="brief-label">Company Name</div><input id="bf-company" class="brief-input" placeholder="Acme Corp"></div>
+            <div><div class="brief-label">Contact Name</div><input id="bf-contact-name" class="brief-input" placeholder="Jane Smith"></div>
+            <div class="brief-full"><div class="brief-label">Contact Title</div><input id="bf-contact-title" class="brief-input" placeholder="Founder & CEO"></div>
+          </div>
+
+          <div class="brief-section-label">ICP — Who They Sell To</div>
+          <div class="brief-grid">
+            <div><div class="brief-label">Target Titles <span style="color:#3f3f46;font-weight:400">(comma separated)</span></div><input id="bf-apollo-titles" class="brief-input" placeholder="CEO, Director of Strategy, Head of Operations"></div>
+            <div class="brief-grid-2">
+              <div><div class="brief-label">Industries <span style="color:#3f3f46;font-weight:400">(comma separated)</span></div><input id="bf-industry" class="brief-input" placeholder="financial services, consulting"></div>
+              <div><div class="brief-label">Geography</div><input id="bf-geography" class="brief-input" placeholder="United States, United Kingdom"></div>
+            </div>
+            <div><div class="brief-label">Company Size (target clients)</div><input id="bf-company-size" class="brief-input" placeholder="50-500 employees"></div>
+          </div>
+
+          <div class="brief-section-label">Business Metrics</div>
+          <div class="brief-grid-3">
+            <div><div class="brief-label">LTV / Deal Value</div><input id="bf-ltv" class="brief-input" placeholder="—"></div>
+            <div><div class="brief-label">Close Rate</div><input id="bf-close-rate" class="brief-input" placeholder="—"></div>
+            <div><div class="brief-label">Show Rate</div><input id="bf-show-rate" class="brief-input" placeholder="—"></div>
+          </div>
+
+          <div class="brief-section-label">Their Situation</div>
+          <div class="brief-grid">
+            <div><div class="brief-label">How They Currently Get Clients</div><input id="bf-lead-gen" class="brief-input" placeholder="100% referrals, cold email…"></div>
+            <div class="brief-grid-2">
+              <div><div class="brief-label">Current Revenue</div><input id="bf-revenue" class="brief-input" placeholder="$2M ARR (if mentioned)"></div>
+              <div><div class="brief-label">Team Size</div><input id="bf-team-size" class="brief-input" placeholder="12 people"></div>
+            </div>
+            <div><div class="brief-label">Biggest Challenge</div><textarea id="bf-challenge" class="brief-input" rows="2" placeholder="Their core constraint…"></textarea></div>
+          </div>
+        </div>
+
+        <!-- RIGHT COLUMN -->
+        <div>
+          <div class="brief-section-label" style="margin-top:0">Webinar Angle</div>
+          <div class="brief-grid">
+            <div><div class="brief-label">Client Pain (paraphrased)</div><textarea id="bf-pain" class="brief-input" rows="3" placeholder="Core problem their clients face…"></textarea></div>
+            <div><div class="brief-label">Result / Transformation</div><textarea id="bf-result" class="brief-input" rows="2" placeholder="The transformation they deliver…"></textarea></div>
+            <div class="brief-grid-2">
+              <div><div class="brief-label">Methodology Name</div><input id="bf-methodology" class="brief-input" placeholder="The Revenue Engine (optional)"></div>
+              <div><div class="brief-label">Best Proof Number</div><input id="bf-proof" class="brief-input" placeholder="$1.2M → $2.4M in 6 months"></div>
+            </div>
+          </div>
+
+          <div class="brief-section-label">Verbatim Quotes <span style="color:#3f3f46;font-weight:400;text-transform:none;letter-spacing:0">(their exact words)</span></div>
+          <div class="brief-grid">
+            <div><div class="brief-label">Pain Quote</div><textarea id="bf-pain-quote" class="brief-input" rows="2" placeholder='"Their exact words…"'></textarea></div>
+            <div><div class="brief-label">Result Quote</div><textarea id="bf-result-quote" class="brief-input" rows="2" placeholder='"Their exact words…"'></textarea></div>
+            <div><div class="brief-label">Goal Quote</div><textarea id="bf-goal-quote" class="brief-input" rows="2" placeholder='"Their exact words…"'></textarea></div>
+          </div>
+
+          <div class="brief-section-label">Call Context</div>
+          <div class="brief-grid">
+            <div><div class="brief-label">Their Goal (next 6-12 months)</div><textarea id="bf-goals" class="brief-input" rows="2" placeholder="Hit $3M ARR and reduce dependence on referrals…"></textarea></div>
+            <div><div class="brief-label">Why They're Exploring This</div><input id="bf-why" class="brief-input" placeholder="Referrals drying up, need a scalable system…"></div>
+          </div>
+
+          <div class="brief-section-label">Webinar Title Candidates</div>
+          <div class="brief-grid">
+            <div><div class="brief-label">Title A</div><input id="bf-title-a" class="brief-input" placeholder="How [ICP] Break Through $Xm…"></div>
+            <div><div class="brief-label">Title B (optional)</div><input id="bf-title-b" class="brief-input" placeholder="The Webinar Funnel Replacing Referrals…"></div>
+          </div>
+        </div>
+      </div>
+
+      <div style="margin-top:20px">
+        <button id="brief-gen-btn" class="brief-gen-btn" onclick="briefConfirmAndCreate()">
+          Create Job & Generate Assets
+        </button>
+        <div id="brief-gen-error" style="display:none;color:#ef4444;font-size:12px;margin-top:8px;text-align:center"></div>
+      </div>
+    </div>
+
   </div>
 </div>
 
@@ -731,27 +921,255 @@ function createJobFromCall() {
   _createNewJob(email);
 }
 
-function _createNewJob(email) {
-  var statusEl = document.getElementById('d-job-status');
-  if (statusEl) { statusEl.textContent = '⏳ Creating job…'; statusEl.style.display = 'block'; statusEl.style.color = '#a1a1aa'; }
+// ═══ Brief Review Onboarding Flow ═════════════════════════════════════════════
+var _briefPrefetchResult = null;
+var _briefEmail = null;
 
-  fetch('/api/jobs', {
+function _createNewJob(email) {
+  _briefEmail = email;
+  _briefPrefetchResult = null;
+
+  // Reset modal state
+  document.getElementById('brief-loading').style.display = 'block';
+  document.getElementById('brief-contact').style.display = 'none';
+  document.getElementById('brief-error').style.display = 'none';
+  document.getElementById('brief-step1').style.display = 'block';
+  document.getElementById('brief-step2').style.display = 'none';
+  document.getElementById('brief-subtitle').textContent = 'Extracting brief from transcript & website…';
+
+  // Clear all brief fields
+  ['bf-company','bf-contact-name','bf-contact-title','bf-apollo-titles',
+   'bf-industry','bf-company-size','bf-geography','bf-ltv','bf-close-rate','bf-show-rate',
+   'bf-pain','bf-result','bf-methodology','bf-proof','bf-goals','bf-why',
+   'bf-title-a','bf-title-b','bf-lead-gen','bf-revenue','bf-team-size','bf-challenge',
+   'bf-pain-quote','bf-result-quote','bf-goal-quote'].forEach(function(id) {
+    var el = document.getElementById(id);
+    if (el) el.value = '';
+  });
+  document.getElementById('brief-website-url').value = '';
+
+  // Open modal
+  document.getElementById('brief-overlay').classList.add('open');
+
+  // Start prefetch
+  fetch('/api/prefetch', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ email: email })
   })
-    .then(function(r) { return r.json(); })
-    .then(function(data) {
-      if (data.error) throw new Error(data.error);
-      if (statusEl) statusEl.textContent = '✅ Job created — processing…';
-      showToast('New job created for ' + email);
-      // Refresh job list
-      if (_currentProspectEmail) loadProspectJobs(_currentProspectEmail);
-      setTimeout(function() { if (statusEl) statusEl.style.display = 'none'; }, 3000);
-    })
-    .catch(function(e) {
-      if (statusEl) { statusEl.textContent = '❌ ' + e.message; statusEl.style.color = '#f87171'; }
-    });
+  .then(function(r) { return r.json(); })
+  .then(function(data) {
+    document.getElementById('brief-loading').style.display = 'none';
+
+    if (data.error || !data.contact) {
+      document.getElementById('brief-error').style.display = 'block';
+      document.getElementById('brief-subtitle').textContent = 'Contact not found';
+      return;
+    }
+
+    _briefPrefetchResult = data;
+    var contact = data.contact;
+
+    // Populate contact card
+    var name = contact.name || contact.email || email;
+    var initials = name.split(' ').map(function(w){ return w[0] || ''; }).join('').toUpperCase().slice(0,2) || '?';
+    document.getElementById('brief-avatar').textContent = initials;
+    document.getElementById('brief-name').textContent = name;
+    var roleCompany = [contact.title, contact.company].filter(Boolean).join(' · ');
+    document.getElementById('brief-role-company').textContent = roleCompany || email;
+    var websiteDisplay = contact.website || contact.domain || '';
+    document.getElementById('brief-website-display').textContent = websiteDisplay;
+
+    // Pre-fill website URL
+    if (websiteDisplay && !document.getElementById('brief-website-url').value) {
+      var ws = websiteDisplay.startsWith('http') ? websiteDisplay : 'https://' + websiteDisplay;
+      document.getElementById('brief-website-url').value = ws;
+    }
+
+    // Transcript status
+    if (data.transcript_found) {
+      document.getElementById('brief-transcript-title').textContent = data.transcript_title || 'Call transcript found';
+      document.getElementById('brief-transcript-date').textContent = data.transcript_date || '';
+      document.getElementById('brief-transcript-ok').style.display = 'flex';
+      document.getElementById('brief-transcript-miss').style.display = 'none';
+    } else {
+      document.getElementById('brief-transcript-ok').style.display = 'none';
+      document.getElementById('brief-transcript-miss').style.display = 'flex';
+    }
+
+    document.getElementById('brief-subtitle').textContent = 'Review contact info and continue to brief';
+    document.getElementById('brief-contact').style.display = 'block';
+  })
+  .catch(function(err) {
+    document.getElementById('brief-loading').style.display = 'none';
+    document.getElementById('brief-error').style.display = 'block';
+    document.getElementById('brief-subtitle').textContent = 'Prefetch failed: ' + err.message;
+  });
+}
+
+function briefClose() {
+  document.getElementById('brief-overlay').classList.remove('open');
+}
+
+function briefBackToStep1() {
+  document.getElementById('brief-step2').style.display = 'none';
+  document.getElementById('brief-step1').style.display = 'block';
+}
+
+function briefShowStep2() {
+  // Populate brief fields from prefetch result
+  var brief = (_briefPrefetchResult && _briefPrefetchResult.brief) || {};
+  var prospect = brief.prospect || {};
+  var icp = brief.icp || {};
+  var metrics = brief.metrics || {};
+  var angle = brief.angle || {};
+  var context = brief.context || {};
+  var titles = brief.titles || {};
+  var verbatim = brief.verbatim || {};
+  var situation = brief.situation || {};
+
+  function setVal(id, val) {
+    var el = document.getElementById(id);
+    if (el && !el.value) el.value = val || '';
+  }
+
+  setVal('bf-company',       prospect.company);
+  setVal('bf-contact-name',  prospect.contact_name);
+  setVal('bf-contact-title', prospect.contact_title);
+  setVal('bf-apollo-titles', Array.isArray(icp.apollo_titles) ? icp.apollo_titles.join(', ') : (icp.apollo_titles || ''));
+  setVal('bf-industry', Array.isArray(icp.apollo_industries) && icp.apollo_industries.length
+    ? icp.apollo_industries.join(', ')
+    : (icp.industry || ''));
+  setVal('bf-company-size',  icp.company_size);
+  setVal('bf-geography', Array.isArray(icp.apollo_geography) && icp.apollo_geography.length
+    ? icp.apollo_geography.join(', ')
+    : (icp.geography || ''));
+  setVal('bf-ltv',           metrics.ltv);
+  setVal('bf-close-rate',    metrics.close_rate);
+  setVal('bf-show-rate',     metrics.show_rate);
+  setVal('bf-pain',          angle.pain);
+  setVal('bf-result',        angle.result);
+  setVal('bf-methodology',   angle.methodology);
+  setVal('bf-proof',         angle.proof);
+  setVal('bf-goals',         context.goals);
+  setVal('bf-why',           context.why_webinar);
+  setVal('bf-title-a',       titles.a);
+  setVal('bf-title-b',       titles.b);
+  setVal('bf-lead-gen',      situation.current_lead_gen);
+  setVal('bf-revenue',       situation.revenue_range);
+  setVal('bf-team-size',     situation.team_size);
+  setVal('bf-challenge',     situation.biggest_challenge);
+  setVal('bf-pain-quote',    verbatim.pain_quote);
+  setVal('bf-result-quote',  verbatim.result_quote);
+  setVal('bf-goal-quote',    verbatim.goal_quote);
+
+  // Transition
+  document.getElementById('brief-step1').style.display = 'none';
+  document.getElementById('brief-step2').style.display = 'block';
+
+  // Reset button
+  var btn = document.getElementById('brief-gen-btn');
+  if (btn) { btn.disabled = false; btn.textContent = 'Create Job & Generate Assets'; }
+  var genErr = document.getElementById('brief-gen-error');
+  if (genErr) genErr.style.display = 'none';
+}
+
+function briefConfirmAndCreate() {
+  var btn = document.getElementById('brief-gen-btn');
+  var email = _briefEmail;
+  if (!email) return;
+
+  function getVal(id) { var el = document.getElementById(id); return el && el.value.trim() ? el.value.trim() : null; }
+
+  var apolloTitlesRaw = getVal('bf-apollo-titles');
+  var apolloTitlesArr = apolloTitlesRaw
+    ? apolloTitlesRaw.split(',').map(function(t){ return t.trim(); }).filter(function(t){ return t.length > 0; })
+    : null;
+
+  var industryRaw = getVal('bf-industry');
+  var apolloIndustriesArr = industryRaw
+    ? industryRaw.split(',').map(function(s){ return s.trim(); }).filter(function(s){ return s.length > 0; })
+    : null;
+
+  var geoRaw = getVal('bf-geography');
+  var apolloGeoArr = geoRaw
+    ? geoRaw.split(',').map(function(s){ return s.trim(); }).filter(function(s){ return s.length > 0; })
+    : null;
+
+  var brief = {
+    prospect: {
+      company:       getVal('bf-company'),
+      contact_name:  getVal('bf-contact-name'),
+      contact_title: getVal('bf-contact-title')
+    },
+    icp: {
+      role:                  apolloTitlesArr ? apolloTitlesArr.join(', ') : null,
+      apollo_titles:         apolloTitlesArr,
+      apollo_industries:     apolloIndustriesArr,
+      industry:              apolloIndustriesArr ? apolloIndustriesArr[0] : null,
+      company_size:          getVal('bf-company-size'),
+      apollo_employee_ranges: (_briefPrefetchResult && _briefPrefetchResult.brief && _briefPrefetchResult.brief.icp)
+        ? (_briefPrefetchResult.brief.icp.apollo_employee_ranges || null) : null,
+      geography:             geoRaw,
+      apollo_geography:      apolloGeoArr,
+      person_seniorities:    (_briefPrefetchResult && _briefPrefetchResult.brief && _briefPrefetchResult.brief.icp)
+        ? (_briefPrefetchResult.brief.icp.person_seniorities || null) : null
+    },
+    metrics: {
+      ltv:        getVal('bf-ltv'),
+      close_rate: getVal('bf-close-rate'),
+      show_rate:  getVal('bf-show-rate')
+    },
+    angle: {
+      pain:        getVal('bf-pain'),
+      result:      getVal('bf-result'),
+      methodology: getVal('bf-methodology'),
+      proof:       getVal('bf-proof')
+    },
+    context: {
+      goals:       getVal('bf-goals'),
+      why_webinar: getVal('bf-why')
+    },
+    titles: {
+      a: getVal('bf-title-a'),
+      b: getVal('bf-title-b')
+    },
+    situation: {
+      current_lead_gen:  getVal('bf-lead-gen'),
+      revenue_range:     getVal('bf-revenue'),
+      team_size:         getVal('bf-team-size'),
+      biggest_challenge: getVal('bf-challenge')
+    },
+    verbatim: {
+      pain_quote:   getVal('bf-pain-quote'),
+      result_quote: getVal('bf-result-quote'),
+      goal_quote:   getVal('bf-goal-quote')
+    }
+  };
+
+  btn.disabled = true;
+  btn.innerHTML = '<span style="display:flex;align-items:center;justify-content:center;gap:8px"><svg class="spinner" style="width:14px;height:14px" fill="none" viewBox="0 0 24 24"><circle style="opacity:0.2" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3"></circle><path style="opacity:0.9" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg> Creating job…</span>';
+
+  var websiteUrl = (document.getElementById('brief-website-url').value || '').trim();
+
+  fetch('/api/jobs', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: email, websiteUrl: websiteUrl || undefined, brief: brief })
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(data) {
+    if (data.error) throw new Error(data.error);
+    briefClose();
+    showToast('✅ Job created for ' + email + ' — generating assets…');
+    if (_currentProspectEmail) loadProspectJobs(_currentProspectEmail);
+  })
+  .catch(function(e) {
+    btn.disabled = false;
+    btn.textContent = 'Create Job & Generate Assets';
+    var genErr = document.getElementById('brief-gen-error');
+    if (genErr) { genErr.textContent = e.message; genErr.style.display = 'block'; }
+  });
 }
 
 // ── Init ─────────────────────────────────────────────────────────────────────

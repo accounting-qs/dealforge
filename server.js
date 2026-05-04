@@ -933,7 +933,7 @@ Rules:
 
   try {
     const msg = await anthropic.messages.create({
-      model: 'claude-haiku-4-5-20251001', max_tokens: 2000, temperature: 0,
+      model: 'claude-sonnet-4-6', max_tokens: 2000, temperature: 0,
       system: systemPrompt,
       messages: [{ role: 'user', content: userMsg }]
     });
@@ -1069,7 +1069,7 @@ Return this exact JSON structure:
   try {
     console.log('[ICP Translator] Translating ICP for Apollo — titles:', rawTitles.length, ', industries:', rawIndustries.length);
     const msg = await anthropic.messages.create({
-      model: 'claude-haiku-4-5',
+      model: 'claude-sonnet-4-6',
       max_tokens: 600,
       messages: [{ role: 'user', content: prompt }]
     });
@@ -1486,7 +1486,7 @@ function calcRoiProjections(ltv, closeRate, showRate) {
 async function generateReminderEmails(title, hostName, resultDelivered, customerPain) {
   const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
   const msg = await anthropic.messages.create({
-    model: 'claude-haiku-4-5-20251001', max_tokens: 600, temperature: 0.7,
+    model: 'claude-sonnet-4-6', max_tokens: 600, temperature: 0.7,
     system: 'You are writing short reminder email previews for a webinar registration confirmation sequence. Return valid JSON only. No markdown.',
     messages: [{ role: 'user', content: `Generate 3 reminder email previews for this webinar:\n\nWebinar title: ${title}\nHost name: ${hostName}\nWhat attendees will learn: ${resultDelivered || 'practical strategies'}\nWho this is for: ${customerPain || 'business owners looking to grow'}\n\nReturn this exact JSON:\n{"emails":[{"timing":"1 week before","subject":"string — max 10 words","preview":"string — 2-3 sentences"},{"timing":"24 hours before","subject":"string — max 10 words","preview":"string — 2-3 sentences, create urgency"},{"timing":"1 hour before","subject":"string — max 10 words","preview":"string — 1-2 sentences, very punchy"}]}` }]
   });
@@ -1499,7 +1499,7 @@ async function generateReminderEmails(title, hostName, resultDelivered, customer
 async function generateChatMessages(title, icp, customerPain, resultDelivered, hostName) {
   const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
   const msg = await anthropic.messages.create({
-    model: 'claude-haiku-4-5-20251001', max_tokens: 800, temperature: 0.7,
+    model: 'claude-sonnet-4-6', max_tokens: 800, temperature: 0.7,
     system: 'You are generating realistic live chat messages for a webinar. Return valid JSON only. No markdown.',
     messages: [{ role: 'user', content: `Generate 18 live chat messages for this webinar:\n\nWebinar title: ${title}\nTarget audience role: ${icp?.role || 'business owners'}\nTarget audience industry: ${icp?.industry || 'B2B'}\nCore problem they face: ${customerPain || 'growing their business'}\nResult they want: ${resultDelivered || 'more revenue'}\n\nRequirements:\n- 14 attendee messages: realistic first names, short messages, mix of questions + reactions + struggles\n- 4 support team messages from "Support" or "Team ${hostName}": encourage booking a call\n- Messages should feel chronologically natural\n- Attendee questions should reference the webinar topic\n\nReturn:\n{"messages":[{"sender":"string","text":"string — max 15 words","is_team":boolean,"timestamp":"string e.g. 12:14 PM"}]}` }]
   });
@@ -1689,7 +1689,7 @@ async function handleProspectResearch(task, job) {
     if (headline) {
       const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
       const msg = await anthropic.messages.create({
-        model: 'claude-haiku-4-5-20251001', max_tokens: 300, temperature: 0,
+        model: 'claude-sonnet-4-6', max_tokens: 300, temperature: 0,
         system: 'You are writing a short professional bio for a webinar host. Write in third person. 2–3 sentences maximum. Confident and credible tone. Focus on their expertise and who they help. Do not mention the webinar.',
         messages: [{ role: 'user', content: `Write a short host bio from this LinkedIn data:\n\nName: ${fullName}\nHeadline: ${headline}\nSummary: ${summary}\n\nReturn only the bio text. No labels, no markdown.` }]
       });
