@@ -81,6 +81,25 @@ option{background:#111116;color:#e4e4e7}
 .stat-card{flex:1;min-width:120px;background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.06);border-radius:10px;padding:14px 16px}
 .stat-num{font-size:24px;font-weight:700;color:#fff;letter-spacing:-0.02em}
 .stat-lbl{font-size:11px;color:#52525b;margin-top:2px}
+
+/* Sync progress modal */
+.sync-modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);backdrop-filter:blur(6px);z-index:300;align-items:center;justify-content:center}
+.sync-modal-overlay.open{display:flex}
+.sync-modal{background:#111116;border:1px solid rgba(255,255,255,0.1);border-radius:16px;padding:32px 36px;width:420px;max-width:95vw}
+.sync-modal h3{font-size:16px;font-weight:700;color:#fff;margin:0 0 6px}
+.sync-modal-sub{font-size:12px;color:#52525b;margin-bottom:24px}
+.progress-bar-wrap{height:4px;background:rgba(255,255,255,0.06);border-radius:2px;overflow:hidden;margin-bottom:20px}
+.progress-bar-fill{height:100%;width:0%;border-radius:2px;background:linear-gradient(90deg,#7c3aed,#a78bfa);transition:width 600ms ease}
+.sync-steps{display:flex;flex-direction:column;gap:10px}
+.sync-step{display:flex;align-items:center;gap:10px;font-size:13px;color:#52525b;transition:color 200ms}
+.sync-step.active{color:#e4e4e7}
+.sync-step.done{color:#4ade80}
+.sync-step.error-step{color:#f87171}
+.step-icon{width:18px;height:18px;flex-shrink:0}
+
+/* Toast */
+.toast{position:fixed;bottom:28px;left:50%;transform:translateX(-50%) translateY(20px);background:#18181b;border:1px solid rgba(255,255,255,0.1);border-radius:10px;padding:12px 20px;font-size:13px;color:#e4e4e7;z-index:400;opacity:0;transition:all 300ms;white-space:nowrap;box-shadow:0 8px 32px rgba(0,0,0,0.5)}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
 </style>
 </head>
 <body>
@@ -138,9 +157,39 @@ option{background:#111116;color:#e4e4e7}
       <div>Date</div>
       <div>Status</div>
     </div>
-    <div id="call-rows"><div class="state-msg">Loading calls...</div></div>
+    <div id="call-rows"><div class="state-msg">Loading calls... <br><span style="font-size:11px;margin-top:8px;display:block">If this is your first time, click <strong style="color:#c4b5fd">Sync Fireflies</strong> above.</span></div></div>
   </div>
 </div>
+
+<!-- Sync Progress Modal -->
+<div class="sync-modal-overlay" id="sync-modal-overlay">
+  <div class="sync-modal">
+    <h3>Syncing Fireflies</h3>
+    <p class="sync-modal-sub">Pulling transcripts and computing Q-Scores...</p>
+    <div class="progress-bar-wrap"><div class="progress-bar-fill" id="sync-progress-bar"></div></div>
+    <div class="sync-steps">
+      <div class="sync-step" id="step-fetch">
+        <svg class="step-icon" id="icon-fetch" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke-width="2" stroke-dasharray="60" stroke-dashoffset="60" style="transition:stroke-dashoffset 1s"/></svg>
+        Fetching transcripts from Fireflies (page 1 &amp; 2)...
+      </div>
+      <div class="sync-step" id="step-score">
+        <svg class="step-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke-width="2" opacity="0.3"/></svg>
+        Computing Q-Scores &amp; classifying call types...
+      </div>
+      <div class="sync-step" id="step-upsert">
+        <svg class="step-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke-width="2" opacity="0.3"/></svg>
+        Saving to Call Library database...
+      </div>
+      <div class="sync-step" id="step-done" style="margin-top:4px">
+        <svg class="step-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke-width="2" opacity="0.3"/></svg>
+        <span id="step-done-text">Refreshing table...</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div class="toast" id="toast"></div>
 
 <!-- Drawer -->
 <div class="drawer-overlay" id="drawer-overlay" onclick="if(event.target===this)closeDrawer()">
@@ -278,26 +327,96 @@ function updateCallLocal(id, key, val) {
   if (c) c[key] = val;
 }
 
-// ── Sync ─────────────────────────────────────────────────────────────────────
+// ── Toast ────────────────────────────────────────────────────────────────────
+function showToast(msg, isError) {
+  var t = document.getElementById('toast');
+  t.textContent = msg;
+  t.style.borderColor = isError ? 'rgba(239,68,68,0.35)' : 'rgba(139,92,246,0.35)';
+  t.classList.add('show');
+  setTimeout(function(){ t.classList.remove('show'); }, 3500);
+}
+
+// ── Sync with progress modal ──────────────────────────────────────────────────
+function stepState(id, state) {
+  var el = document.getElementById(id);
+  if (!el) return;
+  el.classList.remove('active','done','error-step');
+  if (state) el.classList.add(state);
+  // swap icon
+  var icons = {
+    active: '<svg class="step-icon spin" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>',
+    done:   '<svg class="step-icon" fill="none" stroke="#4ade80" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>',
+    error:  '<svg class="step-icon" fill="none" stroke="#f87171" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>',
+    wait:   '<svg class="step-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke-width="2" opacity="0.3"/></svg>'
+  };
+  el.querySelector('.step-icon').outerHTML = icons[state === 'error-step' ? 'error' : (state || 'wait')];
+}
+
+function setProgress(pct) {
+  document.getElementById('sync-progress-bar').style.width = pct + '%';
+}
+
 function doSync() {
   var btn = document.getElementById('sync-btn');
   var icon = document.getElementById('sync-icon');
+  var overlay = document.getElementById('sync-modal-overlay');
+
+  // Reset modal
+  ['step-fetch','step-score','step-upsert','step-done'].forEach(function(s){ stepState(s, null); });
+  setProgress(0);
+  document.getElementById('step-done-text').textContent = 'Refreshing table...';
+  overlay.classList.add('open');
   btn.disabled = true;
   icon.classList.add('spin');
-  btn.childNodes[1].textContent = ' Syncing...';
+
+  // Step 1 — animate fetch (we can't stream, so simulate timing)
+  stepState('step-fetch','active'); setProgress(10);
+
+  var t1 = setTimeout(function(){ stepState('step-score','active'); setProgress(40); }, 1500);
+  var t2 = setTimeout(function(){ stepState('step-upsert','active'); setProgress(70); }, 3000);
+
   fetch('/api/calls/sync', {method:'POST'})
     .then(function(r){ return r.json(); })
     .then(function(d){
-      icon.classList.remove('spin');
-      btn.disabled = false;
-      btn.childNodes[1].textContent = ' Sync Fireflies';
-      loadCalls();
+      clearTimeout(t1); clearTimeout(t2);
+      stepState('step-fetch','done');
+      stepState('step-score','done');
+      stepState('step-upsert','done');
+      stepState('step-done','active');
+      setProgress(90);
+
+      var n = d.synced || 0;
+      document.getElementById('step-done-text').textContent = 'Done — ' + n + ' transcript' + (n!==1?'s':'') + ' synced.';
+
+      return loadCallsPromise();
+    })
+    .then(function(){
+      setProgress(100);
+      stepState('step-done','done');
+      setTimeout(function(){
+        overlay.classList.remove('open');
+        btn.disabled = false;
+        icon.classList.remove('spin');
+        showToast('✓ Sync complete — Call Library updated');
+      }, 800);
     })
     .catch(function(e){
-      icon.classList.remove('spin');
+      clearTimeout(t1); clearTimeout(t2);
+      stepState('step-fetch','error-step');
+      overlay.classList.remove('open');
       btn.disabled = false;
-      btn.childNodes[1].textContent = ' Sync Fireflies';
+      icon.classList.remove('spin');
+      showToast('✕ Sync failed: ' + e.message, true);
       console.warn('Sync error',e);
+    });
+}
+
+function loadCallsPromise() {
+  return fetch('/api/calls?limit=200')
+    .then(function(r){ return r.ok ? r.json() : []; })
+    .then(function(data){
+      ALL_CALLS = Array.isArray(data) ? data : [];
+      updateStats(); render();
     });
 }
 
@@ -340,6 +459,20 @@ function overrideStatus(val) {
 }
 
 // ── Init ─────────────────────────────────────────────────────────────────────
+function loadCalls() {
+  fetch('/api/calls?limit=200')
+    .then(function(r){ return r.ok ? r.json() : []; })
+    .then(function(data){
+      ALL_CALLS = Array.isArray(data) ? data : [];
+      if (!ALL_CALLS.length) {
+        document.getElementById('call-rows').innerHTML = '<div class="state-msg">No calls yet.<br><span style="font-size:11px;margin-top:8px;display:block">Click <strong style="color:#c4b5fd">Sync Fireflies</strong> to import your transcripts.</span></div>';
+      }
+      updateStats(); render();
+    })
+    .catch(function(e){
+      document.getElementById('call-rows').innerHTML = '<div class="state-msg" style="color:#f87171">Could not load calls — check server connection.<br><small>'+e.message+'</small></div>';
+    });
+}
 loadCalls();
 </script>
 </body>

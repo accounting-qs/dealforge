@@ -2369,9 +2369,9 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && urlPath === '/api/calls') {
     setCors(res);
     try {
-      const qs     = new URLSearchParams(parsedUrl.search || '');
-      const status = qs.get('status') || '';            // approved|skipped|pending_review
-      const type   = qs.get('type') || '';              // bec|follow_up|admin|unclassified
+      const qs     = new URLSearchParams(req.url.includes('?') ? req.url.split('?')[1] : '');
+      const status = qs.get('status') || '';
+      const type   = qs.get('type') || '';
       const limit  = Math.min(parseInt(qs.get('limit') || '100', 10), 200);
 
       let query = `/rest/v1/calls?order=date.desc&limit=${limit}`;
