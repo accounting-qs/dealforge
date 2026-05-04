@@ -2218,6 +2218,108 @@ async function resetStuckTasks() {
   } catch(e) { console.warn('[recovery] Failed:', e.message); }
 }
 
+// ── PHASE 2: Call Library sync ─────────────────────────────────────────────────
+// Pulls the most recent 100 Fireflies transcripts, computes a Q-Score (0-100)
+// based on structural signals (no Claude call — fast + free), classifies call type,
+// then upserts into the Supabase `calls` table.
+// Rules for Q-Score:
+//   +25  has shorthand_bullet notes (action items / detailed notes)
+//   +20  has overview (metrics overview summary)
+//   +15  has short_summary
+//   +10  duration >= 20 min  (longer = more context)
+//   +10  has >= 1 attendee with email
+//   +5   title contains known call keywords (discovery, strategy, BEC, evaluation)
+//   +5   has action_items
+//   Deductions:
+//   -20  duration < 5 min (likely accidental recording)
+//   -10  title contains admin/internal keywords (standup, sync, team)
+// Score range: 0–100 (clamped)
+// Call type classification rules:
+//   'bec'       — title matches: discovery, evaluation, bec, strategy session, call 1, consultation
+//   'follow_up' — title matches: follow.?up, call 2, call 3, debrief, check.?in, proposal
+//   'admin'     — title matches: standup, team, sync, internal, interview, 1.?on.?1
+//   'unclassified' — default fallback
+function classifyCallType(title = '') {
+  const t = title.toLowerCase();
+  if (/discovery|evaluation|bec|strategy session|call[\s_-]?1\b|consultation|intro call|intake/i.test(t)) return 'bec';
+  if (/follow[\s-]?up|call[\s_-]?[23456]|debrief|check[\s-]?in|proposal|closing|pitch/i.test(t)) return 'follow_up';
+  if (/standup|stand-up|team|internal|interview|1[\s-]on[\s-]1|onboard|training/i.test(t)) return 'admin';
+  return 'unclassified';
+}
+
+function computeQScore(transcript) {
+  let score = 0;
+  const reasons = [];
+  const s = transcript.summary || {};
+  const dur = transcript.duration || 0;
+  const title = (transcript.title || '').toLowerCase();
+  const attendees = (transcript.meeting_attendees || []).filter(a => a.email);
+
+  if (s.shorthand_bullet && s.shorthand_bullet.trim().length > 50) { score += 25; reasons.push('has detailed notes'); }
+  if (s.overview         && s.overview.trim().length > 30)          { score += 20; reasons.push('has metrics overview'); }
+  if (s.short_summary    && s.short_summary.trim().length > 30)     { score += 15; reasons.push('has summary'); }
+  if (s.action_items     && s.action_items.trim().length > 10)      { score +=  5; reasons.push('has action items'); }
+  if (dur >= 20)  { score += 10; reasons.push(`long call (${dur.toFixed(0)} min)`); }
+  if (attendees.length >= 1) { score += 10; reasons.push(`${attendees.length} attendee email(s)`); }
+  if (/discovery|evaluation|bec|strategy|consultation/i.test(title)) { score += 5; reasons.push('BEC/strategy keyword in title'); }
+
+  // Deductions
+  if (dur > 0 && dur < 5) { score -= 20; reasons.push('very short call (<5 min)'); }
+  if (/standup|internal|team sync|interview/i.test(title)) { score -= 10; reasons.push('admin/internal call'); }
+
+  return { q_score: Math.max(0, Math.min(100, score)), q_reasons: reasons };
+}
+
+async function syncFirefliesToCallLibrary() {
+  console.log('[CallLib] Starting Fireflies sync...');
+  const FULL_FIELDS = `id title duration date meeting_attendees { name email }
+    summary { shorthand_bullet overview short_summary action_items }`;
+  let allTranscripts = [];
+  try {
+    const d1 = await firefliesQuery(`{ transcripts(limit: 50) { ${FULL_FIELDS} } }`, {});
+    allTranscripts.push(...(d1?.transcripts || []));
+    const d2 = await firefliesQuery(`{ transcripts(limit: 50, skip: 50) { ${FULL_FIELDS} } }`, {});
+    allTranscripts.push(...(d2?.transcripts || []));
+  } catch(e) {
+    console.error('[CallLib] Fireflies fetch error:', e.message);
+    return [];
+  }
+  console.log(`[CallLib] Fetched ${allTranscripts.length} transcripts from Fireflies`);
+
+  const upserted = [];
+  for (const t of allTranscripts) {
+    if (!t.id) continue;
+    const { q_score, q_reasons } = computeQScore(t);
+    const call_type = classifyCallType(t.title);
+    // default status: admin → skipped, BEC/follow_up with q >= 50 → pending_review, else → pending_review
+    const status = call_type === 'admin' && q_score < 30 ? 'skipped' : 'pending_review';
+
+    const row = {
+      id:           t.id,
+      title:        t.title || '(untitled)',
+      duration:     t.duration || null,
+      date:         t.date ? new Date(t.date).toISOString() : null,
+      attendees:    JSON.stringify(t.meeting_attendees || []),
+      summary:      JSON.stringify(t.summary || {}),
+      call_type,
+      q_score,
+      q_reasons:    JSON.stringify(q_reasons),
+      status,
+      synced_at:    new Date().toISOString(),
+      raw_fireflies: JSON.stringify(t)
+    };
+
+    try {
+      const r = await supabaseRequest('POST', '/rest/v1/calls', row,
+        { 'Prefer': 'return=minimal,resolution=merge-duplicates' });
+      if (r.status < 300) { upserted.push({ id: t.id, title: t.title, call_type, q_score, status }); }
+      else console.warn(`[CallLib] Upsert failed for ${t.id}: ${r.status}`);
+    } catch(e) { console.warn(`[CallLib] Upsert error for ${t.id}:`, e.message); }
+  }
+  console.log(`[CallLib] Sync complete: ${upserted.length}/${allTranscripts.length} upserted`);
+  return upserted;
+}
+
 // Start worker + recovery loops
 if (USE_SUPABASE) {
   // Wrap each invocation in .catch() so a network error (ECONNRESET, ETIMEDOUT)
@@ -2226,8 +2328,11 @@ if (USE_SUPABASE) {
   // cases, but an unhandled rejection from an async timer edge-case can bypass it.
   setInterval(() => processNextTask().catch(e => console.error('[worker] Interval error:', e.message)), 3000);
   setInterval(() => resetStuckTasks().catch(e => console.error('[recovery] Interval error:', e.message)), 2 * 60 * 1000);
+  // Phase 2: 6-hour background Fireflies sync safety net
+  setInterval(() => syncFirefliesToCallLibrary().catch(e => console.error('[CallLib] Cron error:', e.message)), 6 * 60 * 60 * 1000);
   console.log('[worker] Started (3s interval)');
   console.log('[recovery] Started (2min interval)');
+  console.log('[CallLib] 6-hour background sync scheduled');
 } else {
   console.warn('[worker] NOT started — no Supabase config');
 }
@@ -2238,6 +2343,77 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'OPTIONS') {
     setCors(res); res.writeHead(204); res.end(); return;
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // PHASE 2 — CALL LIBRARY API
+  // ══════════════════════════════════════════════════════════════════════════
+
+  // ── POST /api/calls/sync — pull recent Fireflies transcripts into `calls` table ──
+  // Called manually from the Call Library tab, and by the 6-hour background cron.
+  if (req.method === 'POST' && urlPath === '/api/calls/sync') {
+    setCors(res);
+    try {
+      const synced = await syncFirefliesToCallLibrary();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ synced: synced.length, calls: synced }));
+    } catch(e) {
+      console.error('[POST /api/calls/sync]', e.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  // ── GET /api/calls — list all calls with optional filters ────────────────
+  if (req.method === 'GET' && urlPath === '/api/calls') {
+    setCors(res);
+    try {
+      const qs     = new URLSearchParams(parsedUrl.search || '');
+      const status = qs.get('status') || '';            // approved|skipped|pending_review
+      const type   = qs.get('type') || '';              // bec|follow_up|admin|unclassified
+      const limit  = Math.min(parseInt(qs.get('limit') || '100', 10), 200);
+
+      let query = `/rest/v1/calls?order=date.desc&limit=${limit}`;
+      if (status) query += `&status=eq.${encodeURIComponent(status)}`;
+      if (type)   query += `&call_type=eq.${encodeURIComponent(type)}`;
+
+      const r = await supabaseRequest('GET', query);
+      const calls = (r.status === 200 && Array.isArray(r.body)) ? r.body : [];
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(calls));
+    } catch(e) {
+      console.error('[GET /api/calls]', e.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  // ── PATCH /api/calls/:id/status — rep manually overrides status ──────────
+  if (req.method === 'PATCH' && urlPath.match(/^\/api\/calls\/[^/]+\/status$/)) {
+    setCors(res);
+    const callId = urlPath.split('/')[3];
+    try {
+      const body      = await parseBody(req);
+      const newStatus = body.status; // approved|skipped|pending_review
+      const VALID = new Set(['approved','skipped','pending_review']);
+      if (!VALID.has(newStatus)) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: `Invalid status. Must be: ${[...VALID].join('|')}` }));
+        return;
+      }
+      const r = await supabaseRequest('PATCH', `/rest/v1/calls?id=eq.${callId}`,
+        { status: newStatus }, { 'Prefer': 'return=representation' });
+      if (r.status >= 400) throw new Error(`Supabase PATCH calls: ${r.status}`);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ updated: true, status: newStatus }));
+    } catch(e) {
+      console.error('[PATCH /api/calls/:id/status]', e.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
   }
 
   // ── POST /api/prefetch — fetch Fireflies + extract brief (no job created) ──

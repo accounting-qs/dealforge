@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Call Library — Deal Forge</title>
+<style>
+*{box-sizing:border-box;-webkit-font-smoothing:antialiased}
+body{background:#0a0a0f;font-family:-apple-system,BlinkMacSystemFont,'Inter',sans-serif;color:#e4e4e7;margin:0}
+.glow{position:fixed;top:0;left:50%;transform:translateX(-50%);width:700px;height:300px;background:radial-gradient(ellipse at 50% 0%,rgba(139,92,246,0.09) 0%,transparent 70%);pointer-events:none;z-index:0}
+nav{height:48px;background:rgba(10,10,15,0.88);backdrop-filter:blur(12px);border-bottom:1px solid rgba(255,255,255,0.06);position:fixed;top:0;left:0;right:0;z-index:50;display:flex;align-items:center;justify-content:space-between;padding:0 24px}
+.logo{height:22px;width:auto}
+.page{max-width:1100px;margin:0 auto;padding:72px 24px 64px;position:relative;z-index:1}
+h1{font-size:32px;font-weight:700;letter-spacing:-0.025em;color:#fff;margin:0 0 4px}
+.sub{font-size:13px;color:#52525b;margin-bottom:28px}
+
+/* Filter bar */
+.filter-bar{display:flex;align-items:center;gap:10px;margin-bottom:20px;flex-wrap:wrap}
+.pill{font-size:12px;font-weight:500;padding:5px 13px;border-radius:20px;cursor:pointer;border:1px solid rgba(255,255,255,0.07);color:#71717a;background:none;transition:all 100ms;font-family:inherit}
+.pill.active{background:rgba(139,92,246,0.14);border-color:rgba(139,92,246,0.4);color:#c4b5fd}
+.pill:hover:not(.active){border-color:rgba(255,255,255,0.14);color:#a1a1aa}
+.search-wrap{position:relative;margin-left:auto}
+.search-wrap svg{position:absolute;left:10px;top:50%;transform:translateY(-50%);width:13px;height:13px;color:#52525b}
+.search-wrap input{background:rgba(10,10,15,0.7);border:1px solid rgba(113,113,122,0.4);border-radius:8px;padding:6px 12px 6px 30px;font-size:13px;color:#e4e4e7;outline:none;width:200px;font-family:inherit}
+.search-wrap input:focus{border-color:rgba(139,92,246,0.5)}
+
+/* Sync button */
+.sync-btn{display:flex;align-items:center;gap:6px;padding:6px 14px;border-radius:8px;border:1px solid rgba(139,92,246,0.35);background:rgba(139,92,246,0.1);color:#c4b5fd;font-size:13px;font-weight:500;cursor:pointer;font-family:inherit;transition:all 100ms}
+.sync-btn:hover{background:rgba(139,92,246,0.18);border-color:rgba(139,92,246,0.55)}
+.sync-btn:disabled{opacity:0.4;cursor:not-allowed}
+@keyframes spin{to{transform:rotate(360deg)}}
+.spin{animation:spin 1s linear infinite}
+
+/* Table */
+.table-wrap{border:1px solid rgba(255,255,255,0.07);border-radius:12px;overflow:hidden}
+.thead{display:grid;grid-template-columns:1fr 80px 100px 90px 110px 120px;gap:0;padding:9px 18px;background:rgba(255,255,255,0.025);border-bottom:1px solid rgba(255,255,255,0.06)}
+.thead div{font-size:11px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:#3f3f46}
+.call-row{display:grid;grid-template-columns:1fr 80px 100px 90px 110px 120px;gap:0;padding:14px 18px;border-bottom:1px solid rgba(255,255,255,0.05);transition:background 100ms;cursor:pointer;align-items:center}
+.call-row:last-child{border-bottom:none}
+.call-row:hover{background:rgba(39,39,42,0.4)}
+.call-title{font-size:13px;font-weight:500;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding-right:12px}
+.call-meta{font-size:11px;color:#52525b;margin-top:2px}
+
+/* Q-Score badge */
+.qbadge{display:inline-flex;align-items:center;justify-content:center;width:40px;height:22px;border-radius:6px;font-size:12px;font-weight:700}
+.q-high{background:rgba(34,197,94,0.12);color:#4ade80;border:1px solid rgba(34,197,94,0.25)}
+.q-mid{background:rgba(245,158,11,0.12);color:#fbbf24;border:1px solid rgba(245,158,11,0.25)}
+.q-low{background:rgba(239,68,68,0.1);color:#f87171;border:1px solid rgba(239,68,68,0.2)}
+
+/* Type badge */
+.type-badge{display:inline-block;padding:3px 8px;border-radius:5px;font-size:11px;font-weight:600;letter-spacing:0.03em}
+.type-bec{background:rgba(139,92,246,0.14);color:#c4b5fd;border:1px solid rgba(139,92,246,0.3)}
+.type-follow_up{background:rgba(59,130,246,0.12);color:#93c5fd;border:1px solid rgba(59,130,246,0.28)}
+.type-admin{background:rgba(113,113,122,0.12);color:#71717a;border:1px solid rgba(113,113,122,0.22)}
+.type-unclassified{background:rgba(255,255,255,0.05);color:#52525b;border:1px solid rgba(255,255,255,0.08)}
+
+/* Status select */
+.status-sel{background:transparent;border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:4px 8px;font-size:12px;color:#a1a1aa;cursor:pointer;font-family:inherit;outline:none;width:120px}
+.status-sel:focus{border-color:rgba(139,92,246,0.4)}
+option{background:#111116;color:#e4e4e7}
+
+/* Duration */
+.dur{font-size:12px;color:#71717a;text-align:center}
+
+/* Drawer */
+.drawer-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);backdrop-filter:blur(4px);z-index:200}
+.drawer-overlay.open{display:flex;align-items:flex-start;justify-content:flex-end}
+.drawer{width:480px;height:100vh;background:#111116;border-left:1px solid rgba(255,255,255,0.09);overflow-y:auto;padding:28px 28px 48px}
+.drawer h2{font-size:17px;font-weight:700;color:#fff;margin:0 0 4px}
+.drawer-meta{font-size:12px;color:#52525b;margin-bottom:20px}
+.section-label{font-size:10px;font-weight:700;letter-spacing:0.09em;text-transform:uppercase;color:#3f3f46;margin:18px 0 8px}
+.drawer-text{font-size:13px;color:#a1a1aa;line-height:1.6;white-space:pre-wrap}
+.q-pill-list{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+.q-pill{font-size:11px;padding:3px 9px;border-radius:4px;background:rgba(139,92,246,0.1);color:#a78bfa;border:1px solid rgba(139,92,246,0.22)}
+
+/* Empty / loading state */
+.state-msg{padding:60px 20px;text-align:center;color:#52525b;font-size:13px}
+
+/* Stats row */
+.stats{display:flex;gap:16px;margin-bottom:24px;flex-wrap:wrap}
+.stat-card{flex:1;min-width:120px;background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.06);border-radius:10px;padding:14px 16px}
+.stat-num{font-size:24px;font-weight:700;color:#fff;letter-spacing:-0.02em}
+.stat-lbl{font-size:11px;color:#52525b;margin-top:2px}
+</style>
+</head>
+<body>
+<div class="glow"></div>
+
+<!-- Nav -->
+<nav>
+  <img class="logo" src="https://cdn.prod.website-files.com/68f946bb8c1a312becb429c6/69332f8bb26fb636e5ff3553_QS%20white.png" alt="QS">
+  <div style="display:flex;align-items:center;gap:10px">
+    <a href="/dashboard" style="font-size:13px;color:#71717a;text-decoration:none;padding:5px 10px;border-radius:7px;border:1px solid rgba(255,255,255,0.08);" onmouseover="this.style.color='#e4e4e7'" onmouseout="this.style.color='#71717a'">← Jobs</a>
+    <button id="sync-btn" class="sync-btn" onclick="doSync()">
+      <svg id="sync-icon" style="width:13px;height:13px" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+      Sync Fireflies
+    </button>
+  </div>
+</nav>
+
+<div class="page">
+  <h1>Call Library</h1>
+  <p class="sub">All Fireflies transcripts — classified, scored, and ready for pre-flight review</p>
+
+  <!-- Stats -->
+  <div class="stats" id="stats-row">
+    <div class="stat-card"><div class="stat-num" id="stat-total">—</div><div class="stat-lbl">Total calls</div></div>
+    <div class="stat-card"><div class="stat-num" id="stat-bec">—</div><div class="stat-lbl">BEC calls</div></div>
+    <div class="stat-card"><div class="stat-num" id="stat-approved">—</div><div class="stat-lbl">Approved</div></div>
+    <div class="stat-card"><div class="stat-num" id="stat-pending">—</div><div class="stat-lbl">Pending review</div></div>
+  </div>
+
+  <!-- Filter bar -->
+  <div class="filter-bar">
+    <button class="pill active" onclick="setTypeFilter('',this)">All Types</button>
+    <button class="pill" onclick="setTypeFilter('bec',this)">BEC</button>
+    <button class="pill" onclick="setTypeFilter('follow_up',this)">Follow-up</button>
+    <button class="pill" onclick="setTypeFilter('admin',this)">Admin</button>
+    <button class="pill" onclick="setTypeFilter('unclassified',this)">Unclassified</button>
+    <div style="width:1px;height:18px;background:rgba(255,255,255,0.07)"></div>
+    <button class="pill" onclick="setStatusFilter('',this)" id="sf-all" style="border-color:rgba(255,255,255,0.12);color:#a1a1aa">All Status</button>
+    <button class="pill" onclick="setStatusFilter('approved',this)" id="sf-approved">Approved</button>
+    <button class="pill" onclick="setStatusFilter('skipped',this)" id="sf-skipped">Skipped</button>
+    <button class="pill" onclick="setStatusFilter('pending_review',this)" id="sf-pending">Pending</button>
+    <div class="search-wrap">
+      <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+      <input type="text" placeholder="Search calls..." oninput="setSearch(this.value)">
+    </div>
+  </div>
+
+  <!-- Table -->
+  <div class="table-wrap">
+    <div class="thead">
+      <div>Call</div>
+      <div style="text-align:center">Q-Score</div>
+      <div>Type</div>
+      <div style="text-align:center">Duration</div>
+      <div>Date</div>
+      <div>Status</div>
+    </div>
+    <div id="call-rows"><div class="state-msg">Loading calls...</div></div>
+  </div>
+</div>
+
+<!-- Drawer -->
+<div class="drawer-overlay" id="drawer-overlay" onclick="if(event.target===this)closeDrawer()">
+  <div class="drawer" id="drawer-panel">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
+      <span style="font-size:12px;color:#52525b;font-weight:600;letter-spacing:0.06em;text-transform:uppercase">Call Detail</span>
+      <button onclick="closeDrawer()" style="background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.09);border-radius:7px;width:28px;height:28px;cursor:pointer;color:#71717a;font-size:16px;display:flex;align-items:center;justify-content:center">×</button>
+    </div>
+    <h2 id="d-title"></h2>
+    <div class="drawer-meta" id="d-meta"></div>
+
+    <div class="section-label">Q-Score Breakdown</div>
+    <div id="d-qscore" style="margin-bottom:4px"></div>
+    <div class="q-pill-list" id="d-reasons"></div>
+
+    <div class="section-label">Call Summary</div>
+    <div class="drawer-text" id="d-summary"></div>
+
+    <div class="section-label">Detailed Notes</div>
+    <div class="drawer-text" id="d-notes"></div>
+
+    <div class="section-label">Action Items</div>
+    <div class="drawer-text" id="d-actions"></div>
+
+    <div class="section-label" style="margin-top:24px">Override Status</div>
+    <div style="display:flex;gap:8px;margin-top:6px">
+      <button onclick="overrideStatus('approved')" class="pill" style="border-color:rgba(34,197,94,0.35);color:#4ade80;background:rgba(34,197,94,0.08)">✓ Approve</button>
+      <button onclick="overrideStatus('skipped')" class="pill" style="border-color:rgba(239,68,68,0.3);color:#f87171;background:rgba(239,68,68,0.07)">✕ Skip</button>
+      <button onclick="overrideStatus('pending_review')" class="pill">Reset to Pending</button>
+    </div>
+  </div>
+</div>
+
+<script>
+var ALL_CALLS = [];
+var typeFilter = '', statusFilter = '', searchVal = '';
+var openCallId = null;
+
+// ── Fetch & render ──────────────────────────────────────────────────────────
+function loadCalls() {
+  fetch('/api/calls?limit=200')
+    .then(function(r){ return r.ok ? r.json() : []; })
+    .then(function(data){
+      ALL_CALLS = Array.isArray(data) ? data : [];
+      updateStats();
+      render();
+    })
+    .catch(function(e){ console.warn('Load error',e); });
+}
+
+function updateStats() {
+  var bec = ALL_CALLS.filter(function(c){ return c.call_type==='bec'; }).length;
+  var approved = ALL_CALLS.filter(function(c){ return c.status==='approved'; }).length;
+  var pending = ALL_CALLS.filter(function(c){ return c.status==='pending_review'; }).length;
+  document.getElementById('stat-total').textContent = ALL_CALLS.length;
+  document.getElementById('stat-bec').textContent = bec;
+  document.getElementById('stat-approved').textContent = approved;
+  document.getElementById('stat-pending').textContent = pending;
+}
+
+function render() {
+  var s = searchVal.toLowerCase();
+  var filtered = ALL_CALLS.filter(function(c){
+    if (typeFilter && c.call_type !== typeFilter) return false;
+    if (statusFilter && c.status !== statusFilter) return false;
+    if (s && (c.title||'').toLowerCase().indexOf(s) < 0) return false;
+    return true;
+  });
+  var el = document.getElementById('call-rows');
+  if (!filtered.length) {
+    el.innerHTML = '<div class="state-msg">No calls match this filter</div>';
+    return;
+  }
+  el.innerHTML = filtered.map(function(c){ return rowHtml(c); }).join('');
+}
+
+function rowHtml(c) {
+  var q = c.q_score != null ? c.q_score : '?';
+  var qCls = q >= 65 ? 'q-high' : q >= 35 ? 'q-mid' : 'q-low';
+  var typeCls = 'type-' + (c.call_type || 'unclassified');
+  var typeLabel = { bec:'BEC', follow_up:'Follow-up', admin:'Admin', unclassified:'—' }[c.call_type] || c.call_type;
+  var dur = c.duration ? (Math.round(c.duration) + ' min') : '—';
+  var dt = c.date ? new Date(c.date).toLocaleDateString('en-US',{month:'short',day:'numeric'}) : '—';
+  var statusOpts = ['pending_review','approved','skipped'].map(function(s){
+    return '<option value="'+s+'"'+(c.status===s?' selected':'')+'>'+{pending_review:'Pending',approved:'Approved',skipped:'Skipped'}[s]+'</option>';
+  }).join('');
+  return '<div class="call-row" data-id="'+c.id+'" onclick="openDrawer(\''+c.id+'\')">'
+    +'<div><div class="call-title">'+esc(c.title||'(untitled)')+'</div><div class="call-meta">'+esc(attendeeList(c))+'</div></div>'
+    +'<div style="text-align:center"><span class="qbadge '+qCls+'">'+q+'</span></div>'
+    +'<div><span class="type-badge '+typeCls+'">'+typeLabel+'</span></div>'
+    +'<div class="dur">'+dur+'</div>'
+    +'<div style="font-size:12px;color:#71717a">'+dt+'</div>'
+    +'<div><select class="status-sel" onclick="event.stopPropagation()" onchange="patchStatus(\''+c.id+'\',this.value)">'+statusOpts+'</select></div>'
+    +'</div>';
+}
+
+function attendeeList(c) {
+  var att = c.attendees || [];
+  if (typeof att === 'string') { try { att = JSON.parse(att); } catch(e){ att=[]; } }
+  return att.map(function(a){ return a.name||a.email||''; }).filter(Boolean).slice(0,3).join(', ') || 'No attendees recorded';
+}
+
+function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+// ── Filters ─────────────────────────────────────────────────────────────────
+function setTypeFilter(val, btn) {
+  typeFilter = val;
+  document.querySelectorAll('.filter-bar .pill').forEach(function(p){ if(['bec','follow_up','admin','unclassified',''].includes(p.__type)) p.classList.remove('active'); });
+  btn.__type = val;
+  document.querySelectorAll('.filter-bar .pill').forEach(function(p,i){ if(i<=4) p.classList.remove('active'); });
+  btn.classList.add('active');
+  render();
+}
+
+function setStatusFilter(val, btn) {
+  statusFilter = val;
+  ['sf-all','sf-approved','sf-skipped','sf-pending'].forEach(function(id){ var e=document.getElementById(id); if(e) e.classList.remove('active'); });
+  btn.classList.add('active');
+  render();
+}
+
+function setSearch(val) { searchVal = val; render(); }
+
+// ── Status patch ─────────────────────────────────────────────────────────────
+function patchStatus(id, val) {
+  fetch('/api/calls/'+id+'/status', {
+    method:'PATCH', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({status: val})
+  }).then(function(){ updateCallLocal(id,'status',val); updateStats(); })
+    .catch(function(e){ console.warn('Patch error',e); });
+}
+
+function updateCallLocal(id, key, val) {
+  var c = ALL_CALLS.find(function(x){ return x.id===id; });
+  if (c) c[key] = val;
+}
+
+// ── Sync ─────────────────────────────────────────────────────────────────────
+function doSync() {
+  var btn = document.getElementById('sync-btn');
+  var icon = document.getElementById('sync-icon');
+  btn.disabled = true;
+  icon.classList.add('spin');
+  btn.childNodes[1].textContent = ' Syncing...';
+  fetch('/api/calls/sync', {method:'POST'})
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      icon.classList.remove('spin');
+      btn.disabled = false;
+      btn.childNodes[1].textContent = ' Sync Fireflies';
+      loadCalls();
+    })
+    .catch(function(e){
+      icon.classList.remove('spin');
+      btn.disabled = false;
+      btn.childNodes[1].textContent = ' Sync Fireflies';
+      console.warn('Sync error',e);
+    });
+}
+
+// ── Drawer ───────────────────────────────────────────────────────────────────
+function openDrawer(id) {
+  var c = ALL_CALLS.find(function(x){ return x.id===id; });
+  if (!c) return;
+  openCallId = id;
+  var s = c.summary || {};
+  if (typeof s === 'string') { try { s = JSON.parse(s); } catch(e){ s={}; } }
+  var reasons = c.q_reasons || [];
+  if (typeof reasons === 'string') { try { reasons = JSON.parse(reasons); } catch(e){ reasons=[]; } }
+  var att = c.attendees || [];
+  if (typeof att === 'string') { try { att = JSON.parse(att); } catch(e){ att=[]; } }
+  var dt = c.date ? new Date(c.date).toLocaleString('en-US',{month:'long',day:'numeric',year:'numeric',hour:'2-digit',minute:'2-digit'}) : 'Unknown date';
+  document.getElementById('d-title').textContent = c.title || '(untitled)';
+  document.getElementById('d-meta').textContent = dt + (c.duration ? ' · '+Math.round(c.duration)+' min' : '') + (att.length ? ' · '+att.map(function(a){return a.name||a.email||'';}).filter(Boolean).join(', ') : '');
+  var q = c.q_score != null ? c.q_score : '?';
+  var qCls = q >= 65 ? '#4ade80' : q >= 35 ? '#fbbf24' : '#f87171';
+  document.getElementById('d-qscore').innerHTML = '<span style="font-size:28px;font-weight:800;color:'+qCls+'">'+q+'</span><span style="font-size:13px;color:#52525b"> / 100</span>';
+  document.getElementById('d-reasons').innerHTML = reasons.map(function(r){ return '<span class="q-pill">'+esc(r)+'</span>'; }).join('');
+  document.getElementById('d-summary').textContent = s.short_summary || s.overview || '(no summary available)';
+  document.getElementById('d-notes').textContent = s.shorthand_bullet || '(no detailed notes)';
+  document.getElementById('d-actions').textContent = s.action_items || '(no action items)';
+  document.getElementById('drawer-overlay').classList.add('open');
+}
+
+function closeDrawer() {
+  document.getElementById('drawer-overlay').classList.remove('open');
+  openCallId = null;
+}
+
+function overrideStatus(val) {
+  if (!openCallId) return;
+  patchStatus(openCallId, val);
+  // update local + re-render
+  updateCallLocal(openCallId, 'status', val);
+  updateStats();
+  render();
+}
+
+// ── Init ─────────────────────────────────────────────────────────────────────
+loadCalls();
+</script>
+</body>
+</html>
