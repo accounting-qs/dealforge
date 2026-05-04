@@ -1552,6 +1552,11 @@ function dbCallToTranscript(call) {
 async function handleExtract(task, job) {
   const email = job.prospect_email || '';
   const defaultDomain = job.prospect_website || email.split('@')[1];
+  const contactInfo = {
+    name:    job.prospect_name    || null,
+    company: job.prospect_company || null,
+    website: defaultDomain        || null
+  };
   console.log(`[extract] Processing job ${job.id} for ${email}`);
 
   // Step 1: transcript source — approved calls from DB first, live Fireflies as fallback
