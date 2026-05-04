@@ -1112,6 +1112,16 @@ Return this exact JSON structure:
   }
 }
 
+// ── EU countries list for Apollo geo expansion ─────────────────────────────────
+const EU_COUNTRIES = [
+  'Austria','Belgium','Bulgaria','Croatia','Cyprus','Czech Republic','Denmark',
+  'Estonia','Finland','France','Germany','Greece','Hungary','Ireland','Italy',
+  'Latvia','Lithuania','Luxembourg','Malta','Netherlands','Poland','Portugal',
+  'Romania','Slovakia','Slovenia','Spain','Sweden',
+  // Common non-EU European markets often meant when prospects say "Europe"
+  'United Kingdom','Norway','Switzerland','Iceland'
+];
+
 async function fetchLeadsFromApollo(icp) {
   const APOLLO_KEY = process.env.APOLLO_API_KEY;
   if (!APOLLO_KEY) { console.log('[Apollo] No API key — skipping'); return null; }
@@ -1562,7 +1572,7 @@ async function handleExtract(task, job) {
   const transcriptFound = transcripts.length > 0;
 
   // Step 2: Website
-  const website = await scrapeWebsite(scrapeDomain);
+  const website = await scrapeWebsite(defaultDomain);
 
   // Step 3: Build extraction content — aggregate ALL call summaries into one block
   const parts = [];
@@ -1583,17 +1593,17 @@ async function handleExtract(task, job) {
 
   if (website.bodyText || website.title) {
     parts.push([
-      `WEBSITE (${scrapeDomain}):`,
+      `WEBSITE (${defaultDomain}):`,
       website.title    ? `Title: ${website.title}` : '',
       website.metaDesc ? `Description: ${website.metaDesc}` : '',
       website.bodyText ? `Content:\n${website.bodyText}` : ''
     ].filter(Boolean).join('\n'));
   }
   // Always include domain-derived name as anchor for Claude
-  const domainAnchor = scrapeDomain.split('.')[0].replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
-  parts.unshift(`DOMAIN: ${scrapeDomain}\nDERIVED NAME FROM DOMAIN: ${domainAnchor}\n(Use this as the company name if a clearer branded name is not found in the content below)`);
+  const domainAnchor = defaultDomain.split('.')[0].replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+  parts.unshift(`DOMAIN: ${defaultDomain}\nDERIVED NAME FROM DOMAIN: ${domainAnchor}\n(Use this as the company name if a clearer branded name is not found in the content below)`);
 
-  if (!parts.length) parts.push(`Prospect email: ${email}\nDomain: ${scrapeDomain}`);
+  if (!parts.length) parts.push(`Prospect email: ${email}\nDomain: ${defaultDomain}`);
 
   // Step 4: Claude extraction (extractBriefFromTranscript is the only extractor defined)
   const extracted = await extractBriefFromTranscript(parts.join('\n\n---\n\n'), website.bodyText || '', contactInfo);
@@ -1616,11 +1626,11 @@ async function handleExtract(task, job) {
     transcript: firstT
       ? { id: firstT.id, title: firstT.title, date: firstT.dateString, found: true, source: transcriptSource, count: transcripts.length }
       : { found: false, source: 'none' },
-    website: { domain: scrapeDomain, title: website.title, scraped: !!(website.bodyText) }
+    website: { domain: defaultDomain, title: website.title, scraped: !!(website.bodyText) }
   };
 
   // Update prospect_company on the job row
-  const company = extracted.prospect?.company || contactInfo.company || scrapeDomain;
+  const company = extracted.prospect?.company || contactInfo.company || defaultDomain;
   await supabaseRequest('PATCH', `/rest/v1/jobs?id=eq.${job.id}`, {
     prospect_company: company,
     prospect_name:    extracted.prospect?.contact_name || contactInfo.name || null,
