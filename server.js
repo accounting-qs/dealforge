@@ -2311,9 +2311,12 @@ async function syncFirefliesToCallLibrary() {
 
     try {
       const r = await supabaseRequest('POST', '/rest/v1/calls', row,
-        { 'Prefer': 'return=minimal,resolution=merge-duplicates' });
+        { 'Prefer': 'return=minimal,resolution=merge-duplicates', 'Content-Profile': 'public' });
       if (r.status < 300) { upserted.push({ id: t.id, title: t.title, call_type, q_score, status }); }
-      else console.warn(`[CallLib] Upsert failed for ${t.id}: ${r.status}`);
+      else {
+        if (upserted.length === 0) console.warn(`[CallLib] First upsert error body:`, JSON.stringify(r.body).slice(0,300));
+        console.warn(`[CallLib] Upsert failed for ${t.id}: ${r.status}`);
+      }
     } catch(e) { console.warn(`[CallLib] Upsert error for ${t.id}:`, e.message); }
   }
   console.log(`[CallLib] Sync complete: ${upserted.length}/${allTranscripts.length} upserted`);
@@ -2378,7 +2381,7 @@ const server = http.createServer(async (req, res) => {
       if (status) query += `&status=eq.${encodeURIComponent(status)}`;
       if (type)   query += `&call_type=eq.${encodeURIComponent(type)}`;
 
-      const r = await supabaseRequest('GET', query);
+      const r = await supabaseRequest('GET', query, null, { 'Accept-Profile': 'public' });
       const calls = (r.status === 200 && Array.isArray(r.body)) ? r.body : [];
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(calls));
@@ -2404,7 +2407,7 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       const r = await supabaseRequest('PATCH', `/rest/v1/calls?id=eq.${callId}`,
-        { status: newStatus }, { 'Prefer': 'return=representation' });
+        { status: newStatus }, { 'Prefer': 'return=representation', 'Content-Profile': 'public' });
       if (r.status >= 400) throw new Error(`Supabase PATCH calls: ${r.status}`);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ updated: true, status: newStatus }));
