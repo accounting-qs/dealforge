@@ -2780,8 +2780,14 @@ const server = http.createServer(async (req, res) => {
       const jobs = (jobsR.status === 200 && Array.isArray(jobsR.body)) ? jobsR.body : [];
       const file = (fileR.status === 200 && Array.isArray(fileR.body) && fileR.body[0]) ? fileR.body[0] : null;
 
+      // Add portal_url to each job (format matches dashboard: /?job=ID)
+      const jobsWithPortal = jobs.map(j => ({
+        ...j,
+        portal_url: j.portal_url || `/?job=${j.id}`
+      }));
+
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ email, calls: matchedCalls, jobs, file }));
+      res.end(JSON.stringify({ email, calls: matchedCalls, jobs: jobsWithPortal, file }));
     } catch(e) {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: e.message }));
