@@ -928,7 +928,12 @@ Rules:
 4. GEOGRAPHY CHECK (SOFT): If TARGET GEOGRAPHY is specified AND the company's location is CLEARLY and CONFIDENTLY in the wrong region (e.g., ".co.au" domain for a Baltic ICP, website explicitly says "serving Africa only") → reject. When geography is ambiguous, unclear, or the company operates internationally → INCLUDE with confidence "low". Do NOT reject on geography alone if you are less than highly confident. When in doubt, include the lead — the rep will verify.
 5. NO SIGNAL RULE: If no website content AND no headline → default match: true with confidence "low" (benefit of the doubt — better to review than miss).
 6. CONFIDENCE: "high" = website/headline clearly confirms BOTH sector AND geo. "medium" = sector confirmed, geo plausible but not explicit. "low" = company name plausible, geo ambiguous, or only partial confirmation.
-7. Return valid JSON only. No markdown.`,
+7. Return valid JSON only. No markdown.`;
+
+  try {
+    const msg = await anthropic.messages.create({
+      model: 'claude-haiku-4-5-20251001', max_tokens: 2000, temperature: 0,
+      system: systemPrompt,
       messages: [{ role: 'user', content: userMsg }]
     });
     const raw = msg.content[0].text;
