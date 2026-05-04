@@ -231,6 +231,18 @@ async function updateJobStatus(jobId, status) {
   await supabaseRequest('PATCH', `/rest/v1/jobs?id=eq.${jobId}`, patch);
 }
 
+// ── Phase 4: In-app notification helper ───────────────────────────────────────
+async function createNotification({ type, title, body = null, callId = null, jobId = null, repId = null }) {
+  try {
+    await supabaseRequest('POST', '/rest/v1/notifications',
+      { type, title, body, call_id: callId, job_id: jobId, rep_id: repId, read: false },
+      { 'Prefer': 'return=minimal', 'Content-Profile': 'public' }
+    );
+  } catch(e) {
+    console.warn('[notif] Failed to create notification:', e.message);
+  }
+}
+
 async function getTasksByJobId(jobId) {
   const r = await supabaseRequest('GET', `/rest/v1/tasks?job_id=eq.${jobId}&order=created_at.asc`);
   if (r.status !== 200) return [];
@@ -1971,6 +1983,15 @@ async function handleLeadList(task, job) {
     ? 100000
     : tam > 0 ? Math.max(1000, Math.round(tam / 3 / 1000) * 1000) : 30000;
   console.log(`[lead_list] Apollo returned ${leads.length} classified leads, TAM: ${tam}, Outreach: ${recommendedOutreach}/mo`);
+  // Phase 4: fire apollo_warning notification if fewer than 5 leads
+  if (leads.length < 5) {
+    await createNotification({
+      type:  'apollo_warning',
+      title: `Low leads: only ${leads.length} found`,
+      body:  `Apollo returned fewer than 5 leads. Consider broadening the ICP filters.`,
+      jobId: task?.job_id || null
+    });
+  }
   return { leads, total: tam, recommendedOutreach, tamSource: result?.tamSource || 'estimated' };
 }
 
@@ -2190,7 +2211,21 @@ async function checkAndSpawnStageTasks(jobId) {
   const allTasks = await getTasksByJobId(jobId);
   if (allTasks.length > 0 && allTasks.every(t => isTerminal(t.status))) {
     const anyFailed = allTasks.some(t => t.status === 'failed');
-    await updateJobStatus(jobId, anyFailed ? 'failed' : 'completed');
+    const finalStatus = anyFailed ? 'failed' : 'completed';
+    await updateJobStatus(jobId, finalStatus);
+    // Phase 4: fire job_complete notification
+    if (finalStatus === 'completed') {
+      const jobRow = await supabaseRequest('GET', `/rest/v1/jobs?id=eq.${jobId}&select=prospect_email,prospect_company,rep_name`);
+      const j = (jobRow.body || [])[0] || {};
+      const label = j.prospect_company || j.prospect_email || jobId;
+      await createNotification({
+        type:  'job_complete',
+        title: `Analysis complete: ${label}`,
+        body:  `Deal Forge job finished for ${j.prospect_email || 'unknown'}`,
+        jobId: jobId,
+        repId: j.rep_name || null
+      });
+    }
   }
 }
 
@@ -2375,6 +2410,19 @@ async function syncFirefliesToCallLibrary() {
     } catch(e) { console.warn(`[CallLib] Upsert error for ${t.id}:`, e.message); }
   }
   console.log(`[CallLib] Sync complete: ${upserted.length}/${allTranscripts.length} upserted`);
+
+  // Phase 4: fire in-app notifications for newly upserted BEC calls
+  const newBecs = upserted.filter(u => u.call_type === 'bec');
+  for (const bec of newBecs.slice(0, 5)) { // cap at 5 per sync to avoid flood
+    await createNotification({
+      type:   'new_bec',
+      title:  `New BEC: ${bec.title}`,
+      body:   `Q-Score: ${bec.q_score} · Status: ${bec.status}`,
+      callId: bec.id
+    });
+  }
+  if (newBecs.length > 0) console.log(`[CallLib] Fired ${Math.min(newBecs.length,5)} new_bec notifications`);
+
   return upserted;
 }
 
@@ -2468,6 +2516,99 @@ const server = http.createServer(async (req, res) => {
       res.end(JSON.stringify({ updated: true, status: newStatus }));
     } catch(e) {
       console.error('[PATCH /api/calls/:id/status]', e.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  // ── Phase 4: GET /api/notifications — list recent notifications ─────────────
+  if (req.method === 'GET' && urlPath === '/api/notifications') {
+    setCors(res);
+    try {
+      const qs    = new URLSearchParams(req.url.split('?')[1] || '');
+      const limit = parseInt(qs.get('limit') || '50', 10);
+      const unreadOnly = qs.get('unread') === '1';
+      let query = `/rest/v1/notifications?order=created_at.desc&limit=${limit}`;
+      if (unreadOnly) query += '&read=eq.false';
+      const r = await supabaseRequest('GET', query, null, { 'Accept-Profile': 'public' });
+      const rows = (r.status === 200 && Array.isArray(r.body)) ? r.body : [];
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(rows));
+    } catch(e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  // ── Phase 4: PATCH /api/notifications/read-all — mark all read ──────────────
+  if (req.method === 'PATCH' && urlPath === '/api/notifications/read-all') {
+    setCors(res);
+    try {
+      await supabaseRequest('PATCH', '/rest/v1/notifications?read=eq.false',
+        { read: true }, { 'Prefer': 'return=minimal', 'Content-Profile': 'public' });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    } catch(e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  // ── Phase 4: PATCH /api/notifications/:id/read — mark one read ──────────────
+  if (req.method === 'PATCH' && urlPath.match(/^\/api\/notifications\/[^/]+\/read$/)) {
+    setCors(res);
+    const notifId = urlPath.split('/')[3];
+    try {
+      await supabaseRequest('PATCH', `/rest/v1/notifications?id=eq.${notifId}`,
+        { read: true }, { 'Prefer': 'return=minimal', 'Content-Profile': 'public' });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    } catch(e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  // ── Phase 4: GET /api/prospect/:email — Prospect Intelligence File data ──────
+  if (req.method === 'GET' && urlPath.match(/^\/api\/prospect\/.+/)) {
+    setCors(res);
+    const email = decodeURIComponent(urlPath.split('/api/prospect/')[1] || '').toLowerCase();
+    if (!email || !email.includes('@')) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Valid email required' })); return;
+    }
+    try {
+      // Parallel: fetch calls and jobs for this email
+      const [callsR, jobsR, fileR] = await Promise.all([
+        supabaseRequest('GET',
+          `/rest/v1/calls?order=date.desc&limit=20`,
+          null, { 'Accept-Profile': 'public' }),
+        supabaseRequest('GET',
+          `/rest/v1/jobs?prospect_email=eq.${encodeURIComponent(email)}&order=created_at.desc&limit=10`),
+        supabaseRequest('GET',
+          `/rest/v1/prospect_files?email=eq.${encodeURIComponent(email)}&limit=1`,
+          null, { 'Accept-Profile': 'public' })
+      ]);
+
+      // Filter calls by attendee email client-side
+      const emailLower = email.toLowerCase();
+      const allCalls = (callsR.status === 200 && Array.isArray(callsR.body)) ? callsR.body : [];
+      const matchedCalls = allCalls.filter(c => {
+        let att = c.attendees || [];
+        if (typeof att === 'string') { try { att = JSON.parse(att); } catch(e) { att = []; } }
+        return att.some(a => (a.email || '').toLowerCase() === emailLower);
+      });
+
+      const jobs = (jobsR.status === 200 && Array.isArray(jobsR.body)) ? jobsR.body : [];
+      const file = (fileR.status === 200 && Array.isArray(fileR.body) && fileR.body[0]) ? fileR.body[0] : null;
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ email, calls: matchedCalls, jobs, file }));
+    } catch(e) {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: e.message }));
     }
@@ -2816,6 +2957,8 @@ const server = http.createServer(async (req, res) => {
   // ── Static files ──────────────────────────────────────────────────────────
   if (urlPath === '/' || urlPath === '') urlPath = '/mockup-portal.html';
   if (urlPath === '/dashboard')          urlPath = '/mockup-dashboard.html';
+  if (urlPath === '/calls')              urlPath = '/calls.html';
+  if (urlPath === '/prospect' || urlPath.startsWith('/prospect?')) urlPath = '/prospect.html';
   const filePath = path.join(__dirname, urlPath);
   const ext      = path.extname(filePath);
   fs.readFile(filePath, (err, data) => {

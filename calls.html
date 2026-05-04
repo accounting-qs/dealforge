@@ -114,8 +114,25 @@ option{background:#111116;color:#e4e4e7}
       <svg id="sync-icon" style="width:13px;height:13px" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
       Sync Fireflies
     </button>
+    <!-- Phase 4: Notification bell -->
+    <button onclick="toggleNotifPanel()" id="bell-btn" style="position:relative;background:none;border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:6px 10px;cursor:pointer;color:#71717a;display:flex;align-items:center;gap:5px;font-size:13px;font-family:inherit;transition:border-color 120ms;" onmouseover="this.style.borderColor='rgba(255,255,255,0.18)';this.style.color='#e4e4e7'" onmouseout="this.style.borderColor='rgba(255,255,255,0.08)';this.style.color='#71717a'">
+      🔔
+      <span id="bell-badge" style="display:none;position:absolute;top:-5px;right:-5px;min-width:17px;height:17px;background:#7c3aed;color:#fff;font-size:10px;font-weight:700;border-radius:9px;align-items:center;justify-content:center;padding:0 4px;">0</span>
+    </button>
   </div>
 </nav>
+
+<!-- Phase 4: Notification overlay -->
+<div id="notif-overlay" style="display:none;position:fixed;inset:0;z-index:9999;">
+  <div onclick="toggleNotifPanel()" style="position:absolute;inset:0;"></div>
+  <div id="notif-panel" style="position:absolute;top:54px;right:20px;width:340px;max-height:460px;overflow-y:auto;background:#1c1c1f;border:1px solid rgba(255,255,255,0.08);border-radius:14px;box-shadow:0 20px 60px rgba(0,0,0,0.5);">
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 16px 10px;border-bottom:1px solid rgba(255,255,255,0.07);">
+      <span style="font-size:13px;font-weight:700;color:#e4e4e7;">🔔 Notifications</span>
+      <button onclick="markAllRead()" style="font-size:11px;color:#7c3aed;background:none;border:none;cursor:pointer;font-family:inherit;">Mark all read</button>
+    </div>
+    <div id="notif-list"><div style="padding:32px 16px;text-align:center;color:#71717a;font-size:13px;">Loading…</div></div>
+  </div>
+</div>
 
 <div class="page">
   <h1>Call Library</h1>
@@ -229,6 +246,13 @@ option{background:#111116;color:#e4e4e7}
         ▶ Create Job from This Call
       </button>
       <div id="d-create-job-error" style="display:none;font-size:12px;color:#f87171;margin-top:8px;"></div>
+    </div>
+
+    <!-- Phase 4: Intelligence File link -->
+    <div id="d-intel-link-wrap" style="display:none;margin-top:12px;">
+      <a id="d-intel-link" href="#" target="_blank" style="display:block;text-align:center;font-size:12px;color:#a1a1aa;text-decoration:none;padding:8px;border:1px solid rgba(255,255,255,0.07);border-radius:8px;transition:all 120ms" onmouseover="this.style.borderColor='rgba(255,255,255,0.15)';this.style.color='#e4e4e7'" onmouseout="this.style.borderColor='rgba(255,255,255,0.07)';this.style.color='#a1a1aa'">
+        📂 View Intelligence File
+      </a>
     </div>
   </div>
 </div>
@@ -468,6 +492,17 @@ function openDrawer(id) {
     }
   }
 
+  // Phase 4 — Intelligence File link (shown whenever we have a prospect email)
+  var intelWrap = document.getElementById('d-intel-link-wrap');
+  var intelLink = document.getElementById('d-intel-link');
+  var pEmail = getProspectEmail(att);
+  if (intelWrap && intelLink && pEmail) {
+    intelLink.href = '/prospect?email=' + encodeURIComponent(pEmail);
+    intelWrap.style.display = 'block';
+  } else if (intelWrap) {
+    intelWrap.style.display = 'none';
+  }
+
   document.getElementById('drawer-overlay').classList.add('open');
 }
 
@@ -537,6 +572,83 @@ function loadCalls() {
     });
 }
 loadCalls();
+
+// ── Phase 4: Notification center ─────────────────────────────────────────────
+var NOTIF_PANEL_OPEN = false;
+var NOTIF_ICONS = { new_bec:'🟢', review_required:'⚠️', job_complete:'✅', apollo_warning:'🔴', sync_complete:'🔄' };
+
+function relTime(dateStr) {
+  if (!dateStr) return '';
+  var d = new Date(dateStr), now = new Date();
+  var diff = Math.floor((now - d) / 1000);
+  if (diff < 60) return 'just now';
+  if (diff < 3600) return Math.floor(diff/60) + 'm ago';
+  if (diff < 86400) return Math.floor(diff/3600) + 'h ago';
+  return Math.floor(diff/86400) + 'd ago';
+}
+
+function toggleNotifPanel() {
+  NOTIF_PANEL_OPEN = !NOTIF_PANEL_OPEN;
+  document.getElementById('notif-overlay').style.display = NOTIF_PANEL_OPEN ? 'block' : 'none';
+  if (NOTIF_PANEL_OPEN) loadNotifications();
+}
+
+function loadNotifications() {
+  fetch('/api/notifications?limit=30')
+    .then(function(r){ return r.json(); })
+    .then(function(data){
+      var notifs = Array.isArray(data) ? data : [];
+      renderNotifications(notifs);
+      updateBellBadge(notifs.filter(function(n){ return !n.read; }).length);
+    })
+    .catch(function(){});
+}
+
+function renderNotifications(notifs) {
+  var el = document.getElementById('notif-list');
+  if (!notifs.length) {
+    el.innerHTML = '<div style="padding:32px 16px;text-align:center;color:#71717a;font-size:13px;">No notifications yet</div>';
+    return;
+  }
+  el.innerHTML = notifs.map(function(n) {
+    var icon = NOTIF_ICONS[n.type] || '🔔';
+    var bg = n.read ? 'transparent' : 'rgba(124,58,237,0.05)';
+    return '<div onclick="markRead(\'' + n.id + '\')" style="padding:12px 16px;border-bottom:1px solid rgba(255,255,255,0.06);cursor:pointer;background:' + bg + '">'
+      + '<div style="font-size:13px;font-weight:500;color:#e4e4e7;">' + icon + ' ' + esc(n.title) + '</div>'
+      + (n.body ? '<div style="font-size:12px;color:#71717a;margin-top:2px;">' + esc(n.body) + '</div>' : '')
+      + '<div style="font-size:11px;color:#52525b;margin-top:4px;">' + relTime(n.created_at) + '</div>'
+      + '</div>';
+  }).join('');
+}
+
+function updateBellBadge(count) {
+  var badge = document.getElementById('bell-badge');
+  if (!badge) return;
+  badge.textContent = count > 99 ? '99+' : count;
+  badge.style.display = count > 0 ? 'flex' : 'none';
+}
+
+function markRead(id) {
+  fetch('/api/notifications/' + id + '/read', { method: 'PATCH' })
+    .then(function(){ loadNotifications(); })
+    .catch(function(){});
+}
+
+function markAllRead() {
+  fetch('/api/notifications/read-all', { method: 'PATCH' })
+    .then(function(){ loadNotifications(); })
+    .catch(function(){});
+}
+
+// Poll unread count every 30s
+function pollBell() {
+  fetch('/api/notifications?unread=1&limit=50')
+    .then(function(r){ return r.json(); })
+    .then(function(d){ updateBellBadge(Array.isArray(d) ? d.length : 0); })
+    .catch(function(){});
+}
+pollBell();
+setInterval(pollBell, 30000);
 </script>
 </body>
 </html>
