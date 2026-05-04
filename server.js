@@ -1642,7 +1642,12 @@ async function fetchLeadsFromApollo(briefOrIcp) {
     if (orgIds.length) {
       try {
         debug.peopleSearch.attempted = true;
-        const peopleBody = { organization_ids: orgIds, per_page: 50 };
+        const peopleBody = {
+          organization_ids: orgIds,
+          per_page: 50,
+          sort_by_field: 'person_name',  // deterministic — same ICP always returns same leads
+          sort_ascending: true
+        };
         if (apolloTitles?.length) peopleBody.person_titles = apolloTitles;
         if (seniorities)          peopleBody.person_seniorities = seniorities;
         peopleBody.include_similar_titles = false;
@@ -1686,7 +1691,12 @@ async function fetchLeadsFromApollo(briefOrIcp) {
       const titleVariants = buildTitleVariants(apolloTitles);
       const locationVariants = buildDirectLocationVariants(geoPlan);
       const buildDirectPeopleBody = (titleVariant, locationVariant) => {
-        const body = { per_page: 50, include_similar_titles: titleVariant.includeSimilarTitles };
+        const body = {
+          per_page: 50,
+          include_similar_titles: titleVariant.includeSimilarTitles,
+          sort_by_field: 'person_name',  // stable sort — prevents result rotation between runs
+          sort_ascending: true
+        };
         if (titleVariant.titles?.length) body.person_titles = titleVariant.titles;
         if (seniorities) body.person_seniorities = seniorities;
         if (sizeRanges)  body.organization_num_employees_ranges = sizeRanges;
@@ -1750,7 +1760,12 @@ async function fetchLeadsFromApollo(briefOrIcp) {
     if (!usedPeopleSearch) {
       debug.contactsSearch.attempted = true;
       const activeGeoFallback = geoPlan.fallbackSets.find(f => f.key === geoUsed);
-      const contactsBody = { per_page: 25 };
+      const contactsBody = {
+        per_page: 25,
+        sort_by_field: 'contact_name', // stable sort — same ICP always returns same contacts
+        sort_ascending: true
+      };
+
       if (apolloTitles?.length) contactsBody.person_titles      = apolloTitles;
       if (seniorities)          contactsBody.person_seniorities = seniorities;
       if (sizeRanges)           contactsBody.organization_num_employees_ranges = sizeRanges;
