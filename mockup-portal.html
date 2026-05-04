@@ -2115,6 +2115,22 @@ async function saveOverride(field, value, displayEl) {
     if (!r.ok) throw new Error('Save failed: ' + r.status);
     if (displayEl) displayEl.textContent = value;
     console.log('[Edit Mode] Saved override:', field, '=', value);
+    
+    // If TAM or outreach changed, we must recalculate all downstream metrics (cycle, bounds, ROI, badges)
+    if ((field === 'tam_total' || field === 'recommended_outreach') && typeof window._reRunPersonalization === 'function') {
+      const btn = displayEl && displayEl.nextSibling;
+      if (btn && btn.tagName === 'BUTTON') {
+        const oldText = btn.textContent;
+        btn.textContent = '🔄';
+        const freshRes = await fetch('/api/jobs/' + encodeURIComponent(_jobId));
+        if (freshRes.ok) {
+          const freshJob = await freshRes.json();
+          const freshSession = typeof buildCompatSession === 'function' ? buildCompatSession(freshJob) : freshJob;
+          window._reRunPersonalization(freshSession);
+        }
+        btn.textContent = oldText;
+      }
+    }
   } catch(e) {
     alert('Could not save override: ' + e.message);
   }
@@ -2561,6 +2577,7 @@ function selectFeaturedImage(url) {
   // Could wire to saveOverride() if that function exists
 }
 
+window._reRunPersonalization = runPersonalization;
 function runPersonalization(session) {
   try {
     const ext = session.extracted || {};
