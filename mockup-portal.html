@@ -376,18 +376,23 @@ body { background: #0d0d12; font-family: -apple-system, BlinkMacSystemFont, 'Int
 /* Slide 1: Hero — real QS brand */
 .slide-1 {
   background: linear-gradient(160deg, #050a0a 0%, #061510 40%, #071a10 70%, #050a0a 100%);
+  background-size: cover;
+  background-position: center;
   flex-direction: column;
   position: relative;
   overflow: hidden;
 }
-.slide-1-glow-tl { position: absolute; top: -80px; left: -80px; width: 400px; height: 400px; background: radial-gradient(circle, rgba(52,211,153,0.15) 0%, transparent 70%); pointer-events: none; }
-.slide-1-glow-br { position: absolute; bottom: -60px; right: -60px; width: 300px; height: 300px; background: radial-gradient(circle, rgba(16,185,129,0.10) 0%, transparent 70%); pointer-events: none; }
-.slide-1-body { flex: 1; display: flex; flex-direction: column; justify-content: center; padding: 48px 52px 24px; position: relative; z-index: 1; }
-.slide-1-tag { font-size: 11px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: #34d399; margin-bottom: 20px; }
-.slide-1-title { font-size: 30px; font-weight: 700; color: #ffffff; line-height: 1.2; letter-spacing: -0.025em; max-width: 640px; margin-bottom: 0; }
-.slide-1-footer { border-top: 1px solid rgba(255,255,255,0.07); padding: 18px 52px; position: relative; z-index: 1; display: flex; align-items: center; justify-content: space-between; }
+/* Hero image overlay — when prospect branding has a hero image */
+.slide-1-overlay { position: absolute; inset: 0; background: linear-gradient(180deg, rgba(0,0,0,0.75) 0%, rgba(0,0,0,0.50) 40%, rgba(0,0,0,0.80) 100%); pointer-events: none; z-index: 0; }
+.slide-1-glow-tl { position: absolute; top: -80px; left: -80px; width: 400px; height: 400px; background: radial-gradient(circle, var(--prospect-primary-alpha, rgba(52,211,153,0.15)) 0%, transparent 70%); pointer-events: none; z-index: 1; }
+.slide-1-glow-br { position: absolute; bottom: -60px; right: -60px; width: 300px; height: 300px; background: radial-gradient(circle, var(--prospect-secondary-alpha, rgba(16,185,129,0.10)) 0%, transparent 70%); pointer-events: none; z-index: 1; }
+.slide-1-body { flex: 1; display: flex; flex-direction: column; justify-content: center; padding: 48px 52px 24px; position: relative; z-index: 2; }
+.slide-1-tag { font-size: 11px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: var(--prospect-primary, #34d399); margin-bottom: 20px; }
+.slide-1-title { font-size: 30px; font-weight: 700; color: #ffffff; line-height: 1.2; letter-spacing: -0.025em; max-width: 640px; margin-bottom: 0; text-shadow: 0 2px 12px rgba(0,0,0,0.5); }
+.slide-1-footer { border-top: 1px solid rgba(255,255,255,0.12); padding: 18px 52px; position: relative; z-index: 2; display: flex; align-items: center; justify-content: space-between; background: rgba(0,0,0,0.3); }
 .slide-1-host { display: flex; align-items: center; gap: 12px; }
-.host-avatar { width: 44px; height: 44px; border-radius: 50%; border: 2px solid rgba(52,211,153,0.5); overflow: hidden; background: #0d2a1e; flex-shrink: 0; display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 700; color: #34d399; letter-spacing: -0.01em; }
+.slide-1-logo { max-height: 36px; max-width: 100px; object-fit: contain; border-radius: 4px; }
+.host-avatar { width: 44px; height: 44px; border-radius: 50%; border: 2px solid var(--prospect-primary-half, rgba(52,211,153,0.5)); overflow: hidden; background: #0d2a1e; flex-shrink: 0; display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 700; color: var(--prospect-primary, #34d399); letter-spacing: -0.01em; }
 .host-avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .host-name { font-size: 13px; font-weight: 600; color: #e4e4e7; }
 .host-title { font-size: 11px; color: #71717a; margin-top: 1px; }
@@ -403,17 +408,17 @@ body { background: #0d0d12; font-family: -apple-system, BlinkMacSystemFont, 'Int
   padding: 40px 52px;
   position: relative;
 }
-.slide-2-eyebrow { font-size: 11px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: #34d399; margin-bottom: 10px; }
+.slide-2-eyebrow { font-size: 11px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--prospect-primary, #34d399); margin-bottom: 10px; }
 .slide-2-heading { font-size: 22px; font-weight: 700; color: #ffffff; letter-spacing: -0.02em; margin-bottom: 28px; }
 .result-cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-bottom: 20px; }
 .result-card { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; padding: 16px; }
-.result-arrow { font-size: 20px; font-weight: 700; color: #34d399; margin-bottom: 8px; }
+.result-arrow { font-size: 20px; font-weight: 700; color: var(--prospect-primary, #34d399); margin-bottom: 8px; }
 .result-numbers { font-size: 13px; font-weight: 700; color: #ffffff; margin-bottom: 4px; line-height: 1.3; }
 .result-name { font-size: 11px; color: #71717a; }
 .result-detail { font-size: 11px; color: #52525b; margin-top: 6px; line-height: 1.4; }
 .slide-2-avg { display: flex; gap: 32px; padding-top: 16px; border-top: 1px solid rgba(255,255,255,0.06); }
 .avg-item { font-size: 12px; color: #a1a1aa; }
-.avg-item strong { color: #34d399; }
+.avg-item strong { color: var(--prospect-primary, #34d399); }
 
 /* Chat panel */
 .chat-panel { width: 280px; border-left: 1px solid rgba(255,255,255,0.06); background: #0e0e16; display: flex; flex-direction: column; height: 100%; }
@@ -926,10 +931,12 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
 
         <!-- Slide 1: Hero with real QS brand -->
         <div class="slide active" id="slide-0">
-          <div class="slide-1" style="flex:1;display:flex;flex-direction:column;">
+          <div class="slide-1" id="slide-1-el" style="flex:1;display:flex;flex-direction:column;">
+            <div class="slide-1-overlay" id="slide-1-overlay" style="display:none;"></div>
             <div class="slide-1-glow-tl"></div>
             <div class="slide-1-glow-br"></div>
             <div class="slide-1-body">
+              <img id="slide-brand-logo" class="slide-1-logo" style="display:none;margin-bottom:14px;" alt="" onerror="this.style.display='none'">
               <div class="slide-1-tag" id="slide-tag">Live Webinar</div>
               <div class="slide-1-title" id="slide-title">Why 90% of Consulting Firms Plateau at $1.5M — and the Revenue System That Actually Breaks Through</div>
             </div>
@@ -1938,13 +1945,79 @@ function applyProspectBranding(brandData) {
     };
   }
 
+  // ── Helper: check if a color is near-white/near-black/gray and thus useless ──
+  const isUselessColor = (c) => {
+    if (!c || typeof c !== 'string') return true;
+    const hex = c.replace('#','');
+    if (hex.length < 6) return true;
+    const r = parseInt(hex.substr(0,2), 16), g = parseInt(hex.substr(2,2), 16), b = parseInt(hex.substr(4,2), 16);
+    const lum = (0.299*r + 0.587*g + 0.114*b) / 255;
+    if (lum > 0.92 || lum < 0.08) return true; // near white or near black
+    const max = Math.max(r,g,b), min = Math.min(r,g,b);
+    if ((max - min) < 20) return true; // gray (no saturation)
+    return false;
+  };
+
   // 3. CSS color variables — applied to webinar UI accents
-  if (brandData?.primary_color) {
-    document.documentElement.style.setProperty('--prospect-primary', brandData.primary_color);
-    document.documentElement.style.setProperty('--prospect-secondary', brandData.secondary_color || brandData.accent_color || brandData.primary_color);
+  // Use primary_color unless it's near-white/black, then try secondary, then accent, then all_colors
+  let effectivePrimary = null;
+  if (brandData?.primary_color && !isUselessColor(brandData.primary_color)) effectivePrimary = brandData.primary_color;
+  else if (brandData?.secondary_color && !isUselessColor(brandData.secondary_color)) effectivePrimary = brandData.secondary_color;
+  else if (brandData?.accent_color && !isUselessColor(brandData.accent_color)) effectivePrimary = brandData.accent_color;
+  else if (brandData?.all_colors?.length) {
+    effectivePrimary = brandData.all_colors.find(c => !isUselessColor(c)) || null;
+  }
+  let effectiveSecondary = null;
+  if (effectivePrimary) {
+    const candidates = [brandData?.secondary_color, brandData?.accent_color, ...(brandData?.all_colors || [])];
+    effectiveSecondary = candidates.find(c => c && c !== effectivePrimary && !isUselessColor(c)) || effectivePrimary;
   }
 
-  // 4. Tagline on slide 1 sub-tag
+  if (effectivePrimary) {
+    document.documentElement.style.setProperty('--prospect-primary', effectivePrimary);
+    document.documentElement.style.setProperty('--prospect-secondary', effectiveSecondary || effectivePrimary);
+    // Alpha variants for glow effects
+    const hex = effectivePrimary.replace('#','');
+    const r = parseInt(hex.substr(0,2),16), g = parseInt(hex.substr(2,2),16), b = parseInt(hex.substr(4,2),16);
+    document.documentElement.style.setProperty('--prospect-primary-alpha', `rgba(${r},${g},${b},0.18)`);
+    document.documentElement.style.setProperty('--prospect-primary-half', `rgba(${r},${g},${b},0.5)`);
+    if (effectiveSecondary && effectiveSecondary !== effectivePrimary) {
+      const h2 = effectiveSecondary.replace('#','');
+      const r2 = parseInt(h2.substr(0,2),16), g2 = parseInt(h2.substr(2,2),16), b2 = parseInt(h2.substr(4,2),16);
+      document.documentElement.style.setProperty('--prospect-secondary-alpha', `rgba(${r2},${g2},${b2},0.12)`);
+    }
+    console.log('[Deal Forge] Brand colors applied: primary=' + effectivePrimary + ' secondary=' + (effectiveSecondary||'same'));
+  }
+
+  // 4. Hero image — set as slide 1 background
+  const heroImg = brandData?.images?.find(img => img.type === 'hero') || brandData?.images?.[0];
+  const slideEl = document.getElementById('slide-1-el');
+  const overlayEl = document.getElementById('slide-1-overlay');
+  if (heroImg?.url && slideEl) {
+    slideEl.style.backgroundImage = `url('${heroImg.url}')`;
+    slideEl.style.backgroundSize = 'cover';
+    slideEl.style.backgroundPosition = 'center';
+    if (overlayEl) {
+      // Tint the overlay with the prospect's primary color
+      if (effectivePrimary) {
+        const hex = effectivePrimary.replace('#','');
+        const r = parseInt(hex.substr(0,2),16), g = parseInt(hex.substr(2,2),16), b = parseInt(hex.substr(4,2),16);
+        overlayEl.style.background = `linear-gradient(180deg, rgba(${r},${g},${b},0.7) 0%, rgba(0,0,0,0.65) 50%, rgba(${r},${g},${b},0.5) 100%)`;
+      }
+      overlayEl.style.display = 'block';
+    }
+    console.log('[Deal Forge] Hero image applied to webinar slide:', heroImg.url);
+  }
+
+  // 5. Logo on slide 1 — brand's real logo
+  const slideLogo = document.getElementById('slide-brand-logo');
+  if (slideLogo && brandData?.logo_url) {
+    slideLogo.src = brandData.logo_url;
+    slideLogo.style.display = 'block';
+    slideLogo.onerror = () => { slideLogo.style.display = 'none'; };
+  }
+
+  // 6. Tagline on slide 1 sub-tag
   if (brandData?.tagline) {
     const slideTag = document.getElementById('slide-tag');
     if (slideTag) {
@@ -1953,7 +2026,7 @@ function applyProspectBranding(brandData) {
     }
   }
 
-  // 5. "Presented for" attribution in slide 1 footer
+  // 7. "Presented for" attribution in slide 1 footer
   const prospectAttr = document.getElementById('prospect-attribution');
   if (prospectAttr) {
     prospectAttr.textContent = `Presented for ${brandData?.company_name || PROSPECT.name}`;

@@ -1817,7 +1817,18 @@ async function handleBrandScrape(task, job) {
   // ── 2. COLORS: 4-path waterfall ──────────────────────────────────────────────
   const isValidColor = (c) => {
     if (!c || !/^#[0-9a-fA-F]{3,8}$/.test(c)) return false;
-    return !['#fff','#ffffff','#000','#000000','#fafafa','#f5f5f5','#eeeeee','#e5e5e5'].includes(c.toLowerCase());
+    // Normalize 3-char hex to 6-char
+    let hex = c.replace('#','');
+    if (hex.length === 3) hex = hex[0]+hex[0]+hex[1]+hex[1]+hex[2]+hex[2];
+    if (hex.length < 6) return false;
+    const r = parseInt(hex.substr(0,2), 16), g = parseInt(hex.substr(2,2), 16), b = parseInt(hex.substr(4,2), 16);
+    // Filter near-white (luminance > 0.92) and near-black (luminance < 0.08)
+    const lum = (0.299*r + 0.587*g + 0.114*b) / 255;
+    if (lum > 0.92 || lum < 0.08) return false;
+    // Filter grays with no saturation
+    const max = Math.max(r,g,b), min = Math.min(r,g,b);
+    if ((max - min) < 20) return false;
+    return true;
   };
   const allColors = [];
   let primaryColor = null, secondaryColor = null, accentColor = null;
