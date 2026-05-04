@@ -1164,13 +1164,18 @@ async function fetchLeadsFromApollo(icp) {
 
     const runDirectGeoTitlesSearch = async (label) => {
       if (!apolloTitles?.length && !apolloGeo?.length) return [];
-      const directBody = { per_page: 25 };
+      const directBody = {
+        per_page: 25,
+        page: 1,               // explicit page 1 — prevents Apollo rotating results across calls
+        sort_by_field: 'person_name', // deterministic sort so same ICP always returns same people
+        sort_ascending: true
+      };
       if (apolloTitles?.length)      directBody.person_titles        = apolloTitles;
       if (seniorities)               directBody.person_seniorities   = seniorities;
       if (apolloGeo?.length)         directBody.person_locations     = apolloGeo;
       if (sizeRanges)                directBody.organization_num_employees_ranges = sizeRanges;
       try {
-        const dr = await fetch('https://api.apollo.io/api/v1/mixed_people/api_search', {
+        const dr = await fetch('https://api.apollo.io/api/v1/mixed_people/search', {
           method: 'POST', headers: apolloHeaders,
           body: JSON.stringify(directBody), signal: AbortSignal.timeout(15000)
         });
@@ -1196,10 +1201,16 @@ async function fetchLeadsFromApollo(icp) {
 
     if (orgIds.length) {
       try {
-        const peopleBody = { organization_ids: orgIds, per_page: 25 };
+        const peopleBody = {
+          organization_ids: orgIds,
+          per_page: 25,
+          page: 1,               // deterministic — always return same first page
+          sort_by_field: 'person_name',
+          sort_ascending: true
+        };
         if (apolloTitles?.length) peopleBody.person_titles      = apolloTitles;
         if (seniorities)          peopleBody.person_seniorities = seniorities;
-        const peopleRes = await fetch('https://api.apollo.io/api/v1/mixed_people/api_search', {
+        const peopleRes = await fetch('https://api.apollo.io/api/v1/mixed_people/search', {
           method: 'POST', headers: apolloHeaders,
           body: JSON.stringify(peopleBody), signal: AbortSignal.timeout(15000)
         });
@@ -1211,38 +1222,43 @@ async function fetchLeadsFromApollo(icp) {
             const company = p.organization_name || p.organization?.name || '';
             return n.length > 2 && p.title && company;
           });
-          allPeople = people.map(p => normalizePerson(p, 'mixed_people/api_search'));
-          console.log(`[Apollo] mixed_people/api_search (org-constrained): ${allPeople.length} contacts from ${orgIds.length} orgs`);
+          allPeople = people.map(p => normalizePerson(p, 'mixed_people/search'));
+          console.log(`[Apollo] mixed_people/search (org-constrained): ${allPeople.length} contacts from ${orgIds.length} orgs`);
 
           // If org-constrained returns thin results (<5), fall back to direct geo+titles.
           // This happens on Apollo basic plans where organization_ids is not fully supported.
           if (allPeople.length < 5) {
             console.log('[Apollo] Org-constrained thin — falling back to direct geo+titles search');
-            const direct = await runDirectGeoTitlesSearch('mixed_people/api_search-geo');
+            const direct = await runDirectGeoTitlesSearch('mixed_people/search-geo');
             if (direct.length > allPeople.length) { allPeople = direct; }
           }
           usedPeopleSearch = allPeople.length > 0;
         } else {
           const errText = await peopleRes.text().catch(() => '');
           console.warn(`[Apollo] people/search HTTP ${peopleRes.status} — falling back to geo+titles. ${errText.slice(0,120)}`);
-          allPeople = await runDirectGeoTitlesSearch('mixed_people/api_search-geo-fallback');
+          allPeople = await runDirectGeoTitlesSearch('mixed_people/search-geo-fallback');
           usedPeopleSearch = allPeople.length > 0;
         }
       } catch(e) {
-        console.warn('[Apollo] mixed_people/api_search error:', e.message);
-        allPeople = await runDirectGeoTitlesSearch('mixed_people/api_search-geo-catch');
+        console.warn('[Apollo] mixed_people/search error:', e.message);
+        allPeople = await runDirectGeoTitlesSearch('mixed_people/search-geo-catch');
         usedPeopleSearch = allPeople.length > 0;
       }
     } else {
       // No org IDs — go directly to geo+titles search
       console.log('[Apollo] No org IDs — running direct geo+titles search');
-      allPeople = await runDirectGeoTitlesSearch('mixed_people/api_search-direct');
+      allPeople = await runDirectGeoTitlesSearch('mixed_people/search-direct');
       usedPeopleSearch = allPeople.length > 0;
     }
 
     // ── Fallback: contacts/search (CRM-only, but workable) ───────────────────
     if (!usedPeopleSearch) {
-      const contactsBody = { per_page: 25 };
+      const contactsBody = {
+        per_page: 25,
+        sort_by_field: 'contact_name', // stable sort — same ICP always returns same contacts
+        sort_ascending: true
+      };
+
       if (apolloTitles?.length) contactsBody.person_titles      = apolloTitles;
       if (seniorities)          contactsBody.person_seniorities = seniorities;
       if (sizeRanges)           contactsBody.organization_num_employees_ranges = sizeRanges;
