@@ -220,6 +220,16 @@ option{background:#111116;color:#e4e4e7}
       <button onclick="overrideStatus('skipped')" class="pill" style="border-color:rgba(239,68,68,0.3);color:#f87171;background:rgba(239,68,68,0.07)">✕ Skip</button>
       <button onclick="overrideStatus('pending_review')" class="pill">Reset to Pending</button>
     </div>
+
+    <!-- Phase 3: Create Job CTA (shown only for approved BEC calls) -->
+    <div id="d-create-job-wrap" style="display:none;margin-top:24px;padding:16px;background:rgba(139,92,246,0.07);border:1px solid rgba(139,92,246,0.25);border-radius:10px;">
+      <div style="font-size:11px;font-weight:700;letter-spacing:0.07em;text-transform:uppercase;color:#7c3aed;margin-bottom:8px">Ready to Analyze</div>
+      <div style="font-size:13px;color:#a1a1aa;margin-bottom:12px">This approved call is ready to generate a prospect brief and lead list.</div>
+      <button onclick="createJobFromCall()" style="width:100%;padding:10px 16px;border-radius:8px;border:none;background:linear-gradient(135deg,#7c3aed,#6d28d9);color:#fff;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;letter-spacing:0.01em;transition:opacity 120ms" onmouseover="this.style.opacity='0.88'" onmouseout="this.style.opacity='1'">
+        ▶ Create Job from This Call
+      </button>
+      <div id="d-create-job-error" style="display:none;font-size:12px;color:#f87171;margin-top:8px;"></div>
+    </div>
   </div>
 </div>
 
@@ -441,7 +451,35 @@ function openDrawer(id) {
   document.getElementById('d-summary').textContent = s.short_summary || s.overview || '(no summary available)';
   document.getElementById('d-notes').textContent = s.shorthand_bullet || '(no detailed notes)';
   document.getElementById('d-actions').textContent = s.action_items || '(no action items)';
+
+  // Phase 3 — show "Create Job" CTA only for approved calls (any type)
+  var ctaWrap = document.getElementById('d-create-job-wrap');
+  var errEl = document.getElementById('d-create-job-error');
+  if (ctaWrap) {
+    var prospectEmail = getProspectEmail(att);
+    if (c.status === 'approved' && prospectEmail) {
+      ctaWrap.style.display = 'block';
+      if (errEl) errEl.style.display = 'none';
+    } else if (c.status === 'approved' && !prospectEmail) {
+      ctaWrap.style.display = 'block';
+      if (errEl) { errEl.textContent = '⚠️ No non-QS attendee email found — job cannot be auto-created. Enter the email manually in the New Job modal.'; errEl.style.display = 'block'; }
+    } else {
+      ctaWrap.style.display = 'none';
+    }
+  }
+
   document.getElementById('drawer-overlay').classList.add('open');
+}
+
+// Extract the prospect email from attendees — filters out internal @quantum-scaling.com emails
+function getProspectEmail(attendees) {
+  var QS_DOMAINS = ['quantum-scaling.com', 'quantumscale.io'];
+  var att = attendees || [];
+  var match = att.find(function(a) {
+    var em = (a.email || '').toLowerCase();
+    return em.includes('@') && !QS_DOMAINS.some(function(d){ return em.endsWith('@'+d); });
+  });
+  return match ? match.email : null;
 }
 
 function closeDrawer() {
@@ -456,6 +494,31 @@ function overrideStatus(val) {
   updateCallLocal(openCallId, 'status', val);
   updateStats();
   render();
+  // refresh CTA visibility after status change
+  var c = ALL_CALLS.find(function(x){ return x.id===openCallId; });
+  if (c) {
+    var att = c.attendees || [];
+    if (typeof att === 'string') { try { att = JSON.parse(att); } catch(e){ att=[]; } }
+    var ctaWrap = document.getElementById('d-create-job-wrap');
+    if (ctaWrap) ctaWrap.style.display = (val === 'approved' && getProspectEmail(att)) ? 'block' : 'none';
+  }
+}
+
+// Phase 3 — Create a job from this call by navigating to the dashboard with the prospect email
+function createJobFromCall() {
+  var c = ALL_CALLS.find(function(x){ return x.id===openCallId; });
+  if (!c) return;
+  var att = c.attendees || [];
+  if (typeof att === 'string') { try { att = JSON.parse(att); } catch(e){ att=[]; } }
+  var email = getProspectEmail(att);
+  var errEl = document.getElementById('d-create-job-error');
+  if (!email) {
+    if (errEl) { errEl.textContent = '⚠️ No prospect email found in attendees. Please create the job manually from the dashboard.'; errEl.style.display = 'block'; }
+    return;
+  }
+  // Open dashboard with the email pre-filled in the New Job modal
+  var url = '/dashboard?newjob=' + encodeURIComponent(email);
+  window.open(url, '_blank');
 }
 
 // ── Init ─────────────────────────────────────────────────────────────────────

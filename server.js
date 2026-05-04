@@ -1530,13 +1530,65 @@ async function generateChatMessages(title, icp, customerPain, resultDelivered, h
 
 // ── TASK HANDLERS ─────────────────────────────────────────────────────────────
 
+// ── Phase 3: Read approved calls from DB before hitting Fireflies API ────────
+async function findApprovedCallsFromDB(email) {
+  if (!email) return [];
+  try {
+    const r = await supabaseRequest(
+      'GET',
+      `/rest/v1/calls?status=eq.approved&order=date.desc&limit=20`,
+      null,
+      { 'Accept-Profile': 'public' }
+    );
+    if (r.status !== 200 || !Array.isArray(r.body)) return [];
+    // Filter client-side: attendee email must match
+    const emailLower = email.toLowerCase();
+    const matched = r.body.filter(call => {
+      let att = call.attendees || [];
+      if (typeof att === 'string') { try { att = JSON.parse(att); } catch(e) { att = []; } }
+      return att.some(a => (a.email || '').toLowerCase() === emailLower);
+    });
+    console.log(`[extract] DB approved calls for ${email}: ${matched.length} found`);
+    return matched;
+  } catch(e) {
+    console.warn('[extract] findApprovedCallsFromDB error:', e.message);
+    return [];
+  }
+}
+
+// Convert a DB call row into the same shape handleExtract expects from Fireflies
+function dbCallToTranscript(call) {
+  let summary = call.summary || {};
+  if (typeof summary === 'string') { try { summary = JSON.parse(summary); } catch(e) { summary = {}; } }
+  return {
+    id:         call.id,
+    title:      call.title || '(untitled)',
+    duration:   call.duration || 0,
+    dateString: call.date ? new Date(call.date).toLocaleDateString('en-US') : '',
+    summary
+  };
+}
+
 async function handleExtract(task, job) {
   const email = job.prospect_email || '';
   const scrapeDomain = job.prospect_website || email.split('@')[1];
   console.log(`[extract] Processing job ${job.id} for ${email}`);
 
-  // Step 1: Fireflies — pull ALL matching transcripts, not just the first
-  const transcripts = await findFirefliesTranscripts(email);
+  // Step 1: transcript source — approved calls from DB first, live Fireflies as fallback
+  let transcripts = [];
+  let transcriptSource = 'none';
+
+  const dbApproved = await findApprovedCallsFromDB(email);
+  if (dbApproved.length > 0) {
+    transcripts = dbApproved.map(dbCallToTranscript);
+    transcriptSource = 'db_approved';
+    console.log(`[extract] Using ${transcripts.length} approved DB call(s) for ${email}`);
+  } else {
+    transcripts = await findFirefliesTranscripts(email);
+    transcriptSource = transcripts.length > 0 ? 'live_fireflies' : 'none';
+    console.log(`[extract] DB approved: 0 — falling back to live Fireflies (${transcripts.length} found)`);
+  }
+
   const transcriptFound = transcripts.length > 0;
 
   // Step 2: Website
@@ -1589,8 +1641,11 @@ async function handleExtract(task, job) {
   }
 
   // Embed transcript + website meta into extracted
+  const firstT = transcripts[0] || null;
   extracted._meta = {
-    transcript: transcript ? { id: transcript.id, title: transcript.title, date: transcript.dateString, found: true } : { found: false },
+    transcript: firstT
+      ? { id: firstT.id, title: firstT.title, date: firstT.dateString, found: true, source: transcriptSource, count: transcripts.length }
+      : { found: false, source: 'none' },
     website: { domain: scrapeDomain, title: website.title, scraped: !!(website.bodyText) }
   };
 
@@ -1603,7 +1658,7 @@ async function handleExtract(task, job) {
   });
   await updateJobExtractedData(job.id, extracted);
 
-  return { extracted, transcriptFound: !!(transcript), websiteScraped: !!(website.bodyText), company };
+  return { extracted, transcriptFound, transcriptSource, websiteScraped: !!(website.bodyText), company };
 }
 
 async function handleProspectResearch(task, job) {
@@ -2439,6 +2494,10 @@ const server = http.createServer(async (req, res) => {
         website: (body.website || ghlContact?.website || email.split('@')[1] || '').replace(/^https?:\/\//, '').split('/')[0]
       };
 
+      // Phase 3: also check DB for approved calls — used for count badge in UI
+      const dbApproved = await findApprovedCallsFromDB(email);
+      const approvedCallCount = dbApproved.length;
+
       // Parallel: Fireflies lookup (with contact info for better matching) + website scrape
       const [transcript, website] = await Promise.all([
         findFirefliesTranscript(email, contactInfo),
@@ -2480,8 +2539,9 @@ const server = http.createServer(async (req, res) => {
 
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
-        transcript_found: transcriptFound,
-        transcript_title: transcriptTitle,
+        transcript_found:   transcriptFound,
+        transcript_title:   transcriptTitle,
+        approved_call_count: approvedCallCount,
         contact: contactInfo,
         brief:   brief || emptyBrief(contactInfo)
       }));

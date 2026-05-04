@@ -184,6 +184,9 @@
             <div style="font-size:11px;color:#71717a;margin-top:2px;">No Fireflies transcript found for this email. Assets can still be generated without a Call 1 summary.</div>
           </div>
         </div>
+
+        <!-- Phase 3: approved calls badge -->
+        <div id="nj-approved-calls" style="display:none;font-size:12px;font-weight:500;color:#4ade80;margin-top:8px;padding:7px 10px;background:rgba(34,197,94,0.08);border:1px solid rgba(34,197,94,0.2);border-radius:7px;"></div>
       </div>
 
       <!-- Website URL (important for branding + scraping) -->
@@ -837,6 +840,18 @@ function njSearch() {
       document.getElementById('nj-transcript-missing').style.display = 'flex';
     }
 
+    // Phase 3 — approved call count badge
+    var approvedCount = data.approved_call_count || 0;
+    var badge = document.getElementById('nj-approved-calls');
+    if (badge) {
+      if (approvedCount > 0) {
+        badge.textContent = '✅ ' + approvedCount + ' approved call' + (approvedCount !== 1 ? 's' : '') + ' in Call Library — brief uses reviewed data';
+        badge.style.display = 'block';
+      } else {
+        badge.style.display = 'none';
+      }
+    }
+
     document.getElementById('nj-results').style.display = 'block';
 
     // Auto-select rep if not already chosen (deterministic from email, same rule as portal)
@@ -1143,6 +1158,19 @@ function loadJobsFromServer() {
 // Default screen
 showScreen('list');
 loadJobsFromServer();
+
+// Phase 3 — if opened with ?newjob=email (from Call Library "Create Job" button)
+// auto-open the New Job modal and pre-fill the email
+(function() {
+  var params = new URLSearchParams(window.location.search);
+  var njEmail = params.get('newjob');
+  if (njEmail) {
+    njOpen();
+    document.getElementById('nj-email').value = njEmail;
+    // Small delay to let the modal render, then kick off the prefetch
+    setTimeout(function() { njSearch(); }, 300);
+  }
+})();
 </script>
 
 </body>
