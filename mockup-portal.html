@@ -2308,16 +2308,19 @@ function wireROIEditMode() {
           runPersonalization(session2);
           console.log('[Deal Forge] Lead list complete — personalization updated with real leads');
         } else if (llStatus === 'pending' || llStatus === 'processing') {
-          setLeadListLoadingState(llStatus);
+          // Update the loading row subtitle to show progress
+          var loaderTitle = document.getElementById('lead-loader-title');
+          var loaderSub   = document.getElementById('lead-loader-sub');
+          if (loaderTitle) loaderTitle.textContent = llStatus === 'processing' ? 'Searching Apollo…' : 'Queued — waiting for extraction…';
+          if (loaderSub)   loaderSub.textContent   = llStatus === 'processing' ? 'Validating ICP fit and filtering contacts' : 'Lead search will begin shortly';
         } else if (llStatus === 'failed' || llStatus === 'needs_input') {
           assetsChecked['leads'] = true;
-          clearLeadListLoadingState();
-          var tbody2 = document.querySelector('.lead-table tbody');
-          if (tbody2) {
-            var errMsg = llStatus === 'failed'
-              ? 'Lead search failed — check Apollo API key or ICP filters'
-              : 'Lead search needs input — check ICP fields in the brief';
-            tbody2.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:28px 0;color:#71717a;font-size:13px;">' + errMsg + '</td></tr>';
+          // Remove loading spinner and show error message
+          var loadingRowErr = document.getElementById('leads-loading-row');
+          if (loadingRowErr) {
+            loadingRowErr.innerHTML = '<td colspan="8" style="text-align:center;padding:28px 0;color:#71717a;font-size:13px;">' +
+              (llStatus === 'failed' ? 'Lead search failed — check Apollo API key or ICP filters' : 'Lead search needs input — check ICP fields in the brief') +
+              '</td>';
           }
           console.log('[Deal Forge] Lead list ' + llStatus);
         }
