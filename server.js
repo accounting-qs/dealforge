@@ -116,7 +116,7 @@ async function storageUpload(storagePath, content, contentType = 'text/html') {
 }
 
 // ── DB helpers — jobs & tasks ─────────────────────────────────────────────────
-async function createJob(email, websiteUrl, brief) {
+async function createJob(email, websiteUrl, brief, repName = null) {
   const domain          = websiteUrl || email.split('@')[1];
   const prospectCompany = brief?.prospect?.company || null;
   const prospectName    = brief?.prospect?.contact_name || null;
@@ -125,7 +125,8 @@ async function createJob(email, websiteUrl, brief) {
     prospect_website: domain || null,
     prospect_company: prospectCompany,
     prospect_name:    prospectName,
-    extracted_data:   brief || null,   // brief IS the extracted data
+    rep_name:         repName || null,      // B5 fix: persist rep at job creation
+    extracted_data:   brief || null,
     status:           'processing'
   }, { 'Prefer': 'return=representation' });
   if (r.status >= 400) throw new Error(`createJob failed: ${r.status} ${JSON.stringify(r.body)}`);
@@ -395,15 +396,11 @@ async function fetchTranscriptDetail(id) {
   }
 }
 
-// 6-strategy exhaustive Fireflies search. Failure modes covered:
-//   1. Email prefix not a name (sgoldstucker) → use GHL name from contactInfo
-//   2. Domain keyword doesn't match title → accept any result from domain/company search
-//   3. Attendee emails missing from Fireflies → loosen match tier-by-tier
-//   4. Transcript title has no searchable keywords → Pass 6: recent scan of 100 transcripts
-//   5. Only one email part tried → all email segments are tried as keywords
-//   6. API error in one pass → try/catch per pass, continue to next strategy
-//   7. Wrong transcript returned → prefer exact email > domain attendee > loose keyword
-async function findFirefliesTranscript(email, contactInfo = {}) {
+// B2 fix: Multi-transcript search — returns ALL calls matching this prospect.
+// The caller (handleExtract) aggregates all summaries into one Claude context block
+// so that follow-up calls, pricing calls, and objection-handling calls all inform the ICP.
+// Sort order: exact-email matches first, then by duration desc (longest = richest context).
+async function findFirefliesTranscripts(email, contactInfo = {}) {
   const domain     = (email.split('@')[1] || '').toLowerCase();
   const domainBase = domain.split('.')[0];
   const emailLocal = email.split('@')[0].toLowerCase();
@@ -451,13 +448,18 @@ async function findFirefliesTranscript(email, contactInfo = {}) {
   const isExactEmail  = t => (t.meeting_attendees || []).some(a => (a.email || '').toLowerCase() === email.toLowerCase());
   const isDomainEmail = t => (t.meeting_attendees || []).some(a => (a.email || '').toLowerCase().endsWith('@' + domain));
 
-  function pickBest(results, acceptLoose, source) {
-    const exact = results.filter(isExactEmail);
-    if (exact.length)  { console.log(`[FF] ✓ exact email (${source}): "${exact[0].title}"`);  return exact[0]; }
-    const dom   = results.filter(isDomainEmail);
-    if (dom.length)    { console.log(`[FF] ✓ domain email (${source}): "${dom[0].title}"`);   return dom[0]; }
-    if (acceptLoose && results.length) { console.log(`[FF] ✓ loose match (${source}): "${results[0].title}"`); return results[0]; }
-    return null;
+  // Collect ALL unique matches into a Map (id → transcript)
+  const allMatches = new Map();
+  function collectMatches(results, acceptLoose, source) {
+    results.filter(isExactEmail).forEach(t => {
+      if (!allMatches.has(t.id)) { console.log(`[FF] ✓ exact email (${source}): "${t.title}"`); allMatches.set(t.id, t); }
+    });
+    results.filter(isDomainEmail).forEach(t => {
+      if (!allMatches.has(t.id)) { console.log(`[FF] ✓ domain email (${source}): "${t.title}"`); allMatches.set(t.id, t); }
+    });
+    if (acceptLoose) results.forEach(t => {
+      if (!allMatches.has(t.id)) { console.log(`[FF] ✓ loose match (${source}): "${t.title}"`); allMatches.set(t.id, t); }
+    });
   }
 
   // ── Passes 1–5: keyword searches ──────────────────────────────────────────
@@ -468,49 +470,58 @@ async function findFirefliesTranscript(email, contactInfo = {}) {
     if (searched.has(keyword)) continue;
     searched.add(keyword);
     try {
-      const data  = await firefliesQuery(searchGql, { keyword });
-      const found = pickBest(data?.transcripts || [], acceptLoose, source);
-      if (found) return found;
+      const data = await firefliesQuery(searchGql, { keyword });
+      collectMatches(data?.transcripts || [], acceptLoose, source);
     } catch(e) { console.warn(`[FF] Pass ${source} error:`, e.message); }
   }
 
-  // ── Pass 6a: recent scan — page 1 (most recent 50, Fireflies API max is 50)
-  // Catches transcripts titled "Discovery Call" with no searchable domain/name
-  console.log('[FF] Trying recent transcript scan pass 6a (limit 50)...');
+  // ── Pass 6a: recent scan — page 1 ─────────────────────────────────────────
+  console.log('[FF] Scanning recent transcripts pass 6a (limit 50)...');
   try {
-    const recentGql = `{ transcripts(limit: 50) { ${TRANSCRIPT_LIST_FIELDS} } }`;
-    const data      = await firefliesQuery(recentGql, {});
+    const data = await firefliesQuery(`{ transcripts(limit: 50) { ${TRANSCRIPT_LIST_FIELDS} } }`, {});
     const transcripts = data?.transcripts || [];
-    console.log(`[FF] Pass 6a: got ${transcripts.length} transcripts`);
-    // Log all attendee emails for debugging
+    console.log(`[FF] Pass 6a: ${transcripts.length} transcripts`);
     transcripts.forEach(t => {
-      const attendees = (t.meeting_attendees || []).map(a => a.email).filter(Boolean);
-      if (attendees.length) console.log(`[FF]   "${t.title}": ${attendees.join(', ')}`);
+      const emails = (t.meeting_attendees || []).map(a => a.email).filter(Boolean);
+      if (emails.length) console.log(`[FF]   "${t.title}": ${emails.join(', ')}`);
     });
-    const found = pickBest(transcripts, false, 'recent_scan_6a');
-    if (found) return found;
-    // Also try loose match (title/content keyword) in case attendees are missing
-    const foundLoose = pickBest(transcripts, true, 'recent_scan_6a_loose');
-    if (foundLoose && (foundLoose.meeting_attendees || []).length === 0) return foundLoose;
+    collectMatches(transcripts, false, 'recent_scan_6a');
   } catch(e) { console.warn('[FF] Pass 6a scan error:', e.message); }
 
-  // ── Pass 6b: recent scan — page 2 (transcripts 51–100 via skip)
-  console.log('[FF] Trying recent transcript scan pass 6b (skip 50, limit 50)...');
+  // ── Pass 6b: recent scan — page 2 ─────────────────────────────────────────
+  console.log('[FF] Scanning recent transcripts pass 6b (skip 50)...');
   try {
-    const recentGql2 = `{ transcripts(limit: 50, skip: 50) { ${TRANSCRIPT_LIST_FIELDS} } }`;
-    const data2      = await firefliesQuery(recentGql2, {});
+    const data2 = await firefliesQuery(`{ transcripts(limit: 50, skip: 50) { ${TRANSCRIPT_LIST_FIELDS} } }`, {});
     const transcripts2 = data2?.transcripts || [];
-    console.log(`[FF] Pass 6b: got ${transcripts2.length} transcripts`);
+    console.log(`[FF] Pass 6b: ${transcripts2.length} transcripts`);
     transcripts2.forEach(t => {
-      const attendees = (t.meeting_attendees || []).map(a => a.email).filter(Boolean);
-      if (attendees.length) console.log(`[FF]   "${t.title}": ${attendees.join(', ')}`);
+      const emails = (t.meeting_attendees || []).map(a => a.email).filter(Boolean);
+      if (emails.length) console.log(`[FF]   "${t.title}": ${emails.join(', ')}`);
     });
-    const found2 = pickBest(transcripts2, false, 'recent_scan_6b');
-    if (found2) return found2;
+    collectMatches(transcripts2, false, 'recent_scan_6b');
   } catch(e) { console.warn('[FF] Pass 6b scan error:', e.message); }
 
-  console.log('[FF] No transcript found for', email, '— searched:', [...searched].join(', '));
-  return null;
+  // ── Sort and return all matches ────────────────────────────────────────────
+  const matches = [...allMatches.values()];
+  if (!matches.length) {
+    console.log('[FF] No transcripts found for', email, '— searched:', [...searched].join(', '));
+    return [];
+  }
+  // Exact email first, then longest duration (most context)
+  matches.sort((a, b) => {
+    const aEx = isExactEmail(a) ? 1 : 0, bEx = isExactEmail(b) ? 1 : 0;
+    if (bEx !== aEx) return bEx - aEx;
+    return (b.duration || 0) - (a.duration || 0);
+  });
+  console.log(`[FF] Found ${matches.length} transcript(s) for ${email}:`);
+  matches.forEach(t => console.log(`[FF]   - "${t.title}" (${(t.duration||0).toFixed(0)} min)${isExactEmail(t) ? ' [exact]' : ''}`));
+  return matches;
+}
+
+// Legacy wrapper — callers that need only the best single transcript
+async function findFirefliesTranscript(email, contactInfo = {}) {
+  const all = await findFirefliesTranscripts(email, contactInfo);
+  return all[0] || null;
 }
 
 // ── Website scraper ───────────────────────────────────────────────────────────
@@ -605,7 +616,7 @@ Return this exact JSON (null for anything not found):
   "icp": {
     "role":          "string | null — human-readable description of their target buyers (used for display only)",
     "apollo_titles": "array of strings | null — EXACTLY 3-6 standalone job titles for Apollo API search. STRICT RULES: (1) Each entry must be a real job title a person would hold — 2-4 words max. (2) NEVER include sentence fragments, descriptions, qualifiers, or phrases. If the transcript says 'senior decision-makers at organizations with 50+ employees, particularly in government, large enterprises, who need to manage strategy execution, goals, accountability' — that is a DESCRIPTION, not a list of titles. Extract titles from it: ['CEO', 'Director of Strategy', 'Chief Strategy Officer', 'Head of Operations']. (3) Self-check each entry: would this appear verbatim on a LinkedIn profile or business card? If not — it is wrong, replace it. VALID: ['CEO', 'Managing Director', 'VP Sales', 'Head of Strategy', 'Chief Operating Officer']. INVALID: ['particularly in government', 'large enterprises', 'goals', 'accountability', 'who need to manage']. If titles not stated, INFER from role/industry context. Null ONLY if buyer role is completely indeterminate.",
-    "apollo_industries": "array of 1-5 strings | null — Apollo-compatible industry tags for ALL sectors the prospect's TARGET CLIENT companies could be in. Think broadly — if they target 'government and large enterprises', their clients span multiple sectors. Examples: strategy software targeting govt/enterprise → ['government administration', 'financial services', 'information technology and services', 'nonprofit organization management']. Marketing agency targeting e-commerce → ['retail', 'consumer goods', 'apparel and fashion']. Use specific Apollo-searchable terms: 'government administration', 'financial services', 'management consulting', 'healthcare', 'education management', 'real estate', 'software development', 'marketing and advertising', 'retail', 'manufacturing', 'banking', 'insurance', 'nonprofit organization management', 'legal services', 'construction', 'telecommunications', 'information technology and services', 'consumer goods', 'pharmaceuticals', 'hospitality', 'transportation/trucking/railroad'. Null ONLY if sector completely indeterminate.",
+    "apollo_industries": "array of EXACTLY 1-2 strings | null — Apollo-compatible industry tags. CRITICAL: Apollo uses AND logic across all industry tags — every extra tag HALVES the result set. Return ONLY the single best-fit industry tag for the prospect's TARGET CLIENT companies. Only add a second tag if the prospect genuinely serves two completely distinct sectors (e.g. both healthcare AND manufacturing). Use specific Apollo-searchable terms: 'government administration', 'financial services', 'management consulting', 'healthcare', 'education management', 'real estate', 'software development', 'marketing and advertising', 'retail', 'manufacturing', 'banking', 'insurance', 'nonprofit organization management', 'legal services', 'construction', 'telecommunications', 'information technology and services', 'consumer goods', 'pharmaceuticals', 'hospitality', 'transportation/trucking/railroad', 'professional training & coaching', 'executive office'. Null ONLY if sector completely indeterminate. DO NOT output more than 2 tags.",
     "industry":      "string | null — single best-fit sector tag from apollo_industries (first/most representative one), for display only",
     "company_size":  "string | null — human-readable size of their TARGET clients, for display only (e.g. '50-200 employees', 'mid-market', 'enterprise'). Concise — not a full sentence.",
     "apollo_employee_ranges": "array of strings | null — Apollo API employee range codes for their TARGET clients. Choose ONLY from these exact strings: '1,10', '11,50', '51,200', '201,500', '501,1000', '1001,10000', '10001,50000', '50001+'. Match to the described size: '50+ employees, ideally 100+' → ['51,200','201,500']. 'Enterprise/large organizations' → ['501,1000','1001,10000','10001,50000']. CRITICAL RULE: if transcript mentions 'enterprise', 'large organizations', 'government agencies', 'Fortune 500', 'enterprise clients', or any equivalent → you MUST include '1001,10000' in the ranges. Government agencies and large enterprises are typically 1000+ employees. 'Small businesses under 10' → ['1,10']. Select 1-4 contiguous ranges that bracket the target. Null if no size mentioned.",
@@ -963,8 +974,9 @@ Given this ICP:
 Your task:
 1. Generate a "primaryTitles" list: 6-8 COMMON titles that people in these roles actually use on LinkedIn. These should be the most widely indexed variants.
 2. Generate an "extendedTitles" list: 6-8 SPECIALIST or ALTERNATIVE titles for the same roles. Used as fallback when primary returns few results.
-3. Generate an "industries" list: map the given industries to Apollo's taxonomy. Apollo uses exact strings like "pharmaceuticals", "medical devices", "biotechnology", "information technology and services", "computer software", "financial services", "management consulting", etc.
-4. In "notes": briefly explain your translation strategy (1-2 sentences max).
+3. Generate "primaryIndustry": ONE single best-fit Apollo industry tag for the org search (e.g. "management consulting"). CRITICAL: Apollo org search uses AND logic — only ONE tag gives meaningful results. Choose the most representative sector.
+4. Generate "secondaryIndustries": array of 1-3 ADDITIONAL industry tags for reference only (used by the lead classifier, NOT sent to Apollo org search).
+5. In "notes": briefly explain your translation strategy (1-2 sentences max).
 
 RULES:
 - Do NOT include overly generic titles like "Manager", "Director" without context
@@ -976,7 +988,8 @@ Return this exact JSON structure:
 {
   "primaryTitles": ["title1", "title2", ...],
   "extendedTitles": ["title1", "title2", ...],
-  "industries": ["industry1", "industry2", ...],
+  "primaryIndustry": "single industry string",
+  "secondaryIndustries": ["industry2", "industry3"],
   "notes": "brief strategy note"
 }`;
 
@@ -993,25 +1006,32 @@ Return this exact JSON structure:
     const jsonStr = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
     const parsed = JSON.parse(jsonStr);
 
-    const primaryTitles  = Array.isArray(parsed.primaryTitles)  && parsed.primaryTitles.length  ? parsed.primaryTitles  : rawTitles;
-    const extendedTitles = Array.isArray(parsed.extendedTitles) && parsed.extendedTitles.length ? parsed.extendedTitles : [];
-    const industries     = Array.isArray(parsed.industries)     && parsed.industries.length     ? parsed.industries     : rawIndustries;
+    const primaryTitles       = Array.isArray(parsed.primaryTitles)       && parsed.primaryTitles.length       ? parsed.primaryTitles       : rawTitles;
+    const extendedTitles      = Array.isArray(parsed.extendedTitles)      && parsed.extendedTitles.length      ? parsed.extendedTitles      : [];
+    // B1b fix: use single primaryIndustry for Apollo org search to avoid AND-logic collapse.
+    // secondaryIndustries are kept for reference (passed to Haiku classifier context only).
+    const primaryIndustry     = (typeof parsed.primaryIndustry === 'string' && parsed.primaryIndustry.trim())
+      ? parsed.primaryIndustry.trim()
+      : (rawIndustries[0] || null);
+    const secondaryIndustries = Array.isArray(parsed.secondaryIndustries) && parsed.secondaryIndustries.length ? parsed.secondaryIndustries : rawIndustries.slice(1);
 
     // Merge primary + extended into a single deduplicated title array for Apollo
-    // Primary titles appear first (Apollo uses order-of-appearance weighting in some endpoints)
     const seen = new Set(primaryTitles.map(t => t.toLowerCase()));
     const allTitles = [...primaryTitles, ...extendedTitles.filter(t => !seen.has(t.toLowerCase()))];
 
-    console.log(`[ICP Translator] ✓ ${rawTitles.length} raw titles → ${allTitles.length} Apollo variants | Note: ${parsed.notes || 'n/a'}`);
+    console.log(`[ICP Translator] ✓ ${rawTitles.length} raw titles → ${allTitles.length} Apollo variants | primaryIndustry: "${primaryIndustry}" | Note: ${parsed.notes || 'n/a'}`);
 
     // Return enriched ICP — all other fields (geography, employee ranges, seniorities) preserved
+    // apollo_industries is now always a single-element array (primaryIndustry only) so
+    // the Apollo org search never AND-filters across multiple tags.
     return {
       ...icp,
-      apollo_titles:     allTitles,
-      apollo_industries: industries,
-      _translated:       true,  // flag so we can track in logs
-      _primaryTitles:    primaryTitles,
-      _extendedTitles:   extendedTitles
+      apollo_titles:          allTitles,
+      apollo_industries:      primaryIndustry ? [primaryIndustry] : (rawIndustries.slice(0, 1)),
+      _secondaryIndustries:   secondaryIndustries,  // for classifier reference — NOT sent to Apollo
+      _translated:            true,
+      _primaryTitles:         primaryTitles,
+      _extendedTitles:        extendedTitles
     };
   } catch (e) {
     console.warn('[ICP Translator] Translation failed — using original ICP:', e.message);
@@ -1040,9 +1060,18 @@ async function fetchLeadsFromApollo(icp) {
     'Serbia','Montenegro','Bosnia and Herzegovina','Albania','North Macedonia','Bulgaria','Greece'
   ];
   const rawGeo = Array.isArray(icp?.apollo_geography) && icp.apollo_geography.length ? icp.apollo_geography : null;
+  // B3 fix: "Europe" / "European Union" are not valid Apollo location values — Apollo silently ignores them.
+  // Replace them with the full EU_COUNTRIES list so EU-based prospects are actually findable.
+  // UK and US pass through unchanged.
   const apolloGeo = rawGeo
     ? rawGeo
-        .flatMap(g => (g === 'European Union' || /^europe$/i.test(g)) ? [] : [g]) // strip "Europe"/"EU" — handled by fallback
+        .flatMap(g => {
+          if (/^european union$/i.test(g) || /^europe$/i.test(g)) {
+            console.log('[Apollo] Expanding "Europe" geo → EU_COUNTRIES list');
+            return EU_COUNTRIES;
+          }
+          return [g];
+        })
         .filter((g, i, a) => a.indexOf(g) === i) // dedupe
     : null;
   // Prefer LLM-extracted Apollo ranges; fall back to mapCompanySize for legacy briefs
@@ -1506,24 +1535,30 @@ async function handleExtract(task, job) {
   const scrapeDomain = job.prospect_website || email.split('@')[1];
   console.log(`[extract] Processing job ${job.id} for ${email}`);
 
-  // Step 1: Fireflies
-  const transcript = await findFirefliesTranscript(email);
+  // Step 1: Fireflies — pull ALL matching transcripts, not just the first
+  const transcripts = await findFirefliesTranscripts(email);
+  const transcriptFound = transcripts.length > 0;
 
   // Step 2: Website
   const website = await scrapeWebsite(scrapeDomain);
 
-  // Step 3: Build extraction content
+  // Step 3: Build extraction content — aggregate ALL call summaries into one block
   const parts = [];
-  if (transcript) {
-    const s = transcript.summary || {};
-    parts.push([
-      `MEETING: ${transcript.title}`,
-      s.shorthand_bullet ? `DETAILED NOTES:\n${s.shorthand_bullet}` : '',
-      s.overview         ? `METRICS OVERVIEW:\n${s.overview}` : '',
-      s.short_summary    ? `SUMMARY:\n${s.short_summary}` : '',
-      s.action_items     ? `ACTION ITEMS:\n${s.action_items}` : ''
-    ].filter(Boolean).join('\n\n'));
+
+  if (transcripts.length) {
+    transcripts.forEach((transcript, idx) => {
+      const s = transcript.summary || {};
+      const label = transcripts.length > 1 ? `CALL ${idx + 1} OF ${transcripts.length}` : 'CALL';
+      parts.push([
+        `${label}: ${transcript.title} (${(transcript.duration || 0).toFixed(0)} min)`,
+        s.shorthand_bullet ? `DETAILED NOTES:\n${s.shorthand_bullet}` : '',
+        s.overview         ? `METRICS OVERVIEW:\n${s.overview}` : '',
+        s.short_summary    ? `SUMMARY:\n${s.short_summary}` : '',
+        s.action_items     ? `ACTION ITEMS:\n${s.action_items}` : ''
+      ].filter(Boolean).join('\n\n'));
+    });
   }
+
   if (website.bodyText || website.title) {
     parts.push([
       `WEBSITE (${scrapeDomain}):`,
@@ -2287,6 +2322,7 @@ const server = http.createServer(async (req, res) => {
       const email      = (body.email || '').trim().toLowerCase();
       const websiteUrl = (body.websiteUrl || '').trim().replace(/^https?:\/\//, '').split('/')[0].toLowerCase();
       const brief      = body.brief || null;
+      const repName    = (body.repName || body.rep_name || '').trim() || null; // B5 fix
 
       if (!email || !email.includes('@')) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -2294,7 +2330,7 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
-      const job = await createJob(email, websiteUrl || null, brief);
+      const job = await createJob(email, websiteUrl || null, brief, repName);
       // Spawn the full pipeline immediately:
       // - extract + prospect_research run now (re-extract with fresh transcript + LinkedIn)
       // - lead_list runs now (uses brief ICP which is already confirmed by rep)
