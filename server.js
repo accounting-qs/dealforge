@@ -1162,13 +1162,10 @@ function sanitizeApolloPayload(payload) {
       warnings.push(`Removed ${before - sanitized.person_seniorities.length} invalid seniorities`);
   }
 
-  // Validate email status (default to verified)
+  // contact_email_status — the new api_search endpoint ignores this filter and returns 0.
+  // Remove it to allow the search to return results (has_email is returned per contact).
   if (sanitized.contact_email_status) {
-    sanitized.contact_email_status = sanitized.contact_email_status.filter(s =>
-      VALID_EMAIL_STATUSES.has(s)
-    );
-    if (sanitized.contact_email_status.length === 0)
-      sanitized.contact_email_status = ['verified'];
+    delete sanitized.contact_email_status;
   }
 
   // Validate employee ranges format
@@ -1321,6 +1318,9 @@ async function guaranteedLeadSearch(sanitizedPayload, confidenceMap, relaxationO
         sort_ascending: true,
         ...payload
       };
+      // q_keywords is not supported by the api_search endpoint — it causes 0 results.
+      // preflightCompanyCheck still uses it via q_organization_keyword_tags.
+      delete body.q_keywords;
       
       const res = await fetch('https://api.apollo.io/api/v1/mixed_people/api_search', {
         method: 'POST',
@@ -1337,14 +1337,14 @@ async function guaranteedLeadSearch(sanitizedPayload, confidenceMap, relaxationO
         return { total_entries: 0, people: [] };
       }
       const data = await res.json();
-      console.log(`[Apollo] People search raw response: total=${data.pagination?.total_entries}, people=${data.people?.length}`);
+      console.log(`[Apollo] People search raw response: total=${data.total_entries}, people=${data.people?.length}`);
       
       const people = (data.people || []).filter(p => {
         const n = normalizePerson(p, 'apollo');
         return n.name && n.name.length > 2 && n.title && n.company;
       }).map(p => normalizePerson(p, 'apollo'));
 
-      return { total_entries: data.pagination?.total_entries || 0, people };
+      return { total_entries: data.total_entries || 0, people };
     } catch(e) {
       console.error('[apolloPeopleSearch] exception:', e.message);
       return { total_entries: 0, people: [] };
@@ -1394,7 +1394,6 @@ async function guaranteedLeadSearch(sanitizedPayload, confidenceMap, relaxationO
       // Nuclear fallback
       const nuclear = {
         person_titles: currentPayload.person_titles,
-        contact_email_status: ['verified'],
         per_page: 25
       };
       if (currentPayload.organization_locations) nuclear.organization_locations = currentPayload.organization_locations;
@@ -1417,7 +1416,6 @@ async function guaranteedLeadSearch(sanitizedPayload, confidenceMap, relaxationO
   if (results.total_entries < MIN_LEADS) {
     currentPayload = {
       person_titles: sanitizedPayload.person_titles || [],
-      contact_email_status: ['verified'],
       per_page: 25
     };
     results = await apolloPeopleSearch(currentPayload);
@@ -1449,11 +1447,9 @@ async function fetchLeadsFromApollo(icp) {
 
   const legacyPayload = {
     person_titles: Array.isArray(icp?.apollo_titles) && icp.apollo_titles.length ? icp.apollo_titles : [],
-    q_keywords: Array.isArray(icp?.apollo_industries) && icp.apollo_industries.length ? icp.apollo_industries.join(' ') : (icp?.industry || ''),
     organization_locations: apolloGeo,
     organization_num_employees_ranges: sizeRanges,
     person_seniorities: Array.isArray(icp?.person_seniorities) && icp.person_seniorities.length ? icp.person_seniorities : [],
-    contact_email_status: ['verified'],
     per_page: 50
   };
 
