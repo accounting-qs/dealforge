@@ -753,10 +753,7 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
             <div class="tam-stat-label">Full Market Cycle</div>
           </div>
         </div>
-        <div class="tam-cycle-badge">
-          <div class="tam-cycle-dot"></div>
-          <div class="tam-cycle-text" id="tam-cycle-badge-text">At 30K outreaches/mo, your full market cycles every <strong>3 months</strong> — run a new webinar topic each cycle to stay fresh</div>
-        </div>
+
       </div>
 
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
@@ -778,9 +775,9 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
 
     <!-- Lead Table -->
     <table class="lead-table">
-      <thead><tr><th>#</th><th class="th-match">Match</th><th>Name</th><th>Title</th><th>Company</th><th>Size</th><th>Website</th><th>LinkedIn</th></tr></thead>
+      <thead><tr><th>#</th><th>Name</th><th>Title</th><th>Company</th><th>Size</th><th>Website</th><th>LinkedIn</th></tr></thead>
       <tbody id="leads-tbody">
-        <tr id="leads-loading-row"><td colspan="7" style="text-align:center;padding:28px 0;color:#52525b;font-size:13px;">
+        <tr id="leads-loading-row"><td colspan="6" style="text-align:center;padding:28px 0;color:#52525b;font-size:13px;">
           <div class="lead-loader">
             <svg class="loading-spinner" fill="none" viewBox="0 0 24 24"><circle style="opacity:0.2" cx="12" cy="12" r="10" stroke="#34b433" stroke-width="3"/><path style="opacity:0.9" fill="#34b433" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
             <span class="lead-loader-copy">
@@ -3048,22 +3045,8 @@ function runPersonalization(session) {
           var liCell = lead.linkedin_url
             ? '<a class="li-link" href="' + lead.linkedin_url + '" target="_blank">' + liSvg + ' View</a>'
             : '<span style="color:#9ca3af">—</span>';
-          // ICP match scoring
-          var matchResult = scoreIcpMatch(lead, window.SESSION);
-          var matchBadge = '<span class="icp-badge" style="color:' + matchResult.color + ';background:' + matchResult.bg + ';">' + matchResult.label + '</span>';
-          // Build why-text for expandable row
-          var whyParts = matchResult.reasons || [];
-          var missParts = matchResult.misses || [];
-          var whyHtml = '<div class="lead-detail-inner">' +
-            '<div class="match-reason">ICP Analysis for <strong>' + lead.name + '</strong> at <strong>' + lead.company + '</strong></div>' +
-            '<div class="match-breakdown">' +
-              whyParts.map(function(r) { return '<span class="match-tag match-hit">✓ ' + r + '</span>'; }).join('') +
-              missParts.map(function(r) { return '<span class="match-tag match-miss">✗ ' + r + '</span>'; }).join('') +
-            '</div>' +
-          '</div>';
-          var dataRow = '<tr class="data-row" onclick="toggleLeadDetail(this)">' +
+          var dataRow = '<tr class="data-row">' +
             '<td style="color:#3f3f46;font-size:12px;">' + (idx + 1) + '</td>' +
-            '<td class="td-match">' + matchBadge + '</td>' +
             '<td class="td-name">' + lead.name + '</td>' +
             '<td class="td-title">' + lead.title + '</td>' +
             '<td class="td-company">' + lead.company + '</td>' +
@@ -3071,7 +3054,7 @@ function runPersonalization(session) {
             '<td>' + websiteCell + '</td>' +
             '<td>' + liCell + '</td>' +
             '</tr>';
-          var detailRow = '<tr class="lead-detail-row" style="display:none;"><td colspan="8" class="lead-detail-cell">' + whyHtml + '</td></tr>';
+          var detailRow = '';
           return dataRow + detailRow;
         }).join('');
 
