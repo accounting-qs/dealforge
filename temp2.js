@@ -575,12 +575,12 @@ function buildCompatSession(job) {
   
   ext._generated = applyOverrides({
     webinarTitles:        (tasks.webinar_titles && tasks.webinar_titles.output) || existingGen.webinarTitles || null,
-    leads:                existingGen.lead_list || tasks.lead_list?.output?.leads || [],      // Preserve rerun results
+    leads:                existingGen.leads || tasks.lead_list?.output?.leads || [],           // Preserve rerun results
     apolloTotal:          existingGen.tam_total || tasks.lead_list?.output?.total || null,
     recommendedOutreach:  existingGen.recommendedOutreach || tasks.lead_list?.output?.recommendedOutreach || null,
     tamSource:            existingGen.tam_source || tasks.lead_list?.output?.tamSource || null,
     leadsTaskStatus:      tasks.lead_list?.status || existingGen.leadsTaskStatus || null,
-    apollo_diagnostics:   existingGen.apollo_diagnostics || null
+    apollo_diagnostics:   tasks.lead_list?.output?.apollo_diagnostics || existingGen.apollo_diagnostics || null
   }, ext._overrides);
   
   return {
@@ -868,8 +868,13 @@ function wireROIEditMode() {
         showAssetButton('webinar-mock-asset-btn', tasks.webinar_mock.asset_url, 'Open Webinar Preview');
       }
 
-      // Keep polling until job terminal
+      // Keep polling until job terminal AND lead_list has settled
+      const leadStatus = tasks.lead_list?.status;
+      const leadDone = leadStatus === 'completed' || leadStatus === 'failed' || leadStatus === 'needs_input';
       if (job.status !== 'completed' && job.status !== 'failed') {
+        setTimeout(pollJob, 3000);
+      } else if (!leadDone) {
+        // Job is done but lead_list task is still running — keep polling for leads only
         setTimeout(pollJob, 3000);
       }
     } catch(err) {
