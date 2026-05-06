@@ -32,6 +32,7 @@ h1{font-size:28px;font-weight:700;letter-spacing:-0.025em;color:#fff;margin:0 0 
 .cat-agent{background:rgba(139,92,246,0.12);color:#a78bfa;border:1px solid rgba(139,92,246,0.25)}
 .cat-email{background:rgba(59,130,246,0.12);color:#93c5fd;border:1px solid rgba(59,130,246,0.25)}
 .cat-calendar{background:rgba(34,197,94,0.12);color:#4ade80;border:1px solid rgba(34,197,94,0.25)}
+.cat-webinar{background:rgba(239,68,68,0.12);color:#fca5a5;border:1px solid rgba(239,68,68,0.25)}
 
 /* Textarea */
 .prompt-content{width:100%;min-height:120px;background:rgba(0,0,0,0.3);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:12px 14px;font-size:13px;color:#d1d5db;line-height:1.6;font-family:'Fira Code','SF Mono',monospace;resize:vertical;outline:none;transition:border-color 200ms}
@@ -84,10 +85,10 @@ h1{font-size:28px;font-weight:700;letter-spacing:-0.025em;color:#fff;margin:0 0 
   <p class="sub">Edit agent prompts, email templates, and calendar invite copy. Changes are versioned automatically.</p>
 
   <div class="tabs">
-    <button class="tab active" onclick="filterCategory('all')">All</button>
-    <button class="tab" onclick="filterCategory('agent')">🤖 Agents</button>
-    <button class="tab" onclick="filterCategory('email')">📧 Email</button>
-    <button class="tab" onclick="filterCategory('calendar')">📅 Calendar</button>
+    <button class="tab active" onclick="filterCategory('all', event)">All</button>
+    <button class="tab" onclick="filterCategory('agent', event)">🤖 Agents</button>
+    <button class="tab" onclick="filterCategory('email', event)">📧 Email</button>
+    <button class="tab" onclick="filterCategory('webinar', event)">🎥 Webinar</button>
   </div>
 
   <div id="prompts-list">
@@ -103,10 +104,19 @@ var categoryFilter = 'all';
 
 function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
-function filterCategory(cat) {
+var PROMPT_VARS = {
+  icp_translation:  '{{rawTitles}}  {{rawIndustries}}  {{rawGeo}}  {{companySize}}  {{employeeRanges}}',
+  brief_extraction: '{{prospect_company}}  {{prospect_name}}',
+  email_reminder:   '{{webinar_title}}  {{host_name}}  {{result_delivered}}  {{customer_pain}}  {{prospect_company}}',
+  chat_messages:    '{{webinar_title}}  {{icp_role}}  {{icp_industry}}  {{customer_pain}}  {{result_delivered}}  {{host_name}}',
+  host_bio:         '{{host_name}}  {{company_name}}  {{icp_industry}}  {{result_delivered}}',
+  webinar_titles:   '{{prospect_company_name}}  {{icp_role}}  {{icp_industry}}  {{company_size_line}}  {{customer_pain}}  {{result_delivered}}'
+};
+
+function filterCategory(cat, event) {
   categoryFilter = cat;
   document.querySelectorAll('.tab').forEach(function(t) { t.classList.remove('active'); });
-  event.target.classList.add('active');
+  if (event && event.target) event.target.classList.add('active');
   renderPrompts();
 }
 
@@ -131,18 +141,21 @@ function renderPrompts() {
   var html = filtered.map(function(p) {
     var catClass = 'cat-' + (p.category || 'agent');
     var updated = p.updated_at ? new Date(p.updated_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
+    var vars = PROMPT_VARS[p.slug] || '';
+    var varsHtml = vars ? '<div style="margin:8px 0 4px;font-size:11px;color:#52525b;">Available variables: <span style="color:#a78bfa;font-family:monospace;font-size:11px;">' + esc(vars) + '</span></div>' : '';
     return '<div class="prompt-card" id="card-' + esc(p.slug) + '">' +
       '<div class="prompt-header">' +
         '<div>' +
-          '<div class="prompt-label">' + esc(p.label) + '</div>' +
+          '<div class="prompt-label">' + esc(p.name) + '</div>' +
           '<div class="prompt-slug">' + esc(p.slug) + ' · ' + updated + '</div>' +
         '</div>' +
         '<div class="prompt-meta">' +
-          '<span class="prompt-category ' + catClass + '">' + esc(p.category) + '</span>' +
-          '<span class="prompt-version">v' + p.version + '</span>' +
+          '<span class="prompt-category ' + catClass + '">' + esc(p.category || 'agent') + '</span>' +
+          '<span class="prompt-version">v' + (p.version || 1) + '</span>' +
         '</div>' +
       '</div>' +
-      '<textarea class="prompt-content" id="content-' + esc(p.slug) + '" oninput="markDirty(\'' + esc(p.slug) + '\')">' + esc(p.content) + '</textarea>' +
+      varsHtml +
+      '<textarea class="prompt-content" id="content-' + esc(p.slug) + '" oninput="markDirty(\'' + esc(p.slug) + '\')">\n' + esc(p.content || '') + '</textarea>' +
       '<div class="prompt-actions">' +
         '<div style="display:flex;align-items:center;gap:8px">' +
           '<input class="notes-input" id="notes-' + esc(p.slug) + '" placeholder="Version notes (optional)">' +
@@ -213,12 +226,13 @@ function toggleHistory(slug) {
       if (!versions.length) { panel.innerHTML = '<div style="font-size:12px;color:#52525b">No previous versions</div>'; return; }
       panel.innerHTML = versions.map(function(v) {
         var dt = new Date(v.created_at).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+        var vNum = v.version_number || v.version || '?';
         return '<div class="history-item">' +
-          '<span class="history-ver">v' + v.version + '</span>' +
+          '<span class="history-ver">v' + vNum + '</span>' +
           '<span>' + dt + '</span>' +
           (v.notes ? ' · <span style="color:#a1a1aa">' + esc(v.notes) + '</span>' : '') +
-          (v.updated_by ? ' · <span style="color:#3f3f46">' + esc(v.updated_by) + '</span>' : '') +
-          ' <button class="history-btn" onclick="restoreVersion(\'' + esc(slug) + '\',\'' + esc(v.content).replace(/'/g, "\\'") + '\')">Restore</button>' +
+          (v.created_by ? ' · <span style="color:#3f3f46">' + esc(v.created_by) + '</span>' : '') +
+          (v.content ? ' <button class="history-btn" onclick="restoreVersion(\'' + esc(slug) + '\',\'' + esc(v.content).replace(/\'/g, "\\\'") + '\')">Restore</button>' : '') +
         '</div>';
       }).join('');
     })

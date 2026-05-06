@@ -2066,12 +2066,17 @@ function buildCompatSession(job) {
   
   ext._generated = applyOverrides({
     webinarTitles:        (tasks.webinar_titles && tasks.webinar_titles.output) || existingGen.webinarTitles || null,
-    leads:                existingGen.leads || tasks.lead_list?.output?.leads || [],           // Preserve rerun results
+    leads:                existingGen.leads || tasks.lead_list?.output?.leads || [],
     apolloTotal:          existingGen.tam_total || tasks.lead_list?.output?.total || null,
     recommendedOutreach:  existingGen.recommendedOutreach || tasks.lead_list?.output?.recommendedOutreach || null,
     tamSource:            existingGen.tam_source || tasks.lead_list?.output?.tamSource || null,
     leadsTaskStatus:      tasks.lead_list?.status || existingGen.leadsTaskStatus || null,
-    apollo_diagnostics:   tasks.lead_list?.output?.apollo_diagnostics || existingGen.apollo_diagnostics || null
+    apollo_diagnostics:   tasks.lead_list?.output?.apollo_diagnostics || existingGen.apollo_diagnostics || null,
+    // AI-generated copy from Stage 3 tasks — portal reads these instead of hardcoded strings
+    calendarEmails:       tasks.calendar_visual?.output?.emails || existingGen.calendarEmails || null,
+    calendarTitle:        tasks.calendar_visual?.output?.title  || existingGen.calendarTitle  || null,
+    chatMessages:         tasks.webinar_mock?.output?.messages  || existingGen.chatMessages   || null,
+    webinarAttendeeCount: tasks.webinar_mock?.output?.attendee_count || existingGen.webinarAttendeeCount || null,
   }, ext._overrides);
   
   return {
@@ -2920,66 +2925,110 @@ function runPersonalization(session) {
       kpiLine.innerHTML = '→ These are the <strong>' + icpRoleShort + 's</strong> you could be helping improve their <strong>' + kpiText + '</strong>.';
     }
 
-    // ── Live chat personalization ─────────────────────────────────────────────
+    // ── Live chat personalization — use AI-generated messages from webinar_mock task ─────────────
     const chatPanel = document.querySelector('.chat-messages');
     if (chatPanel) {
-      const companyName = prospect.company || 'your firm';
-      const icpIndustry2 = icp.industry || 'consulting';
-      const icpRole2 = icp.role || 'decision-makers';
-      const chatKpis = Array.isArray(icp.kpis) && icp.kpis.length ? icp.kpis : null;
-      const chatVol = MONTHLY_INVITES >= 1000 ? Math.round(MONTHLY_INVITES / 1000) + 'K' : MONTHLY_INVITES.toLocaleString();
-      const kpi1 = chatKpis ? chatKpis[0] : 'revenue growth';
-      const kpi2 = chatKpis && chatKpis[1] ? chatKpis[1] : 'client acquisition';
+      const aiMessages = gen.chatMessages; // array of {sender, text, is_team, timestamp} from handleWebinarMock
+      if (aiMessages && aiMessages.length > 0) {
+        // Render AI-generated messages directly
+        chatPanel.innerHTML = aiMessages.map(function(m) {
+          var cls = 'chat-msg' + (m.booking ? ' chat-booking' : '');
+          var nameCls = 'chat-name' + (m.is_team ? ' support' : '');
+          var nameText = m.is_team ? (companyName + ' Team') : m.sender;
+          var timeHtml = m.timestamp ? '<div class="chat-time">' + m.timestamp + '</div>' : '';
+          return '<div class="' + cls + '"><div class="' + nameCls + '">' + nameText + '</div><div class="chat-text">' + m.text + '</div>' + timeHtml + '</div>';
+        }).join('');
+      } else {
+        // Fallback: build contextual messages from ICP data (no hardcoded copy)
+        const icpIndustry2 = icp.industry || 'your industry';
+        const icpRole2 = icp.role || 'decision-makers';
+        const chatKpis = Array.isArray(icp.kpis) && icp.kpis.length ? icp.kpis : null;
+        const chatVol = MONTHLY_INVITES >= 1000 ? Math.round(MONTHLY_INVITES / 1000) + 'K' : MONTHLY_INVITES.toLocaleString();
+        const kpi1 = chatKpis ? chatKpis[0] : 'revenue growth';
+        const kpi2 = chatKpis && chatKpis[1] ? chatKpis[1] : 'client acquisition';
+        const painRef = (ext.customer_pain || ext.angle?.pain || '').split('.')[0] || 'growing manually';
 
-      const chatMsgs = [
-        { name: 'Jordan M.', text: 'We\'ve been 90% referral-based for years — this is exactly the system we needed for ' + icpIndustry2 },
-        { name: 'Alicia F.', text: 'How long until we see the first qualified calls from the ' + icpRole2 + ' targeting?' },
-        { name: null, support: true, text: 'Alicia — typically first calls in weeks 3–4 of the campaign. ' + hostName + ' will walk through the ramp in the funnel section' },
-        { name: 'Derek O.', text: 'We\'re plateaued and manual outreach to ' + icpIndustry2 + ' firms just doesn\'t scale anymore' },
-        { name: 'Simone L.', text: 'Our clients are asking about ' + kpi1 + ' — does this system target ' + icpRole2 + ' specifically on that?' },
-        { name: null, support: true, text: 'Simone — yes, the targeting is built around ' + icpIndustry2 + ' decision-makers. ' + kpi1 + ' framing is part of the webinar positioning' },
-        { name: 'Tyler B.', text: 'The automation piece is critical — our outreach to ' + icpRole2 + ' is completely manual right now' },
-        { name: 'Priya M.', text: 'Is there a replay? Our partners want to see this but have a conflict' },
-        { name: null, support: true, text: 'Yes — replay goes out within 24 hours to all registered attendees' },
-        { name: 'Marcus W.', text: 'Most excited about the ROI model — want to see what ' + chatVol + ' outreaches means for ' + kpi2 + ' specifically' },
-        { name: null, support: true, booking: true, text: '🎉 Nadia Caruso just booked a strategy call — excited to walk through your ' + icpIndustry2 + ' funnel with you, Nadia!' },
-        { name: 'Ryan C.', text: 'We\'ve been stuck at the same revenue for two years. This feels like the system we\'ve been missing' },
-        { name: null, support: true, booking: true, text: '✅ Sophie Whitfield — call confirmed! Looking forward to mapping this to Whitfield & Co., Sophie' },
-        { name: 'James O.', text: chatVol + ' automated outreaches targeting ' + icpRole2 + ' specifically — didn\'t know this was possible without a massive team' },
-      ];
+        const chatMsgs = [
+          { name: 'Jordan M.', text: 'Finally a system built specifically for ' + icpIndustry2 + ' — been looking for this' },
+          { name: 'Alicia F.', text: 'How long until we see the first qualified calls from the ' + icpRole2 + ' targeting?' },
+          { name: null, support: true, text: 'Alicia — typically first calls in weeks 3–4 of the campaign. ' + companyName + ' will walk through the ramp in the funnel section' },
+          { name: 'Derek O.', text: painRef.charAt(0).toUpperCase() + painRef.slice(1) + ' — this is the system I\'ve been waiting for' },
+          { name: 'Simone L.', text: 'Our clients are asking about ' + kpi1 + ' — does this target ' + icpRole2 + ' specifically?' },
+          { name: null, support: true, text: 'Simone — yes, targeting is built around ' + icpIndustry2 + ' decision-makers. ' + kpi1 + ' framing is part of the webinar positioning' },
+          { name: 'Tyler B.', text: 'The automation piece is critical — our outreach to ' + icpRole2 + ' is completely manual right now' },
+          { name: 'Priya M.', text: 'Is there a replay? Our partners want to see this but have a conflict' },
+          { name: null, support: true, text: 'Yes — replay goes out within 24 hours to all registered attendees' },
+          { name: 'Marcus W.', text: 'Most excited about the ROI model — what does ' + chatVol + ' outreaches mean for ' + kpi2 + ' specifically?' },
+          { name: null, support: true, booking: true, text: '🎉 Nadia C. just booked a strategy call — looking forward to walking through your ' + icpIndustry2 + ' funnel!' },
+          { name: 'Ryan C.', text: 'This feels like exactly the system we\'ve been missing to scale past ' + kpi1 },
+          { name: null, support: true, booking: true, text: '✅ Sophie W. — call confirmed! Looking forward to mapping this to your specific ' + icpIndustry2 + ' setup' },
+          { name: 'James O.', text: chatVol + ' automated outreaches targeting ' + icpRole2 + ' — didn\'t know this was possible at this scale' },
+        ];
 
-      chatPanel.innerHTML = chatMsgs.map(function(m) {
-        var cls = 'chat-msg' + (m.booking ? ' chat-booking' : '');
-        var nameCls = 'chat-name' + (m.support ? ' support' : '');
-        var nameText = m.support ? (companyName + ' Team') : m.name;
-        return '<div class="' + cls + '"><div class="' + nameCls + '">' + nameText + '</div><div class="chat-text">' + m.text + '</div></div>';
-      }).join('');
+        chatPanel.innerHTML = chatMsgs.map(function(m) {
+          var cls = 'chat-msg' + (m.booking ? ' chat-booking' : '');
+          var nameCls = 'chat-name' + (m.support ? ' support' : '');
+          var nameText = m.support ? (companyName + ' Team') : m.name;
+          return '<div class="' + cls + '"><div class="' + nameCls + '">' + nameText + '</div><div class="chat-text">' + m.text + '</div></div>';
+        }).join('');
+      }
     }
 
-    // ── Reminder emails — personalize prospect name + host ────────────────────
+    // ── Reminder emails — use AI-generated copy from calendar_visual task ────────
+    // Fall back to generic copy only when the task hasn't run yet for this job.
+    const aiEmails = gen.calendarEmails; // array of {timing, subject, preview} from handleCalendarVisual
     const prospectFirst = (prospectContactName || '').split(' ')[0] ||
                           (session.email || '').split('@')[0] || '';
-    const hostFirst = prospectContactName ? prospectContactName.split(' ')[0] :
-                      (prospect.company ? prospect.company.split(' ')[0] : 'Your host');
+    const repName = ext.rep_name || ext.host_name || prospect.company || 'Your Host';
 
     const e1preview = document.getElementById('email-1-preview');
-    if (e1preview) e1preview.textContent =
-      (prospectFirst ? 'Hey ' + prospectFirst + ' — ' : 'Hey — ') +
-      'your spot is confirmed. We\'ll walk through the exact pipeline framework that took 3 of our clients from $1.2M to $2.4M+ last year. See you there.';
+    if (e1preview) {
+      if (aiEmails && aiEmails[0]?.preview) {
+        e1preview.textContent = prospectFirst
+          ? 'Hey ' + prospectFirst + ' — ' + aiEmails[0].preview
+          : aiEmails[0].preview;
+      } else {
+        e1preview.textContent = (prospectFirst ? 'Hey ' + prospectFirst + ' — ' : 'Hey — ') +
+          'your spot is confirmed. We\'ll walk you through the system our clients use to build a predictable client acquisition engine. See you there.';
+      }
+    }
+
+    const e1subject = document.getElementById('email-1-subject');
+    if (e1subject && aiEmails && aiEmails[0]?.subject) {
+      e1subject.textContent = aiEmails[0].subject;
+    }
 
     const e2preview = document.getElementById('email-2-preview');
-    if (e2preview) e2preview.textContent =
-      'No re-registration needed — here\'s your direct join link. ' + hostFirst +
-      ' opens the room at 11:55 AM for early questions before we go live at noon sharp.';
+    if (e2preview) {
+      if (aiEmails && aiEmails[1]?.preview) {
+        e2preview.textContent = aiEmails[1].preview;
+      } else {
+        e2preview.textContent = 'No re-registration needed — here\'s your direct join link. ' + repName +
+          ' opens the room at 11:55 AM for early questions before we go live at noon sharp.';
+      }
+    }
+
+    const e2subject = document.getElementById('email-2-subject');
+    if (e2subject && aiEmails && aiEmails[1]?.subject) {
+      e2subject.textContent = aiEmails[1].subject;
+    }
 
     const e3subject = document.getElementById('email-3-subject');
-    if (e3subject) e3subject.textContent =
-      'We go live in 60 minutes — see you there' + (prospectFirst ? ', ' + prospectFirst : '');
+    if (e3subject) {
+      e3subject.textContent = aiEmails && aiEmails[2]?.subject
+        ? aiEmails[2].subject
+        : 'We go live in 60 minutes — see you there' + (prospectFirst ? ', ' + prospectFirst : '');
+    }
 
     const e3preview = document.getElementById('email-3-preview');
-    if (e3preview) e3preview.textContent =
-      'Heads up — we start in one hour. 800+ registered. ' + hostFirst +
-      ' will be taking live questions at the end, so come ready with yours.';
+    if (e3preview) {
+      if (aiEmails && aiEmails[2]?.preview) {
+        e3preview.textContent = aiEmails[2].preview;
+      } else {
+        e3preview.textContent = 'Heads up — we start in one hour. 800+ registered. ' + repName +
+          ' will be taking live questions at the end, so come ready with yours.';
+      }
+    }
 
     // ── Override variants with generated webinar titles ──────────────────────
     const generated = ext._generated || {};

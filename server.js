@@ -1587,13 +1587,50 @@ function calcRoiProjections(ltv, closeRate, showRate) {
   };
 }
 
+// ── Load a prompt from DB by slug, with hardcoded fallback ───────────────────
+async function loadPromptFromDB(slug, fallback) {
+  try {
+    const r = await supabaseRequest('GET', `/rest/v1/prompts?slug=eq.${encodeURIComponent(slug)}&limit=1`);
+    if (r?.body?.[0]?.content) {
+      console.log(`[prompts] Loaded "${slug}" from DB`);
+      return r.body[0].content;
+    }
+  } catch(e) {
+    console.warn(`[prompts] Could not load "${slug}" from DB, using fallback:`, e.message);
+  }
+  return fallback;
+}
+
 // ── Calendar visual: reminder emails ─────────────────────────────────────────
-async function generateReminderEmails(title, hostName, resultDelivered, customerPain) {
+async function generateReminderEmails(title, hostName, resultDelivered, customerPain, prospectCompany) {
   const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  const fallback = `You are writing short reminder email previews for a webinar registration confirmation sequence. Return valid JSON only. No markdown.
+
+Generate 3 reminder email previews for this webinar:
+
+Webinar title: ${title}
+Host name: ${hostName}
+What attendees will learn: ${resultDelivered || 'practical strategies'}
+Who this is for: ${customerPain || 'business owners looking to grow'}
+Prospect company being served: ${prospectCompany || 'the attendee\'s firm'}
+
+Requirements:
+- Email 1 (1 week before): Confirm registration, build excitement, reference what they will specifically learn
+- Email 2 (24 hours before): Create urgency, mention host opens room early
+- Email 3 (1 hour before): Very punchy, 1-2 sentences max
+
+Return this exact JSON:
+{"emails":[{"timing":"1 week before","subject":"string — max 10 words","preview":"string — 2-3 sentences, reference the webinar topic specifically"},{"timing":"24 hours before","subject":"string — max 10 words","preview":"string — 2-3 sentences, create urgency"},{"timing":"1 hour before","subject":"string — max 10 words","preview":"string — 1-2 sentences, very punchy"}]}`;
+  const promptText = await loadPromptFromDB('email_reminder', fallback);
+  const userContent = promptText
+    .replace(/\{\{webinar_title\}\}/g, title || '')
+    .replace(/\{\{host_name\}\}/g, hostName || '')
+    .replace(/\{\{result_delivered\}\}/g, resultDelivered || 'practical strategies')
+    .replace(/\{\{customer_pain\}\}/g, customerPain || 'business owners looking to grow')
+    .replace(/\{\{prospect_company\}\}/g, prospectCompany || 'the attendee\'s firm');
   const msg = await anthropic.messages.create({
-    model: 'claude-sonnet-4-6', max_tokens: 600, temperature: 0.7,
-    system: 'You are writing short reminder email previews for a webinar registration confirmation sequence. Return valid JSON only. No markdown.',
-    messages: [{ role: 'user', content: `Generate 3 reminder email previews for this webinar:\n\nWebinar title: ${title}\nHost name: ${hostName}\nWhat attendees will learn: ${resultDelivered || 'practical strategies'}\nWho this is for: ${customerPain || 'business owners looking to grow'}\n\nReturn this exact JSON:\n{"emails":[{"timing":"1 week before","subject":"string — max 10 words","preview":"string — 2-3 sentences"},{"timing":"24 hours before","subject":"string — max 10 words","preview":"string — 2-3 sentences, create urgency"},{"timing":"1 hour before","subject":"string — max 10 words","preview":"string — 1-2 sentences, very punchy"}]}` }]
+    model: 'claude-sonnet-4-6', max_tokens: 700, temperature: 0.7,
+    messages: [{ role: 'user', content: userContent }]
   });
   const raw = msg.content[0].text;
   try { return JSON.parse(raw); }
@@ -1603,10 +1640,36 @@ async function generateReminderEmails(title, hostName, resultDelivered, customer
 // ── Webinar mock: live chat messages ─────────────────────────────────────────
 async function generateChatMessages(title, icp, customerPain, resultDelivered, hostName) {
   const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  const fallback = `You are generating realistic live chat messages for a webinar. Return valid JSON only. No markdown.
+
+Generate 18 live chat messages for this webinar:
+
+Webinar title: ${title}
+Target audience role: ${icp?.role || 'business owners'}
+Target audience industry: ${icp?.industry || 'B2B'}
+Core problem they face: ${customerPain || 'growing their business'}
+Result they want: ${resultDelivered || 'more revenue'}
+Host / company name: ${hostName}
+
+Requirements:
+- 14 attendee messages: realistic first names, short messages (max 15 words), mix of questions + reactions + struggles that reference the specific industry and pain points above
+- 4 support team messages from "${hostName} Team": encourage booking a call, answer questions naturally
+- Messages should feel chronologically natural
+- Attendee questions MUST reference the webinar topic and industry specifically
+
+Return:
+{"messages":[{"sender":"string","text":"string — max 15 words","is_team":boolean,"timestamp":"string e.g. 12:14 PM"}]}`;
+  const promptText = await loadPromptFromDB('chat_messages', fallback);
+  const userContent = promptText
+    .replace(/\{\{webinar_title\}\}/g, title || '')
+    .replace(/\{\{icp_role\}\}/g, icp?.role || 'business owners')
+    .replace(/\{\{icp_industry\}\}/g, icp?.industry || 'B2B')
+    .replace(/\{\{customer_pain\}\}/g, customerPain || 'growing their business')
+    .replace(/\{\{result_delivered\}\}/g, resultDelivered || 'more revenue')
+    .replace(/\{\{host_name\}\}/g, hostName || 'Your Host');
   const msg = await anthropic.messages.create({
-    model: 'claude-sonnet-4-6', max_tokens: 800, temperature: 0.7,
-    system: 'You are generating realistic live chat messages for a webinar. Return valid JSON only. No markdown.',
-    messages: [{ role: 'user', content: `Generate 18 live chat messages for this webinar:\n\nWebinar title: ${title}\nTarget audience role: ${icp?.role || 'business owners'}\nTarget audience industry: ${icp?.industry || 'B2B'}\nCore problem they face: ${customerPain || 'growing their business'}\nResult they want: ${resultDelivered || 'more revenue'}\n\nRequirements:\n- 14 attendee messages: realistic first names, short messages, mix of questions + reactions + struggles\n- 4 support team messages from "Support" or "Team ${hostName}": encourage booking a call\n- Messages should feel chronologically natural\n- Attendee questions should reference the webinar topic\n\nReturn:\n{"messages":[{"sender":"string","text":"string — max 15 words","is_team":boolean,"timestamp":"string e.g. 12:14 PM"}]}` }]
+    model: 'claude-sonnet-4-6', max_tokens: 900, temperature: 0.7,
+    messages: [{ role: 'user', content: userContent }]
   });
   const raw = msg.content[0].text;
   try { return JSON.parse(raw); }
@@ -2224,11 +2287,15 @@ async function handleCalendarVisual(task, job) {
   const hostName  = job.research_data?.host?.name || extracted.prospect?.name || job.prospect_company || 'Your Host';
   const hostBio   = job.research_data?.host?.bio  || `${hostName} helps businesses grow through proven webinar strategies.`;
 
-  // Generate reminder emails
-  const emailsResult = await generateReminderEmails(variant.title, hostName,
+  const prospectCompany = extracted.prospect?.company || job.prospect_company || '';
+
+  // Generate reminder emails via AI prompt
+  const emailsResult = await generateReminderEmails(
+    variant.title, hostName,
     extracted.result_delivered || extracted.angle?.result,
-    extracted.customer_pain   || extracted.angle?.pain
-  ).catch(() => null);
+    extracted.customer_pain   || extracted.angle?.pain,
+    prospectCompany
+  ).catch(e => { console.warn('[calendar_visual] email gen failed:', e.message); return null; });
   const emails = emailsResult?.emails || [];
 
   // Next Tuesday ~3 weeks from now
@@ -2257,7 +2324,17 @@ async function handleCalendarVisual(task, job) {
   const storagePath = `${job.id}/calendar_visual.html`;
   const publicUrl   = await storageUpload(storagePath, htmlContent);
   console.log(`[calendar_visual] Uploaded: ${publicUrl}`);
-  return { url: publicUrl, title: variant.title, host_name: hostName, event_date: dateStr, email_count: emails.length };
+  // Store full generated data in output_data so portal can read it directly
+  return {
+    url:        publicUrl,
+    title:      variant.title,
+    host_name:  hostName,
+    event_date: dateStr,
+    emails:     emails,          // ← portal reads this for reminder email copy
+    hook:       variant.hook || '',
+    bullets:    variant.bullets || [],
+    for_line:   variant.for_line || ''
+  };
 }
 
 async function handleWebinarMock(task, job) {
@@ -2284,17 +2361,18 @@ async function handleWebinarMock(task, job) {
   const heroImage = (brandData.images || []).find(i => i.type === 'hero') || (brandData.images || [])[0];
   const heroImageUrl = heroImage?.url || '';
 
-  // Generate chat messages
-  const chatResult = await generateChatMessages(variant.title, extracted.icp,
+  // Generate chat messages via AI prompt
+  const chatResult = await generateChatMessages(
+    variant.title, extracted.icp,
     extracted.customer_pain   || extracted.angle?.pain,
     extracted.result_delivered || extracted.angle?.result,
     hostName
-  ).catch(() => null);
+  ).catch(e => { console.warn('[webinar_mock] chat gen failed:', e.message); return null; });
   const messages = chatResult?.messages || [];
 
   // Generate timestamps starting 12:05 PM, 30-90s apart
   let startTime = 12 * 60 + 5;
-  const timedMessages = messages.map((m, i) => {
+  const timedMessages = messages.map((m) => {
     const t = startTime;
     startTime += 30 + Math.floor(Math.random() * 60);
     const h = Math.floor(t / 60) % 12 || 12;
@@ -2303,17 +2381,16 @@ async function handleWebinarMock(task, job) {
     return { ...m, timestamp: `${h}:${min} ${ampm}` };
   });
 
-  // Attendee count: realistic fake
+  // Attendee count: realistic
   const attendeeCount = 750 + Math.floor(Math.random() * 300);
 
   if (!WEBINAR_MOCK_TEMPLATE) throw new Error('webinar_mock.html template not loaded');
 
-  const slide1Title = variant.title || '';
+  const slide1Title    = variant.title || '';
   const slide1Subtitle = `How ${companyName} Grows Your Business`;
-  const slide2Title = 'What You\'ll Learn Today';
-  const bulletsList = (variant.bullets || ['Proven system for getting clients', 'Step-by-step framework', 'How to scale predictably']).slice(0, 4);
+  const slide2Title    = 'What You\'ll Learn Today';
+  const bulletsList    = (variant.bullets || ['Proven system for getting clients', 'Step-by-step framework', 'How to scale predictably']).slice(0, 4);
 
-  // Build the template — handle mustache-like sections for logo
   let htmlContent = interpolate(WEBINAR_MOCK_TEMPLATE, {
     EVENT_TITLE:      slide1Title.replace(/</g, '&lt;').replace(/>/g, '&gt;'),
     SLIDE1_TITLE:     slide1Title.replace(/</g, '&lt;').replace(/>/g, '&gt;'),
@@ -2330,7 +2407,6 @@ async function handleWebinarMock(task, job) {
     MESSAGES_JSON:    JSON.stringify(timedMessages)
   });
 
-  // Handle {{#LOGO_URL}}...{{/LOGO_URL}} and {{^LOGO_URL}}...{{/LOGO_URL}} blocks
   if (logoUrl) {
     htmlContent = htmlContent.replace(/\{\{#LOGO_URL\}\}([\s\S]*?)\{\{\/LOGO_URL\}\}/g, '$1');
     htmlContent = htmlContent.replace(/\{\{\^LOGO_URL\}\}[\s\S]*?\{\{\/LOGO_URL\}\}/g, '');
@@ -2342,7 +2418,14 @@ async function handleWebinarMock(task, job) {
   const storagePath = `${job.id}/webinar_mock.html`;
   const publicUrl   = await storageUpload(storagePath, htmlContent);
   console.log(`[webinar_mock] Uploaded: ${publicUrl}`);
-  return { url: publicUrl, title: variant.title, host_name: hostName, attendee_count: attendeeCount };
+  // Store full generated data in output_data so portal can read it directly
+  return {
+    url:            publicUrl,
+    title:          variant.title,
+    host_name:      hostName,
+    attendee_count: attendeeCount,
+    messages:       timedMessages   // ← portal reads this for live chat
+  };
 }
 
 // ── Stage orchestration — spawn new tasks when dependencies are met ───────────
@@ -3233,8 +3316,11 @@ const server = http.createServer(async (req, res) => {
       const newVersion = prompt.version + 1;
       // Save current version to history
       await supabaseRequest('POST', '/rest/v1/prompt_versions', {
-        prompt_id: prompt.id, version: prompt.version,
-        content: prompt.content, notes: prompt.notes, updated_by: prompt.updated_by
+        prompt_id:      prompt.id,
+        version_number: prompt.version,
+        content:        prompt.content,
+        notes:          prompt.notes   || null,
+        created_by:     prompt.updated_by || 'system'
       });
       // Update the prompt
       await supabaseRequest('PATCH', `/rest/v1/prompts?id=eq.${prompt.id}`, {
