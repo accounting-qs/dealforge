@@ -2601,6 +2601,7 @@ function runPersonalization(session) {
     const prospect = ext.prospect || {};
     const icp = ext.icp || {};
     const brand = session.brand || {};
+    const companyName = prospect.company || 'your firm'; // available throughout runPersonalization
     // Brief schema stores financials under metrics; spec schema uses business — merge both
     const business = Object.assign({}, ext.business || {}, ext.metrics || {});
 
@@ -2816,7 +2817,6 @@ function runPersonalization(session) {
     }
 
     if (calDesc) {
-      const companyName = prospect.company || 'your firm';
       const icpRole = icp.role || 'decision-makers';
       const icpIndustry = icp.industry || 'your industry';
       const icpGeo = icp.geography;
