@@ -1332,8 +1332,12 @@ async function guaranteedLeadSearch(sanitizedPayload, confidenceMap, relaxationO
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(15000)
       });
-      if (!res.ok) return { total_entries: 0, people: [] };
+      if (!res.ok) {
+        console.error(`[Apollo] People search HTTP ${res.status} — body:`, await res.text().catch(() => '(unreadable)'));
+        return { total_entries: 0, people: [] };
+      }
       const data = await res.json();
+      console.log(`[Apollo] People search raw response: total=${data.pagination?.total_entries}, people=${data.people?.length}`);
       
       const people = (data.people || []).filter(p => {
         const n = normalizePerson(p, 'apollo');
@@ -1342,7 +1346,7 @@ async function guaranteedLeadSearch(sanitizedPayload, confidenceMap, relaxationO
 
       return { total_entries: data.pagination?.total_entries || 0, people };
     } catch(e) {
-      console.warn('[apolloPeopleSearch] error:', e.message);
+      console.error('[apolloPeopleSearch] exception:', e.message);
       return { total_entries: 0, people: [] };
     }
   };
@@ -1471,6 +1475,8 @@ async function fetchLeadsFromApollo(icp) {
   if (!hasTranslatedPayload) console.log('[Apollo] apollo_payload empty/missing — using legacyPayload');
   if (warnings.length > 0) console.log('[Apollo] Sanitize warnings:', warnings);
 
+  console.log('[Apollo] sanitizedPayload keys:', Object.keys(sanitizedPayload));
+  console.log('[Apollo] sanitizedPayload:', JSON.stringify(sanitizedPayload));
   console.log('[Apollo] Starting v3 guaranteed lead search...');
   const result = await guaranteedLeadSearch(
     sanitizedPayload, 
@@ -1480,11 +1486,14 @@ async function fetchLeadsFromApollo(icp) {
 
   console.log(`[Apollo] v3 Search Complete: ${result.leads.length} leads returned. TAM: ${result.totalAvailable}. Was relaxed: ${result.wasRelaxed}`);
   
-  // Backwards compatibility for the rest of the app
+  // Expose wasRelaxed and relaxationLog at top level for handleLeadList
   return { 
     leads: result.leads, 
     total: result.totalAvailable, 
-    tamSource: 'apollo', 
+    tamSource: 'apollo',
+    wasRelaxed: result.wasRelaxed,
+    relaxationLog: result.relaxationLog,
+    finalPayload: result.finalPayload,
     diagnostics: { 
       relaxationLog: result.relaxationLog,
       finalPayload: result.finalPayload
