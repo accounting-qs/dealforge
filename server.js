@@ -1146,7 +1146,7 @@ const VALID_EMAIL_STATUSES = new Set([
   'verified', 'unverified', 'likely to engage', 'unavailable'
 ]);
 
-const EMPLOYEE_RANGE_REGEX = /^\\d+,\\d+$/;
+const EMPLOYEE_RANGE_REGEX = /^\d+,\d+$/;
 
 function sanitizeApolloPayload(payload) {
   const sanitized = { ...payload };
@@ -1464,7 +1464,11 @@ async function fetchLeadsFromApollo(icp) {
     "person_titles"
   ];
 
-  const { payload: sanitizedPayload, warnings } = sanitizeApolloPayload(icp.apollo_payload || legacyPayload);
+  // Use apollo_payload from ICP translator only if it has actual query fields.
+  // An empty {} object is truthy but would cause Apollo to return 0 results.
+  const hasTranslatedPayload = icp.apollo_payload && Object.keys(icp.apollo_payload).length > 0;
+  const { payload: sanitizedPayload, warnings } = sanitizeApolloPayload(hasTranslatedPayload ? icp.apollo_payload : legacyPayload);
+  if (!hasTranslatedPayload) console.log('[Apollo] apollo_payload empty/missing — using legacyPayload');
   if (warnings.length > 0) console.log('[Apollo] Sanitize warnings:', warnings);
 
   console.log('[Apollo] Starting v3 guaranteed lead search...');
