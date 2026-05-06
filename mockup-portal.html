@@ -3081,6 +3081,38 @@ function runPersonalization(session) {
     }
     // else: still pending — spinner row stays visible naturally
 
+    // ── Render Apollo Diagnostics ─────────────────────────────────────────────
+    const diagPanel = document.getElementById('lead-diagnostics-panel');
+    if (diagPanel) {
+      if (gen.apollo_diagnostics && gen.apollo_diagnostics.wasRelaxed) {
+        diagPanel.style.display = 'block';
+        diagPanel.style.padding = '12px 16px';
+        diagPanel.style.background = 'rgba(245, 158, 11, 0.08)';
+        diagPanel.style.border = '1px solid rgba(245, 158, 11, 0.3)';
+        diagPanel.style.borderRadius = '8px';
+        diagPanel.style.marginBottom = '16px';
+        diagPanel.style.color = '#d97706';
+        diagPanel.style.fontSize = '13px';
+        
+        let logsHtml = (gen.apollo_diagnostics.relaxationLog || []).map(log => 
+          `<div style="margin-top:4px;">⚠️ ${escHtml(log)}</div>`
+        ).join('');
+        
+        diagPanel.innerHTML = `
+          <div style="font-weight:600;margin-bottom:6px;display:flex;align-items:center;gap:6px;">
+            <svg width="14" height="14" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"></path></svg>
+            Apollo Search Relaxed
+          </div>
+          <div>Original filters yielded insufficient leads. The search engine automatically relaxed constraints to guarantee results:</div>
+          <div style="margin-top:8px;font-family:monospace;font-size:12px;color:#b45309;line-height:1.6;">
+            ${logsHtml}
+          </div>
+        `;
+      } else {
+        diagPanel.style.display = 'none';
+      }
+    }
+
     console.log('[Deal Forge] Portal personalized for:', PROSPECT.name, '| Industry:', industry,
       '| Title:', ext.personalized_title?.slice(0,50), '| LTV:', ltv,
       '| Transcript:', session.transcript?.found, '| Website:', session.website?.scraped);

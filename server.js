@@ -2121,7 +2121,7 @@ async function handleLeadList(task, job) {
   // Do NOT call filterLeadsByWebsite here — that would re-scrape every site a second time.
   const result = await fetchLeadsFromApollo(enrichedIcp);
   const leads  = result?.leads || [];
-  const tam    = result?.total || 0;
+  const tam    = result?.totalAvailable || 0;
   // Lloyd's rep-proof outreach formula:
   // TAM > 300K → cap at 100K/mo (QS practical maximum)
   // TAM ≤ 300K → exhaust market in exactly 3 months
@@ -2138,7 +2138,17 @@ async function handleLeadList(task, job) {
       jobId: task?.job_id || null
     });
   }
-  return { leads, total: tam, recommendedOutreach, tamSource: result?.tamSource || 'estimated' };
+  return { 
+    leads, 
+    total: tam, 
+    recommendedOutreach, 
+    tamSource: 'apollo_api_live',
+    apollo_diagnostics: {
+      wasRelaxed: result?.wasRelaxed || false,
+      relaxationLog: result?.relaxationLog || [],
+      finalPayload: result?.finalPayload || {}
+    }
+  };
 }
 
 async function handleWebinarTitles(task, job) {
