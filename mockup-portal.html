@@ -3066,6 +3066,7 @@ function runPersonalization(session) {
         }).join('');
 
         console.log('[Deal Forge] Lead table populated with', gen.leads.length, 'Apollo leads');
+        }
       }
     } else if (gen.leadsTaskStatus === 'completed' || (Array.isArray(gen.leads) && gen.leads.length === 0)) {
       // Task completed with 0 leads — replace spinner row with informative empty state
