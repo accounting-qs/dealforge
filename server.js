@@ -1033,9 +1033,10 @@ async function translateIcpForApollo(icp) {
     return icp; // nothing to translate, return as-is
   }
 
-  const prompt = `You are an expert at translating B2B ICP (Ideal Customer Profile) data into Apollo.io search parameters.
+  // Fallback prompt in case DB fetch fails
+  const fallbackPrompt = `You are an expert at translating B2B ICP (Ideal Customer Profile) data into Apollo.io search parameters.
 
-Apollo.io indexes job titles exactly as they appear on LinkedIn profiles. Many professional titles are abbreviated, shortened, or phrased differently in LinkedIn profiles vs. how they're described in sales briefs.
+Apollo.io indexes job titles exactly as they appear on LinkedIn profiles. Many professional titles are abbreviated, shortened, or phrased differently.
 
 Given this ICP:
 - Target job titles: ${JSON.stringify(rawTitles)}
@@ -1044,34 +1045,64 @@ Given this ICP:
 - Company size: ${icp?.company_size || 'not specified'}
 - Employee ranges (Apollo format): ${JSON.stringify(icp?.apollo_employee_ranges || [])}
 
-Your task:
-1. Generate a "primaryTitles" list: 6-8 COMMON titles that people in these roles actually use on LinkedIn. These should be the most widely indexed variants.
-2. Generate an "extendedTitles" list: 6-8 SPECIALIST or ALTERNATIVE titles for the same roles. Used as fallback when primary returns few results.
-3. Generate "primaryIndustry": ONE single best-fit Apollo industry tag for the org search (e.g. "management consulting"). CRITICAL: Apollo org search uses AND logic — only ONE tag gives meaningful results. Choose the most representative sector.
-4. Generate "secondaryIndustries": array of 1-3 ADDITIONAL industry tags for reference only (used by the lead classifier, NOT sent to Apollo org search).
-5. In "notes": briefly explain your translation strategy (1-2 sentences max).
+You have three axes to target people:
+1. Seniority (person_seniorities[]): Closed enum. Valid values are: "owner", "founder", "c_suite", "partner", "vp", "head", "director", "manager", "senior", "entry", "intern".
+2. Department (person_department_or_subdepartments[]): Closed enum. Common values: "c_suite", "product", "engineering_technical", "design", "education", "finance", "human_resources", "information_technology", "legal", "marketing", "medical_health", "operations", "sales", "consulting".
+3. Titles (person_titles[]): Free text. Use real LinkedIn conventions, abbreviations (CMO, CTO), and avoid overly generic titles alone.
 
-RULES:
-- Do NOT include overly generic titles like "Manager", "Director" without context
-- Combine seniority + function: "VP Sales" not just "VP"
-- For European markets, include European title variants (e.g., "Commercial Director" is more common than "VP Commercial" in Europe)
-- Return ONLY valid JSON, no markdown, no explanation outside the JSON
+For industries, generate a SINGLE 'q_keywords' string (e.g. "saas b2b software") instead of an industry tag, because Apollo org search uses strict AND logic for tags.
+For geography (organization_locations[]), use English names (e.g. "United States", "Mexico").
 
-Return this exact JSON structure:
+Your task is to generate:
+1. An "apollo_payload" object containing the optimal search filters for this ICP.
+2. A "confidence_map" mapping each parameter to "high", "medium", or "low" confidence.
+3. A "relaxation_order" array specifying the order in which parameters should be relaxed (removed/expanded) if we get fewer than 25 leads. Relax the least important or most restrictive filters first.
+
+Output ONLY valid JSON matching this exact schema:
 {
-  "primaryTitles": ["title1", "title2", ...],
-  "extendedTitles": ["title1", "title2", ...],
-  "primaryIndustry": "single industry string",
-  "secondaryIndustries": ["industry2", "industry3"],
-  "notes": "brief strategy note"
+  "apollo_payload": {
+    "person_titles": [],
+    "person_seniorities": [],
+    "person_department_or_subdepartments": [],
+    "q_keywords": "",
+    "organization_locations": [],
+    "organization_num_employees_ranges": [],
+    "contact_email_status": ["verified"],
+    "per_page": 25
+  },
+  "confidence_map": {
+    "person_titles": "high|medium|low",
+    "person_seniorities": "high|medium|low",
+    "person_department_or_subdepartments": "high|medium|low",
+    "q_keywords": "high|medium|low",
+    "organization_locations": "high|medium|low",
+    "organization_num_employees_ranges": "high|medium|low"
+  },
+  "relaxation_order": [ "q_keywords", "organization_num_employees_ranges", "person_department_or_subdepartments", "organization_locations", "person_seniorities", "person_titles" ]
 }`;
+
+  let finalPrompt = fallbackPrompt;
+  try {
+    const r = await supabaseRequest('GET', '/rest/v1/prompts?slug=eq.icp_translation&limit=1');
+    if (r && r.body && Array.isArray(r.body) && r.body.length > 0 && r.body[0].content) {
+      finalPrompt = r.body[0].content
+        .replace(/\{\{\s*rawTitles\s*\}\}/g, JSON.stringify(rawTitles))
+        .replace(/\{\{\s*rawIndustries\s*\}\}/g, JSON.stringify(rawIndustries))
+        .replace(/\{\{\s*rawGeo\s*\}\}/g, JSON.stringify(rawGeo))
+        .replace(/\{\{\s*companySize\s*\}\}/g, icp?.company_size || 'not specified')
+        .replace(/\{\{\s*employeeRanges\s*\}\}/g, JSON.stringify(icp?.apollo_employee_ranges || []));
+      console.log('[ICP Translator] Loaded prompt from DB');
+    }
+  } catch (e) {
+    console.warn('[ICP Translator] Failed to fetch prompt from DB, using fallback:', e.message);
+  }
 
   try {
     console.log('[ICP Translator] Translating ICP for Apollo — titles:', rawTitles.length, ', industries:', rawIndustries.length);
     const msg = await anthropic.messages.create({
       model: 'claude-sonnet-4-6',
-      max_tokens: 600,
-      messages: [{ role: 'user', content: prompt }]
+      max_tokens: 1000,
+      messages: [{ role: 'user', content: finalPrompt }]
     });
 
     const raw = msg.content?.[0]?.text?.trim() || '';
@@ -1079,32 +1110,14 @@ Return this exact JSON structure:
     const jsonStr = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
     const parsed = JSON.parse(jsonStr);
 
-    const primaryTitles       = Array.isArray(parsed.primaryTitles)       && parsed.primaryTitles.length       ? parsed.primaryTitles       : rawTitles;
-    const extendedTitles      = Array.isArray(parsed.extendedTitles)      && parsed.extendedTitles.length      ? parsed.extendedTitles      : [];
-    // B1b fix: use single primaryIndustry for Apollo org search to avoid AND-logic collapse.
-    // secondaryIndustries are kept for reference (passed to Haiku classifier context only).
-    const primaryIndustry     = (typeof parsed.primaryIndustry === 'string' && parsed.primaryIndustry.trim())
-      ? parsed.primaryIndustry.trim()
-      : (rawIndustries[0] || null);
-    const secondaryIndustries = Array.isArray(parsed.secondaryIndustries) && parsed.secondaryIndustries.length ? parsed.secondaryIndustries : rawIndustries.slice(1);
+    console.log(`[ICP Translator] ✓ Translation complete. Relaxation order: ${parsed.relaxation_order?.join(' > ') || 'fallback'}`);
 
-    // Merge primary + extended into a single deduplicated title array for Apollo
-    const seen = new Set(primaryTitles.map(t => t.toLowerCase()));
-    const allTitles = [...primaryTitles, ...extendedTitles.filter(t => !seen.has(t.toLowerCase()))];
-
-    console.log(`[ICP Translator] ✓ ${rawTitles.length} raw titles → ${allTitles.length} Apollo variants | primaryIndustry: "${primaryIndustry}" | Note: ${parsed.notes || 'n/a'}`);
-
-    // Return enriched ICP — all other fields (geography, employee ranges, seniorities) preserved
-    // apollo_industries is now always a single-element array (primaryIndustry only) so
-    // the Apollo org search never AND-filters across multiple tags.
     return {
       ...icp,
-      apollo_titles:          allTitles,
-      apollo_industries:      primaryIndustry ? [primaryIndustry] : (rawIndustries.slice(0, 1)),
-      _secondaryIndustries:   secondaryIndustries,  // for classifier reference — NOT sent to Apollo
-      _translated:            true,
-      _primaryTitles:         primaryTitles,
-      _extendedTitles:        extendedTitles
+      apollo_payload: parsed.apollo_payload || {},
+      confidence_map: parsed.confidence_map || {},
+      relaxation_order: parsed.relaxation_order || [],
+      _translated: true
     };
   } catch (e) {
     console.warn('[ICP Translator] Translation failed — using original ICP:', e.message);
