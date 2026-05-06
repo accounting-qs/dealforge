@@ -2309,6 +2309,12 @@ function wireROIEditMode() {
       const job = await res.json();
       const tasks = job.tasks || {};
 
+      // ── DIAGNOSTIC — remove after debugging ─────────────────────────────
+      console.log('[DIAG] lead_list status:', tasks.lead_list?.status,
+        '| leads:', tasks.lead_list?.output?.leads?.length ?? 'N/A',
+        '| output keys:', tasks.lead_list?.output ? Object.keys(tasks.lead_list.output) : 'none');
+      // ────────────────────────────────────────────────────────────────────
+
       // ── Phase 1: Personalize immediately on first poll ─────────────────────
       // The brief is in job.extracted_data from the moment the job is created.
       // No need to wait for a separate extract task — the two-phase modal already
