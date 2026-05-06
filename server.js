@@ -1122,265 +1122,357 @@ const EU_COUNTRIES = [
   'United Kingdom','Norway','Switzerland','Iceland'
 ];
 
+// ── v3 Apollo Pipeline Functions ──────────────────────────────────────────────
+
+const VALID_SENIORITIES = new Set([
+  'owner', 'founder', 'c_suite', 'partner', 'vp',
+  'head', 'director', 'manager', 'senior', 'entry', 'intern'
+]);
+
+const VALID_EMAIL_STATUSES = new Set([
+  'verified', 'unverified', 'likely to engage', 'unavailable'
+]);
+
+const EMPLOYEE_RANGE_REGEX = /^\\d+,\\d+$/;
+
+function sanitizeApolloPayload(payload) {
+  const sanitized = { ...payload };
+  const warnings = [];
+
+  // Validate seniorities
+  if (sanitized.person_seniorities) {
+    const before = sanitized.person_seniorities.length;
+    sanitized.person_seniorities = sanitized.person_seniorities.filter(s =>
+      VALID_SENIORITIES.has(s)
+    );
+    if (sanitized.person_seniorities.length < before)
+      warnings.push(`Removed ${before - sanitized.person_seniorities.length} invalid seniorities`);
+  }
+
+  // Validate email status (default to verified)
+  if (sanitized.contact_email_status) {
+    sanitized.contact_email_status = sanitized.contact_email_status.filter(s =>
+      VALID_EMAIL_STATUSES.has(s)
+    );
+    if (sanitized.contact_email_status.length === 0)
+      sanitized.contact_email_status = ['verified'];
+  }
+
+  // Validate employee ranges format
+  if (sanitized.organization_num_employees_ranges) {
+    sanitized.organization_num_employees_ranges =
+      sanitized.organization_num_employees_ranges.filter(r => EMPLOYEE_RANGE_REGEX.test(r) || r === '10001+');
+  }
+
+  // Ensure q_keywords is string not array
+  if (Array.isArray(sanitized.q_keywords)) {
+    sanitized.q_keywords = sanitized.q_keywords.join(' ');
+  }
+
+  // Validate revenue (integers or null)
+  if (sanitized.revenue_range) {
+    if (sanitized.revenue_range.min !== null && !Number.isInteger(sanitized.revenue_range.min))
+      sanitized.revenue_range.min = null;
+    if (sanitized.revenue_range.max !== null && !Number.isInteger(sanitized.revenue_range.max))
+      sanitized.revenue_range.max = null;
+    if (!sanitized.revenue_range.min && !sanitized.revenue_range.max)
+      delete sanitized.revenue_range;
+  }
+
+  // Normalize technology uids
+  if (sanitized.currently_using_any_of_technology_uids) {
+    sanitized.currently_using_any_of_technology_uids =
+      sanitized.currently_using_any_of_technology_uids.map(t =>
+        t.toLowerCase().replace(/[\\s.]/g, '_')
+      );
+  }
+
+  // Remove empty arrays (can cause Apollo to return 0)
+  Object.keys(sanitized).forEach(key => {
+    if (Array.isArray(sanitized[key]) && sanitized[key].length === 0)
+      delete sanitized[key];
+  });
+
+  return { payload: sanitized, warnings };
+}
+
+async function preflightCompanyCheck(payload) {
+  const APOLLO_KEY = process.env.APOLLO_API_KEY;
+  if (!APOLLO_KEY) return { companiesFound: 0 };
+
+  const companyFilters = {};
+  if (payload.q_keywords) companyFilters.q_organization_keyword_tags = payload.q_keywords.split(' ');
+  if (payload.organization_num_employees_ranges) companyFilters.organization_num_employees_ranges = payload.organization_num_employees_ranges;
+  if (payload.organization_locations) companyFilters.organization_locations = payload.organization_locations;
+  if (payload.revenue_range) companyFilters.revenue_range = payload.revenue_range;
+
+  if (Object.keys(companyFilters).length === 0) return { companiesFound: -1 }; // Skip if no org filters
+
+  try {
+    const res = await fetch('https://api.apollo.io/v1/organizations/search', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+        'x-api-key': APOLLO_KEY
+      },
+      body: JSON.stringify({ ...companyFilters, per_page: 1 }),
+      signal: AbortSignal.timeout(10000)
+    });
+    if (!res.ok) return { companiesFound: 0 };
+    const data = await res.json();
+    return { companiesFound: data.pagination?.total_entries || 0 };
+  } catch (e) {
+    console.warn('[preflightCompanyCheck] Error:', e.message);
+    return { companiesFound: -1 };
+  }
+}
+
+function relaxFilter(payload, filterName) {
+  switch (filterName) {
+    case 'revenue_range':
+    case 'currently_using_any_of_technology_uids':
+      delete payload[filterName];
+      return 'removed';
+
+    case 'organization_num_employees_ranges': {
+      const ALL = ['1,10','11,20','21,50','51,100','101,200','201,500',
+                   '501,1000','1001,2000','2001,5000','5001,10000', '10001+'];
+      const indices = payload[filterName].map(r => ALL.indexOf(r)).filter(i => i >= 0);
+      if (indices.length === 0) { delete payload[filterName]; return 'removed'; }
+      const lo = Math.max(0, Math.min(...indices) - 1);
+      const hi = Math.min(ALL.length - 1, Math.max(...indices) + 1);
+      payload[filterName] = ALL.slice(lo, hi + 1);
+      return 'expanded';
+    }
+
+    case 'q_keywords': {
+      const words = payload.q_keywords.split(' ');
+      if (words.length > 1) {
+        payload.q_keywords = words.slice(0, Math.ceil(words.length / 2)).join(' ');
+        return 'simplified';
+      }
+      delete payload.q_keywords;
+      return 'removed';
+    }
+
+    case 'person_department_or_subdepartments':
+      delete payload[filterName];
+      return 'removed';
+
+    case 'organization_locations':
+    case 'person_locations':
+      delete payload[filterName];
+      return 'removed';
+
+    case 'person_seniorities': {
+      const HIER = ['intern','entry','senior','manager','director','head','vp','partner','c_suite','founder','owner'];
+      const idxs = payload[filterName].map(s => HIER.indexOf(s)).filter(i => i >= 0);
+      if (idxs.length === 0) { delete payload[filterName]; return 'removed'; }
+      const lo = Math.max(0, Math.min(...idxs) - 1);
+      const hi = Math.min(HIER.length - 1, Math.max(...idxs) + 1);
+      const expanded = new Set(payload[filterName]);
+      expanded.add(HIER[lo]);
+      expanded.add(HIER[hi]);
+      payload[filterName] = [...expanded];
+      return 'expanded';
+    }
+
+    case 'person_titles':
+      payload.include_similar_titles = true;
+      return 'expanded_similar';
+
+    default:
+      delete payload[filterName];
+      return 'removed';
+  }
+}
+
+async function guaranteedLeadSearch(sanitizedPayload, confidenceMap, relaxationOrder) {
+  const MIN_LEADS = 25;
+  const MAX_ATTEMPTS = 6;
+  const APOLLO_KEY = process.env.APOLLO_API_KEY;
+
+  if (!APOLLO_KEY) return { leads: [], totalAvailable: 0, finalPayload: sanitizedPayload, relaxationLog: [], wasRelaxed: false };
+
+  let currentPayload = { ...sanitizedPayload };
+  let attempt = 0;
+  let log = [];
+
+  const apolloPeopleSearch = async (payload) => {
+    try {
+      const body = {
+        per_page: Math.max(payload.per_page || 50, MIN_LEADS),
+        page: 1,
+        sort_by_field: 'person_name',
+        sort_ascending: true,
+        ...payload
+      };
+      
+      const res = await fetch('https://api.apollo.io/api/v1/mixed_people/search', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          'x-api-key': APOLLO_KEY
+        },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(15000)
+      });
+      if (!res.ok) return { total_entries: 0, people: [] };
+      const data = await res.json();
+      
+      const people = (data.people || []).filter(p => {
+        const n = normalizePerson(p, 'apollo');
+        return n.name && n.name.length > 2 && n.title && n.company;
+      }).map(p => normalizePerson(p, 'apollo'));
+
+      return { total_entries: data.pagination?.total_entries || 0, people };
+    } catch(e) {
+      console.warn('[apolloPeopleSearch] error:', e.message);
+      return { total_entries: 0, people: [] };
+    }
+  };
+
+  // ── STEP 1: Pre-flight company check ──
+  const preflight = await preflightCompanyCheck(currentPayload);
+  log.push({ step: 'preflight', companiesFound: preflight.companiesFound });
+
+  if (preflight.companiesFound === 0) {
+    if (currentPayload.q_keywords) {
+      log.push({ action: 'removed', filter: 'q_keywords', reason: 'preflight_zero_companies' });
+      delete currentPayload.q_keywords;
+    }
+    if (currentPayload.organization_num_employees_ranges) {
+      log.push({ action: 'removed', filter: 'organization_num_employees_ranges', reason: 'preflight_zero_companies' });
+      delete currentPayload.organization_num_employees_ranges;
+    }
+    if (currentPayload.revenue_range) {
+      log.push({ action: 'removed', filter: 'revenue_range', reason: 'preflight_zero_companies' });
+      delete currentPayload.revenue_range;
+    }
+  }
+
+  // ── STEP 2: Initial people search ──
+  let results = await apolloPeopleSearch(currentPayload);
+  log.push({ step: 'initial_search', totalResults: results.total_entries, filtersUsed: Object.keys(currentPayload) });
+
+  // ── STEP 3: Progressive relaxation loop ──
+  let relaxIdx = 0;
+
+  while (results.total_entries < MIN_LEADS && attempt < MAX_ATTEMPTS) {
+    attempt++;
+
+    let filterToRelax = null;
+    while (relaxIdx < relaxationOrder.length) {
+      const candidate = relaxationOrder[relaxIdx];
+      relaxIdx++;
+      if (currentPayload[candidate] !== undefined) {
+        filterToRelax = candidate;
+        break;
+      }
+    }
+
+    if (!filterToRelax) {
+      // Nuclear fallback
+      const nuclear = {
+        person_titles: currentPayload.person_titles,
+        contact_email_status: ['verified'],
+        per_page: 25
+      };
+      if (currentPayload.organization_locations) nuclear.organization_locations = currentPayload.organization_locations;
+      if (currentPayload.person_locations) nuclear.person_locations = currentPayload.person_locations;
+
+      currentPayload = nuclear;
+      log.push({ step: 'nuclear_fallback', attempt });
+      results = await apolloPeopleSearch(currentPayload);
+      break;
+    }
+
+    const action = relaxFilter(currentPayload, filterToRelax);
+    log.push({ step: 'relax', attempt, filter: filterToRelax, action });
+
+    results = await apolloPeopleSearch(currentPayload);
+    log.push({ step: 'search', attempt, totalResults: results.total_entries });
+  }
+
+  // ── STEP 4: Final nuclear ──
+  if (results.total_entries < MIN_LEADS) {
+    currentPayload = {
+      person_titles: sanitizedPayload.person_titles || [],
+      contact_email_status: ['verified'],
+      per_page: 25
+    };
+    results = await apolloPeopleSearch(currentPayload);
+    log.push({ step: 'absolute_fallback', totalResults: results.total_entries });
+  }
+
+  return {
+    leads: results.people?.slice(0, 50) || [],
+    totalAvailable: results.total_entries,
+    finalPayload: currentPayload,
+    relaxationLog: log,
+    wasRelaxed: attempt > 0
+  };
+}
+
 async function fetchLeadsFromApollo(icp) {
   const APOLLO_KEY = process.env.APOLLO_API_KEY;
   if (!APOLLO_KEY) { console.log('[Apollo] No API key — skipping'); return null; }
 
-  const apolloTitles    = Array.isArray(icp?.apollo_titles) && icp.apollo_titles.length ? icp.apollo_titles : null;
-  const apolloIndustries = Array.isArray(icp?.apollo_industries) && icp.apollo_industries.length
-    ? icp.apollo_industries
-    : (icp?.industry ? [icp.industry] : null); // fallback: legacy single-industry briefs
-  if (!apolloIndustries?.length && !apolloTitles?.length) { console.log('[Apollo] No ICP — skipping'); return null; }
-
-  const apolloHeaders = {
-    'Content-Type': 'application/json',
-    'Accept': 'application/json',
-    // Apollo's API examples consistently use x-api-key header auth.
-    // Sending an Authorization bearer token alongside it triggered blanket 401s in prod.
-    'x-api-key': APOLLO_KEY
-  };
+  // Fallback for Phase 2: map legacy ICP to Apollo Payload
   const rawGeo = Array.isArray(icp?.apollo_geography) && icp.apollo_geography.length ? icp.apollo_geography : null;
-  // B3 fix: "Europe" / "European Union" are not valid Apollo location values — Apollo silently ignores them.
-  // Replace them with the full EU_COUNTRIES list so EU-based prospects are actually findable.
-  // UK and US pass through unchanged.
   const apolloGeo = rawGeo
-    ? rawGeo
-        .flatMap(g => {
-          if (/^european union$/i.test(g) || /^europe$/i.test(g)) {
-            console.log('[Apollo] Expanding "Europe" geo → EU_COUNTRIES list');
-            return EU_COUNTRIES;
-          }
-          return [g];
-        })
-        .filter((g, i, a) => a.indexOf(g) === i) // dedupe
-    : null;
-  // Prefer LLM-extracted Apollo ranges; fall back to mapCompanySize for legacy briefs
-  const sizeRanges    = (Array.isArray(icp?.apollo_employee_ranges) && icp.apollo_employee_ranges.length)
+    ? rawGeo.flatMap(g => (/^european union$/i.test(g) || /^europe$/i.test(g)) ? EU_COUNTRIES : [g]).filter((g, i, a) => a.indexOf(g) === i)
+    : [];
+
+  const sizeRanges = (Array.isArray(icp?.apollo_employee_ranges) && icp.apollo_employee_ranges.length)
     ? icp.apollo_employee_ranges
-    : (icp?.company_size ? mapCompanySize(icp.company_size) : null);
-  const seniorities   = Array.isArray(icp?.person_seniorities) && icp.person_seniorities.length ? icp.person_seniorities : null;
+    : (icp?.company_size ? mapCompanySize(icp.company_size) : []);
 
-  console.log('[Apollo] Starting progressive relaxation search:', JSON.stringify({ apolloIndustries, apolloTitles, apolloGeo, sizeRanges, seniorities }));
-  const timeout270s = new Promise(resolve => setTimeout(() => { console.warn('[Apollo] 4.5min timeout'); resolve(null); }, 270000));
-
-  const apolloCore = async () => {
-    let total = null;
-    const debug = {
-      geoRequested: rawGeo || [],
-      geoPrimaryLocations: apolloGeo || [],
-      relaxationLevel: null,
-      levelResults: [],
-      classification: { excerptCount: 0, outage: false, rejectedAll: false },
-      preFilterCount: 0,
-      classifiedCount: 0,
-      finalLeadCount: 0,
-      source: null
-    };
-
-    // ── Helper: run a single people search with given filters ──
-    const searchPeople = async (filters, label) => {
-      const body = {
-        per_page: 50,
-        page: 1,
-        sort_by_field: 'person_name',
-        sort_ascending: true,
-        ...filters
-      };
-      try {
-        const res = await fetch('https://api.apollo.io/api/v1/mixed_people/search', {
-          method: 'POST', headers: apolloHeaders,
-          body: JSON.stringify(body), signal: AbortSignal.timeout(15000)
-        });
-        if (!res.ok) {
-          console.warn(`[Apollo] ${label} HTTP ${res.status}`);
-          return [];
-        }
-        const data = await res.json();
-        const people = (data.people || []).filter(p => {
-          const n = normalizePerson(p, label);
-          return n.name && n.name.length > 2 && n.title && n.company;
-        }).map(p => normalizePerson(p, label));
-        console.log(`[Apollo] ${label}: ${people.length} candidates`);
-        return people;
-      } catch(e) {
-        console.warn(`[Apollo] ${label} error:`, e.message);
-        return [];
-      }
-    };
-
-    // ── Progressive Relaxation Cascade ──
-    // Each level drops filters progressively until we get ≥25 contacts.
-    // Classifier still enforces ICP quality on broad results.
-    const MIN_TARGET = 25;
-    let allPeople = [];
-
-    const levels = [
-      {
-        key: 'L1_tight',
-        label: 'Level 1 (titles+industry+geo+size+seniority)',
-        filters: () => {
-          const f = {};
-          if (apolloTitles?.length)    f.person_titles = apolloTitles;
-          if (apolloIndustries?.length) f.q_organization_keyword_tags = [apolloIndustries[0]];
-          if (apolloGeo?.length)       f.person_locations = apolloGeo;
-          if (sizeRanges)              f.organization_num_employees_ranges = sizeRanges;
-          if (seniorities)             f.person_seniorities = seniorities;
-          return f;
-        }
-      },
-      {
-        key: 'L2_medium',
-        label: 'Level 2 (titles+geo+size)',
-        filters: () => {
-          const f = {};
-          if (apolloTitles?.length)    f.person_titles = apolloTitles;
-          if (apolloGeo?.length)       f.person_locations = apolloGeo;
-          if (sizeRanges)              f.organization_num_employees_ranges = sizeRanges;
-          return f;
-        }
-      },
-      {
-        key: 'L3_broad',
-        label: 'Level 3 (titles+geo only)',
-        filters: () => {
-          const f = {};
-          if (apolloTitles?.length)    f.person_titles = apolloTitles;
-          if (apolloGeo?.length)       f.person_locations = apolloGeo;
-          return f;
-        }
-      },
-      {
-        key: 'L4_wider',
-        label: 'Level 4 (titles+similar, no geo)',
-        filters: () => {
-          const f = { include_similar_titles: true };
-          if (apolloTitles?.length)    f.person_titles = apolloTitles;
-          return f;
-        }
-      },
-      {
-        key: 'L5_widest',
-        label: 'Level 5 (seniority+industry+geo, no titles)',
-        filters: () => {
-          const f = {};
-          if (seniorities)             f.person_seniorities = seniorities;
-          if (apolloIndustries?.length) f.q_organization_keyword_tags = [apolloIndustries[0]];
-          if (apolloGeo?.length)       f.person_locations = apolloGeo;
-          // If nothing above, at least search by seniority broadly
-          if (!Object.keys(f).length && seniorities) f.person_seniorities = ['c_suite', 'vp', 'director', 'owner'];
-          return f;
-        }
-      }
-    ];
-
-    for (const level of levels) {
-      const filters = level.filters();
-      if (!Object.keys(filters).length) {
-        console.log(`[Apollo] Skipping ${level.label} — no filters available`);
-        continue;
-      }
-      const people = await searchPeople(filters, level.label);
-      debug.levelResults.push({ key: level.key, label: level.label, count: people.length, filters: Object.keys(filters) });
-      if (people.length > allPeople.length) {
-        allPeople = people;
-        debug.relaxationLevel = level.key;
-        debug.source = level.key;
-      }
-      if (allPeople.length >= MIN_TARGET) {
-        console.log(`[Apollo] ✓ ${level.label} returned ${allPeople.length} contacts — stopping cascade`);
-        break;
-      }
-      console.log(`[Apollo] ${level.label} returned ${people.length} — trying next level`);
-    }
-
-    // ── Dedicated TAM count query ──
-    try {
-      const tamBody = { per_page: 1 };
-      if (sizeRanges) tamBody.organization_num_employees_ranges = sizeRanges;
-      if (apolloGeo?.length) tamBody.q_organization_locations = apolloGeo;
-      const tamRes = await fetch('https://api.apollo.io/v1/organizations/search', {
-        method: 'POST', headers: apolloHeaders,
-        body: JSON.stringify(tamBody), signal: AbortSignal.timeout(8000)
-      });
-      if (tamRes.ok) {
-        const tamData = await tamRes.json();
-        const realCount = tamData.pagination?.total_entries;
-        if (realCount && realCount > 0) {
-          total = realCount;
-          console.log(`[Apollo] TAM (Apollo real count): ${total}`);
-        }
-      }
-    } catch(e) { console.warn('[Apollo] TAM count query failed:', e.message); }
-
-    if (!allPeople.length) {
-      console.log('[Apollo] All levels returned 0 — no leads found');
-      return { leads: [], total: total || estimateGlobalTAM(icp), source: debug.source, diagnostics: debug };
-    }
-
-    // ── Industry pre-filter ──
-    const rawLeads = preFilterLeadsByIndustry(allPeople, icp);
-    debug.preFilterCount = rawLeads.length;
-    if (!rawLeads.length) {
-      // Pre-filter rejected everything — use allPeople instead (classifier will sort)
-      console.log('[Apollo] Pre-filter rejected all — sending all candidates to classifier');
-    }
-    const leadsForClassification = (rawLeads.length ? rawLeads : allPeople).slice(0, 72);
-
-    // ── Website excerpts — bonus signal, not a gate ──
-    console.log(`[Apollo] Fetching website excerpts for ${leadsForClassification.length} leads...`);
-    const qualityResults = [];
-    for (let i = 0; i < leadsForClassification.length; i += 15) {
-      if (qualityResults.filter(Boolean).length >= 25) break;
-      const batch = leadsForClassification.slice(i, i + 15);
-      const batchResults = await Promise.all(batch.map(l => websiteQualityCheck(l.website, 4000)));
-      qualityResults.push(...batchResults);
-    }
-    while (qualityResults.length < leadsForClassification.length) qualityResults.push(null);
-    const enrichedLeads = leadsForClassification.map((l, i) =>
-      qualityResults[i] ? { ...l, _excerpt: qualityResults[i].excerpt } : l
-    );
-    debug.classification.excerptCount = qualityResults.filter(Boolean).length;
-
-    // ── Haiku ICP classifier ──
-    const classifications = await classifyLeadsWithHaiku(enrichedLeads, { icp });
-    debug.classifiedCount = classifications.length;
-    const classMap = {};
-    classifications.forEach(c => { classMap[c.index] = c; });
-    const anyMatch = classifications.some(c => c.match);
-    const isClassifierOutage = !anyMatch && classifications.length > 0 &&
-      classifications.every(c => c.reason === 'classification unavailable');
-    if (!anyMatch && !isClassifierOutage) {
-      debug.classification.rejectedAll = true;
-      console.log('[Apollo] Classifier rejected all leads.');
-    }
-    if (isClassifierOutage) {
-      debug.classification.outage = true;
-      console.warn('[Apollo] Classifier outage — returning pre-filtered leads unverified.');
-    }
-
-    const highMediumCount = enrichedLeads.filter((l, i) => {
-      const c = classMap[i+1];
-      return c && c.match && c.confidence !== 'low';
-    }).length;
-    const useLowAsBackfill = highMediumCount < 10;
-
-    const classified = enrichedLeads
-      .map((l, i) => {
-        const c = classMap[i+1] || { match: false, confidence: 'low', reason: 'unclassified' };
-        return { ...l, _match: c.match, confidence: c.confidence, match_reason: c.reason };
-      })
-      .filter(l => isClassifierOutage ? true : (l._match && (l.confidence !== 'low' || useLowAsBackfill)));
-
-    const ORDER = { high: 0, medium: 1, low: 2 };
-    classified.sort((a, b) => (ORDER[a.confidence] || 1) - (ORDER[b.confidence] || 1));
-    const finalLeads = classified.slice(0, 25).map(({ _match, _excerpt, _source, ...l }) => l);
-    debug.finalLeadCount = finalLeads.length;
-    const tam = total || estimateGlobalTAM(icp);
-    const tamSource = total ? 'apollo' : 'estimated';
-    console.log(`[Apollo] Final: ${finalLeads.length} leads, TAM: ${tam} (source: ${tamSource}), relaxation: ${debug.relaxationLevel}`);
-    return { leads: finalLeads, total: tam, tamSource, diagnostics: debug };
+  const legacyPayload = {
+    person_titles: Array.isArray(icp?.apollo_titles) && icp.apollo_titles.length ? icp.apollo_titles : [],
+    q_keywords: Array.isArray(icp?.apollo_industries) && icp.apollo_industries.length ? icp.apollo_industries.join(' ') : (icp?.industry || ''),
+    organization_locations: apolloGeo,
+    organization_num_employees_ranges: sizeRanges,
+    person_seniorities: Array.isArray(icp?.person_seniorities) && icp.person_seniorities.length ? icp.person_seniorities : [],
+    contact_email_status: ['verified'],
+    per_page: 50
   };
-  return Promise.race([apolloCore(), timeout270s]);
+
+  const defaultRelaxationOrder = [
+    "revenue_range",
+    "currently_using_any_of_technology_uids",
+    "organization_num_employees_ranges",
+    "q_keywords",
+    "person_department_or_subdepartments",
+    "organization_locations",
+    "person_seniorities",
+    "person_titles"
+  ];
+
+  const { payload: sanitizedPayload, warnings } = sanitizeApolloPayload(icp.apollo_payload || legacyPayload);
+  if (warnings.length > 0) console.log('[Apollo] Sanitize warnings:', warnings);
+
+  console.log('[Apollo] Starting v3 guaranteed lead search...');
+  const result = await guaranteedLeadSearch(
+    sanitizedPayload, 
+    icp.confidence_map || {}, 
+    icp.relaxation_order || defaultRelaxationOrder
+  );
+
+  console.log(`[Apollo] v3 Search Complete: ${result.leads.length} leads returned. TAM: ${result.totalAvailable}. Was relaxed: ${result.wasRelaxed}`);
+  
+  // Backwards compatibility for the rest of the app
+  return { 
+    leads: result.leads, 
+    total: result.totalAvailable, 
+    tamSource: 'apollo', 
+    diagnostics: { 
+      relaxationLog: result.relaxationLog,
+      finalPayload: result.finalPayload
+    } 
+  };
 }
 
 // ── Webinar titles generation ─────────────────────────────────────────────────
