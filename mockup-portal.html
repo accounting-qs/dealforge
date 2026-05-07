@@ -3161,10 +3161,12 @@ function runPersonalization(session) {
       }
     } catch(e) { console.warn('[lead-market-too-small] render error:', e.message); }
 
-    // ── Render Apollo Diagnostics ─────────────────────────────────────────────
+    // ── Render Apollo Diagnostics (rep edit-mode only) ────────────────────────
+    // The relaxation log is internal information meant for the rep to debug ICP
+    // filters. Prospects should never see it on the shareable URL.
     const diagPanel = document.getElementById('lead-diagnostics-panel');
     if (diagPanel) {
-      if (gen.apollo_diagnostics && gen.apollo_diagnostics.wasRelaxed) {
+      if (IS_EDIT_MODE && gen.apollo_diagnostics && gen.apollo_diagnostics.wasRelaxed) {
         diagPanel.style.display = 'block';
         diagPanel.style.padding = '12px 16px';
         diagPanel.style.background = 'rgba(245, 158, 11, 0.08)';

@@ -1005,7 +1005,15 @@ function normalizePerson(p, source) {
         ? `${p.first_name} ${p.last_name || p.last_name_obfuscated}`.trim()
         : (p.first_name || null));
   const company = p.organization_name || org.name || org.short_description || null;
-  const website = p.website_url || org.website_url || org.primary_domain || null;
+  // Apollo's response shape varies by tier and contact — try every known path
+  // before giving up. org.domain and org.primary_domain_url are populated for
+  // some contacts where the primary three fields are null.
+  const website = p.website_url
+    || org.website_url
+    || org.primary_domain
+    || org.domain
+    || org.primary_domain_url
+    || null;
   const employeeCount = p.organization_num_employees || org.estimated_num_employees || org.employees || null;
   return {
     name,
@@ -1348,6 +1356,24 @@ async function guaranteedLeadSearch(sanitizedPayload, confidenceMap, relaxationO
   let attempt = 0;
   let log = [];
 
+  // ── Protected filters: never auto-stripped during relaxation ──────────────
+  // Geography and industry-keyword are core ICP signals. Relaxing them produces
+  // generic global leads instead of prospect-specific ones, which violates the
+  // product principle "specific leads only, no fillers." If Apollo can't return
+  // ≥25 leads without dropping these, we return what's available + the
+  // "Market too small" UI label.
+  const protectedFilters = new Set();
+  if (Array.isArray(sanitizedPayload.organization_locations) && sanitizedPayload.organization_locations.length > 0) {
+    protectedFilters.add('organization_locations');
+  }
+  if (Array.isArray(sanitizedPayload.q_organization_keyword_tags) && sanitizedPayload.q_organization_keyword_tags.length > 0) {
+    protectedFilters.add('q_organization_keyword_tags');
+  }
+  if (protectedFilters.size > 0) {
+    log.push({ step: 'protected', filters: [...protectedFilters] });
+    console.log('[Apollo] Protected filters (will not be relaxed):', [...protectedFilters]);
+  }
+
   const apolloPeopleSearch = async (payload) => {
     try {
       const body = {
@@ -1399,7 +1425,10 @@ async function guaranteedLeadSearch(sanitizedPayload, confidenceMap, relaxationO
   log.push({ step: 'preflight', companiesFound: preflight.companiesFound });
 
   if (preflight.companiesFound === 0) {
-    if (currentPayload.q_keywords) {
+    // Only strip filters that are NOT protected. q_keywords mirrors
+    // q_organization_keyword_tags (set by sanitizeApolloPayload), so if industry
+    // is protected we leave q_keywords alone too — they carry the same signal.
+    if (currentPayload.q_keywords && !protectedFilters.has('q_organization_keyword_tags')) {
       log.push({ action: 'removed', filter: 'q_keywords', reason: 'preflight_zero_companies' });
       delete currentPayload.q_keywords;
     }
@@ -1427,6 +1456,11 @@ async function guaranteedLeadSearch(sanitizedPayload, confidenceMap, relaxationO
     while (relaxIdx < relaxationOrder.length) {
       const candidate = relaxationOrder[relaxIdx];
       relaxIdx++;
+      // Skip protected filters — never auto-strip geography or industry keyword.
+      if (protectedFilters.has(candidate)) {
+        log.push({ step: 'skip_protected', attempt, filter: candidate });
+        continue;
+      }
       if (currentPayload[candidate] !== undefined) {
         filterToRelax = candidate;
         break;
@@ -1434,13 +1468,17 @@ async function guaranteedLeadSearch(sanitizedPayload, confidenceMap, relaxationO
     }
 
     if (!filterToRelax) {
-      // Nuclear fallback
+      // Nuclear fallback — keep titles + any protected filters (geo and/or industry)
       const nuclear = {
         person_titles: currentPayload.person_titles,
         per_page: 25
       };
       if (currentPayload.organization_locations) nuclear.organization_locations = currentPayload.organization_locations;
       if (currentPayload.person_locations) nuclear.person_locations = currentPayload.person_locations;
+      // Preserve industry keyword tag through the nuclear path when protected.
+      if (protectedFilters.has('q_organization_keyword_tags') && currentPayload.q_organization_keyword_tags) {
+        nuclear.q_organization_keyword_tags = currentPayload.q_organization_keyword_tags;
+      }
 
       currentPayload = nuclear;
       log.push({ step: 'nuclear_fallback', attempt });
@@ -1455,14 +1493,19 @@ async function guaranteedLeadSearch(sanitizedPayload, confidenceMap, relaxationO
     log.push({ step: 'search', attempt, totalResults: results.total_entries });
   }
 
-  // ── STEP 4: Final nuclear ──
-  if (results.total_entries < MIN_LEADS) {
+  // ── STEP 4: Final absolute fallback ──
+  // Skipped entirely when protected filters are set — returning fewer specific
+  // leads (UI shows "Market too small") is preferred over many non-specific ones.
+  if (results.total_entries < MIN_LEADS && protectedFilters.size === 0) {
     currentPayload = {
       person_titles: sanitizedPayload.person_titles || [],
       per_page: 25
     };
     results = await apolloPeopleSearch(currentPayload);
     log.push({ step: 'absolute_fallback', totalResults: results.total_entries });
+  } else if (results.total_entries < MIN_LEADS && protectedFilters.size > 0) {
+    log.push({ step: 'absolute_fallback_skipped', reason: 'protected_filters_set', protectedFilters: [...protectedFilters] });
+    console.log('[Apollo] Absolute fallback skipped — protected filters are set, returning narrow result set instead');
   }
 
   return {
@@ -2257,13 +2300,14 @@ async function handleLeadList(task, job) {
     return null; // signal needs_input — worker will not mark completed
   }
 
-  // ── ICP Translation Agent: expand titles + map industries to Apollo taxonomy ──
-  // Fail-safe: if translation fails, original icp is returned unchanged.
-  const enrichedIcp = await translateIcpForApollo(icp);
-
-  // fetchLeadsFromApollo already runs website quality gate + Haiku classification internally.
-  // Do NOT call filterLeadsByWebsite here — that would re-scrape every site a second time.
-  const result = await fetchLeadsFromApollo(enrichedIcp);
+  // ICP Translator (translateIcpForApollo) was previously called here to expand
+  // titles + map industries via Sonnet. Removed because the non-deterministic
+  // output frequently introduced over-restrictive fields (e.g.
+  // person_department_or_subdepartments) that returned 0 leads, forcing reps
+  // to manually re-run. Skipping it makes first-run identical to rerun:
+  // fetchLeadsFromApollo sees icp.apollo_payload === undefined and uses
+  // legacyPayload built from the rep's exact ICP fields.
+  const result = await fetchLeadsFromApollo(icp);
   const leads  = result?.leads || [];
   // fetchLeadsFromApollo returns { total }; legacy callers used { totalAvailable }
   const tam    = result?.total ?? result?.totalAvailable ?? 0;
