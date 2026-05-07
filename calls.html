@@ -1038,9 +1038,13 @@ function briefShowStep2() {
   setVal('bf-contact-name',  prospect.contact_name);
   setVal('bf-contact-title', prospect.contact_title);
   setVal('bf-apollo-titles', Array.isArray(icp.apollo_titles) ? icp.apollo_titles.join(', ') : (icp.apollo_titles || ''));
-  setVal('bf-industry', Array.isArray(icp.apollo_industries) && icp.apollo_industries.length
-    ? icp.apollo_industries.join(', ')
-    : (icp.industry || ''));
+  // apollo_keyword is the new single-phrase industry field. Fall back to the legacy
+  // apollo_industries array (first value) for previously created jobs.
+  setVal('bf-industry', (typeof icp.apollo_keyword === 'string' && icp.apollo_keyword.trim())
+    ? icp.apollo_keyword.trim()
+    : (Array.isArray(icp.apollo_industries) && icp.apollo_industries.length
+        ? String(icp.apollo_industries[0] || '').trim()
+        : (icp.industry || '')));
   setVal('bf-company-size',  icp.company_size);
   setVal('bf-geography', Array.isArray(icp.apollo_geography) && icp.apollo_geography.length
     ? icp.apollo_geography.join(', ')
@@ -1087,10 +1091,9 @@ function briefConfirmAndCreate() {
     ? apolloTitlesRaw.split(',').map(function(t){ return t.trim(); }).filter(function(t){ return t.length > 0; })
     : null;
 
+  // apollo_keyword is a single free-text phrase — store the raw value, no splitting.
   var industryRaw = getVal('bf-industry');
-  var apolloIndustriesArr = industryRaw
-    ? industryRaw.split(',').map(function(s){ return s.trim(); }).filter(function(s){ return s.length > 0; })
-    : null;
+  var apolloKeyword = industryRaw ? industryRaw.trim() : null;
 
   var geoRaw = getVal('bf-geography');
   var apolloGeoArr = geoRaw
@@ -1106,8 +1109,8 @@ function briefConfirmAndCreate() {
     icp: {
       role:                  apolloTitlesArr ? apolloTitlesArr.join(', ') : null,
       apollo_titles:         apolloTitlesArr,
-      apollo_industries:     apolloIndustriesArr,
-      industry:              apolloIndustriesArr ? apolloIndustriesArr[0] : null,
+      apollo_keyword:        apolloKeyword,
+      industry:              apolloKeyword,
       company_size:          getVal('bf-company-size'),
       apollo_employee_ranges: (_briefPrefetchResult && _briefPrefetchResult.brief && _briefPrefetchResult.brief.icp)
         ? (_briefPrefetchResult.brief.icp.apollo_employee_ranges || null) : null,
@@ -1271,7 +1274,7 @@ var icpEditMode = false;
 var currentIcp = {};
 var ICP_MAP = {
   'titles': 'apollo_titles',
-  'industries': 'apollo_industries',
+  'industries': 'apollo_keyword', // single string, not array — renderer handles both
   'geography': 'apollo_geography',
   'emp-ranges': 'apollo_employee_ranges',
   'seniorities': 'person_seniorities'
@@ -1282,7 +1285,10 @@ function renderIcpTags() {
   fields.forEach(function(f) {
     var container = document.getElementById('icp-' + f);
     var key = ICP_MAP[f];
-    var vals = currentIcp[key] || [];
+    var raw = currentIcp[key];
+    // apollo_keyword is a single string. Normalize to a single-element array for
+    // rendering purposes only — addIcpTag/removeIcpTag handle the string write-back.
+    var vals = Array.isArray(raw) ? raw : (typeof raw === 'string' && raw.trim() ? [raw.trim()] : []);
     container.innerHTML = vals.map(function(v) {
       return '<span class="tag-item' + (icpEditMode ? ' editable' : '') + '">' + esc(v) + '<span class="tag-remove" onclick="removeIcpTag(\'' + f + '\',\'' + esc(v).replace(/'/g, "\\'") + '\')">&times;</span></span>';
     }).join('');
@@ -1303,6 +1309,8 @@ function addIcpTag(field, val) {
   val = val.trim();
   if (!val) return;
   var key = ICP_MAP[field];
+  // apollo_keyword: single string, replace on add
+  if (key === 'apollo_keyword') { currentIcp[key] = val; renderIcpTags(); return; }
   if (!currentIcp[key]) currentIcp[key] = [];
   if (currentIcp[key].indexOf(val) === -1) currentIcp[key].push(val);
   renderIcpTags();
@@ -1310,6 +1318,8 @@ function addIcpTag(field, val) {
 
 function removeIcpTag(field, val) {
   var key = ICP_MAP[field];
+  // apollo_keyword: single string, × clears
+  if (key === 'apollo_keyword') { currentIcp[key] = ''; renderIcpTags(); return; }
   if (!currentIcp[key]) return;
   currentIcp[key] = currentIcp[key].filter(function(v) { return v !== val; });
   renderIcpTags();

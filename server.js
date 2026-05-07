@@ -689,9 +689,10 @@ Return this exact JSON (null for anything not found):
   },
   "icp": {
     "role":          "string | null — human-readable description of their target buyers (used for display only)",
-    "apollo_titles": "array of strings | null — EXACTLY 3-6 standalone job titles for Apollo API search. STRICT RULES: (1) Each entry must be a real job title a person would hold — 2-4 words max. (2) NEVER include sentence fragments, descriptions, qualifiers, or phrases. If the transcript says 'senior decision-makers at organizations with 50+ employees, particularly in government, large enterprises, who need to manage strategy execution, goals, accountability' — that is a DESCRIPTION, not a list of titles. Extract titles from it: ['CEO', 'Director of Strategy', 'Chief Strategy Officer', 'Head of Operations']. (3) Self-check each entry: would this appear verbatim on a LinkedIn profile or business card? If not — it is wrong, replace it. VALID: ['CEO', 'Managing Director', 'VP Sales', 'Head of Strategy', 'Chief Operating Officer']. INVALID: ['particularly in government', 'large enterprises', 'goals', 'accountability', 'who need to manage']. If titles not stated, INFER from role/industry context. Null ONLY if buyer role is completely indeterminate.",
-    "apollo_industries": "array of EXACTLY 1-2 strings | null — Apollo-compatible industry tags. CRITICAL: Apollo uses AND logic across all industry tags — every extra tag HALVES the result set. Return ONLY the single best-fit industry tag for the prospect's TARGET CLIENT companies. Only add a second tag if the prospect genuinely serves two completely distinct sectors (e.g. both healthcare AND manufacturing). Use specific Apollo-searchable terms: 'government administration', 'financial services', 'management consulting', 'healthcare', 'education management', 'real estate', 'software development', 'marketing and advertising', 'retail', 'manufacturing', 'banking', 'insurance', 'nonprofit organization management', 'legal services', 'construction', 'telecommunications', 'information technology and services', 'consumer goods', 'pharmaceuticals', 'hospitality', 'transportation/trucking/railroad', 'professional training & coaching', 'executive office'. Null ONLY if sector completely indeterminate. DO NOT output more than 2 tags.",
-    "industry":      "string | null — single best-fit sector tag from apollo_industries (first/most representative one), for display only",
+    "target_audience_type": "string — 'b2b' if the buyer is a person at a business (any role: Property Manager, CEO, Marketing Director, etc), 'b2c' if the buyer is a private consumer (homeowner, resident, individual end-user, member of the public), or 'mixed' if the prospect explicitly serves both. Default 'b2b' if unclear. CRITICAL: this drives whether Apollo is used at all — Apollo is a B2B contact database with no consumer records.",
+    "apollo_titles": "array of strings | null — EXACTLY 3-6 standalone job titles for Apollo API search. STRICT RULES: (1) Each entry must be a real B2B job title a person would hold — 2-4 words max. (2) NEVER include consumer/B2C terms (Homeowner, Resident, Tenant, Consumer, Buyer, End-user) — those belong in target_audience_type='b2c'. (3) NEVER include sentence fragments, descriptions, qualifiers, or phrases. If the transcript says 'senior decision-makers at organizations with 50+ employees' — extract titles: ['CEO', 'Director of Strategy', 'Head of Operations']. (4) Self-check each entry: would this appear verbatim on a LinkedIn profile or business card? If not — it is wrong, replace it. VALID: ['CEO', 'Managing Director', 'VP Sales', 'Head of Strategy', 'Chief Operating Officer', 'Property Manager', 'Facilities Manager']. INVALID: ['Homeowner', 'particularly in government', 'large enterprises', 'goals', 'accountability']. If titles not stated, INFER from role/industry context. Null if target_audience_type='b2c' or buyer role is completely indeterminate.",
+    "apollo_keyword": "string | null — a SINGLE short free-text phrase (1-3 words) describing the INDUSTRY THE BUYER'S EMPLOYER OPERATES IN. This is fed into Apollo's q_keywords (free-text company search), NOT a tag — so use plain natural language, not Apollo enums. CRITICAL DISTINCTION — extract the buyer's employer industry, NOT the topic/solution the prospect is selling: ✗ Solar company selling to property managers → 'renewables' is WRONG (that's the seller's domain). ✓ → 'property management' or 'real estate'. ✗ Marketing agency selling to SaaS founders → 'marketing' is WRONG. ✓ → 'software'. ✗ Roofing company selling to facilities managers at hotels → 'roofing' is WRONG. ✓ → 'hospitality' or 'commercial real estate'. Ask yourself: 'If I looked up this buyer on LinkedIn, what industry would their EMPLOYER be listed under?' That is the answer. Examples of valid values: 'real estate', 'property management', 'hospitality', 'manufacturing', 'software', 'healthcare', 'financial services', 'construction', 'education', 'logistics', 'retail', 'consulting'. Null if target_audience_type='b2c' or the buyer's industry is genuinely indeterminate (e.g. 'CEOs of any company' with no sector specified).",
+    "industry":      "string | null — same as apollo_keyword — kept as a separate field for display compatibility",
     "company_size":  "string | null — human-readable size of their TARGET clients, for display only (e.g. '50-200 employees', 'mid-market', 'enterprise'). Concise — not a full sentence.",
     "apollo_employee_ranges": "array of strings | null — Apollo API employee range codes for their TARGET clients. Choose ONLY from these exact strings: '1,10', '11,50', '51,200', '201,500', '501,1000', '1001,10000', '10001,50000', '50001+'. Match to the described size: '50+ employees, ideally 100+' → ['51,200','201,500']. 'Enterprise/large organizations' → ['501,1000','1001,10000','10001,50000']. CRITICAL RULE: if transcript mentions 'enterprise', 'large organizations', 'government agencies', 'Fortune 500', 'enterprise clients', or any equivalent → you MUST include '1001,10000' in the ranges. Government agencies and large enterprises are typically 1000+ employees. 'Small businesses under 10' → ['1,10']. Select 1-4 contiguous ranges that bracket the target. Null if no size mentioned.",
     "geography":     "string | null — target geography narrative, only if explicitly mentioned",
@@ -752,7 +753,7 @@ Return this exact JSON (null for anything not found):
 function emptyBrief(contactInfo) {
   return {
     prospect:  { company: contactInfo.company || null, contact_name: contactInfo.name || null, contact_title: null },
-    icp:       { role: null, apollo_titles: null, apollo_industries: null, industry: null, company_size: null, apollo_employee_ranges: null, geography: null, apollo_geography: null, person_seniorities: null, company_revenue: null, kpis: null },
+    icp:       { role: null, target_audience_type: 'b2b', apollo_titles: null, apollo_keyword: null, industry: null, company_size: null, apollo_employee_ranges: null, geography: null, apollo_geography: null, person_seniorities: null, company_revenue: null, kpis: null },
     metrics:   { ltv: null, close_rate: null, show_rate: null },
     angle:     { pain: null, result: null, methodology: null, proof: null },
     verbatim:  { pain_quote: null, result_quote: null, goal_quote: null },
@@ -789,10 +790,14 @@ function fmtEmp(n) {
 // We estimate the global reachable market from known industry/size data.
 // These are conservative global counts of relevant decision-makers in Apollo's database.
 function estimateGlobalTAM(icp) {
-  // Industry base: sum across all sectors in apollo_industries array, with diminishing returns
-  const industries = Array.isArray(icp?.apollo_industries) && icp.apollo_industries.length
-    ? icp.apollo_industries
-    : [(icp?.industry || '')];
+  // Industry base: sourced from the single free-text apollo_keyword (preferred)
+  // or the legacy industry field. apollo_industries (array) is no longer produced
+  // by the extractor — older jobs may still have it, so read as a fallback.
+  const industries = (typeof icp?.apollo_keyword === 'string' && icp.apollo_keyword.trim())
+    ? [icp.apollo_keyword.trim()]
+    : (Array.isArray(icp?.apollo_industries) && icp.apollo_industries.length
+        ? icp.apollo_industries
+        : [(icp?.industry || '')]);
   function getIndBase(s) {
     s = s.toLowerCase();
     if (/coach/.test(s)) return 4000000;
@@ -908,9 +913,11 @@ async function classifyLeadsWithHaiku(leads, briefOrIcp) {
   // The sector is the primary classification signal.
   // Titles/seniority are already pre-filtered by Apollo — we only need to confirm
   // the company is genuinely in the right industry sector.
-  const targetSectors = Array.isArray(icp.apollo_industries) && icp.apollo_industries.length
-    ? icp.apollo_industries
-    : [icp.industry || icp.role || 'the target sector'];
+  const targetSectors = (typeof icp.apollo_keyword === 'string' && icp.apollo_keyword.trim())
+    ? [icp.apollo_keyword.trim()]
+    : (Array.isArray(icp.apollo_industries) && icp.apollo_industries.length
+        ? icp.apollo_industries
+        : [icp.industry || icp.role || 'the target sector']);
   const targetSector  = targetSectors.join(', ');
   const targetTitles  = icp.apollo_titles?.join(', ') || icp.role || null;
   const targetGeo     = icp.apollo_geography?.join(', ') || icp.geography || null;
@@ -1025,11 +1032,17 @@ async function translateIcpForApollo(icp) {
   const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
   const rawTitles     = Array.isArray(icp?.apollo_titles)     && icp.apollo_titles.length     ? icp.apollo_titles     : (icp?.role ? [icp.role] : []);
-  const rawIndustries = Array.isArray(icp?.apollo_industries) && icp.apollo_industries.length ? icp.apollo_industries : (icp?.industry ? [icp.industry] : []);
+  // apollo_keyword (single free-text phrase) is the new schema — fall back to legacy
+  // apollo_industries array for jobs created before the cutover.
+  const rawIndustries = (typeof icp?.apollo_keyword === 'string' && icp.apollo_keyword.trim())
+    ? [icp.apollo_keyword.trim()]
+    : (Array.isArray(icp?.apollo_industries) && icp.apollo_industries.length
+        ? icp.apollo_industries
+        : (icp?.industry ? [icp.industry] : []));
   const rawGeo        = Array.isArray(icp?.apollo_geography)  && icp.apollo_geography.length  ? icp.apollo_geography  : [];
 
   if (!rawTitles.length && !rawIndustries.length) {
-    console.log('[ICP Translator] No titles or industries to translate — skipping');
+    console.log('[ICP Translator] No titles or keyword to translate — skipping');
     return icp; // nothing to translate, return as-is
   }
 
@@ -1178,6 +1191,23 @@ function sanitizeApolloPayload(payload) {
   if (Array.isArray(sanitized.q_keywords)) {
     sanitized.q_keywords = sanitized.q_keywords.join(' ');
   }
+  // Normalize q_keywords (free text) → q_organization_keyword_tags as a SINGLE tag.
+  // Apollo's mixed_people/api_search ignores q_keywords (returns 0 results) and
+  // applies AND logic across multiple keyword tags. Putting the entire phrase as
+  // one tag keeps it OR-style and preserves industry filtering. We do NOT split
+  // on whitespace — that's the historical bug that killed EU coverage.
+  if (typeof sanitized.q_keywords === 'string' && sanitized.q_keywords.trim()) {
+    const phrase = sanitized.q_keywords.trim();
+    if (!Array.isArray(sanitized.q_organization_keyword_tags) || sanitized.q_organization_keyword_tags.length === 0) {
+      sanitized.q_organization_keyword_tags = [phrase];
+    }
+  }
+  // Cap q_organization_keyword_tags to a single tag — multiple tags AND-collapse
+  // to zero results. The industry signal is now a single phrase by design.
+  if (Array.isArray(sanitized.q_organization_keyword_tags) && sanitized.q_organization_keyword_tags.length > 1) {
+    warnings.push(`Capped q_organization_keyword_tags from ${sanitized.q_organization_keyword_tags.length} → 1 (AND-trap avoidance)`);
+    sanitized.q_organization_keyword_tags = [sanitized.q_organization_keyword_tags[0]];
+  }
 
   // Validate revenue (integers or null)
   if (sanitized.revenue_range) {
@@ -1211,7 +1241,10 @@ async function preflightCompanyCheck(payload) {
   if (!APOLLO_KEY) return { companiesFound: 0 };
 
   const companyFilters = {};
-  if (payload.q_keywords) companyFilters.q_organization_keyword_tags = payload.q_keywords.split(' ');
+  // q_keywords is FREE TEXT for company search. Do NOT split into q_organization_keyword_tags —
+  // tag-mode applies AND logic and collapses results (especially for EU/non-US markets).
+  // Pass the entire phrase as a single free-text query.
+  if (payload.q_keywords) companyFilters.q_keywords = String(payload.q_keywords).trim();
   if (payload.organization_num_employees_ranges) companyFilters.organization_num_employees_ranges = payload.organization_num_employees_ranges;
   if (payload.organization_locations) companyFilters.organization_locations = payload.organization_locations;
   if (payload.revenue_range) companyFilters.revenue_range = payload.revenue_range;
@@ -1265,6 +1298,12 @@ function relaxFilter(payload, filterName) {
       delete payload.q_keywords;
       return 'removed';
     }
+
+    case 'q_organization_keyword_tags':
+      // Single industry tag — broaden by removing it entirely (the keyword phrase
+      // is the most expendable filter; titles + seniority + size + geo carry the rest).
+      delete payload.q_organization_keyword_tags;
+      return 'removed';
 
     case 'person_department_or_subdepartments':
       delete payload[filterName];
@@ -1445,6 +1484,15 @@ async function fetchLeadsFromApollo(icp) {
     ? icp.apollo_employee_ranges
     : (icp?.company_size ? mapCompanySize(icp.company_size) : []);
 
+  // apollo_keyword (single free-text phrase, e.g. "property management") is the
+  // new industry signal. Falls back to first value of legacy apollo_industries
+  // for jobs created before the cutover.
+  const keywordPhrase = (typeof icp?.apollo_keyword === 'string' && icp.apollo_keyword.trim())
+    ? icp.apollo_keyword.trim()
+    : (Array.isArray(icp?.apollo_industries) && icp.apollo_industries.length
+        ? String(icp.apollo_industries[0] || '').trim()
+        : '');
+
   const legacyPayload = {
     person_titles: Array.isArray(icp?.apollo_titles) && icp.apollo_titles.length ? icp.apollo_titles : [],
     organization_locations: apolloGeo,
@@ -1452,12 +1500,16 @@ async function fetchLeadsFromApollo(icp) {
     person_seniorities: Array.isArray(icp?.person_seniorities) && icp.person_seniorities.length ? icp.person_seniorities : [],
     per_page: 50
   };
+  // Pass the keyword as q_keywords (string). sanitizeApolloPayload normalizes
+  // this to a SINGLE-TAG q_organization_keyword_tags, avoiding Apollo's AND-trap.
+  if (keywordPhrase) legacyPayload.q_keywords = keywordPhrase;
 
   const defaultRelaxationOrder = [
     "revenue_range",
     "currently_using_any_of_technology_uids",
     "organization_num_employees_ranges",
-    "q_keywords",
+    "q_organization_keyword_tags", // industry phrase — drop early if results are tight
+    "q_keywords",                  // fallback name (some translator outputs still use it)
     "person_department_or_subdepartments",
     "organization_locations",
     "person_seniorities",
@@ -2182,8 +2234,24 @@ async function handleLeadList(task, job) {
   const icp   = brief.icp || {};
 
   // Pass the full ICP — do NOT reconstruct a subset. apollo_geography, apollo_employee_ranges,
-  // apollo_industries, person_seniorities are all needed by fetchLeadsFromApollo.
+  // apollo_keyword, person_seniorities are all needed by fetchLeadsFromApollo.
   console.log('[lead_list] ICP from brief:', JSON.stringify(icp));
+
+  // ── B2C short-circuit ─────────────────────────────────────────────────────
+  // Apollo is a B2B contact database. If the prospect's target audience is consumers
+  // (homeowners, residents, end-users), no amount of filter relaxation produces leads.
+  // Detect via explicit flag from extractor, OR via heuristic on titles.
+  const B2C_TITLE_TOKENS = /\b(homeowner|home\s?owner|resident|tenant|consumer|customer|end[-\s]?user|buyer|individual|prospect)\b/i;
+  const titleLooksB2C = Array.isArray(icp.apollo_titles) &&
+    icp.apollo_titles.length > 0 &&
+    icp.apollo_titles.every(t => B2C_TITLE_TOKENS.test(String(t || '')));
+  const isB2C = icp.target_audience_type === 'b2c' || titleLooksB2C;
+  if (isB2C) {
+    const msg = 'Target audience is consumers (B2C). Apollo is a B2B contact database — manual list or alternate data source needed.';
+    console.warn('[lead_list] B2C target detected — routing to needs_input:', msg);
+    if (task?.id) await needsInputTask(task.id, msg);
+    return null; // signal needs_input — worker will not mark completed
+  }
 
   // ── ICP Translation Agent: expand titles + map industries to Apollo taxonomy ──
   // Fail-safe: if translation fails, original icp is returned unchanged.
@@ -2193,7 +2261,8 @@ async function handleLeadList(task, job) {
   // Do NOT call filterLeadsByWebsite here — that would re-scrape every site a second time.
   const result = await fetchLeadsFromApollo(enrichedIcp);
   const leads  = result?.leads || [];
-  const tam    = result?.totalAvailable || 0;
+  // fetchLeadsFromApollo returns { total }; legacy callers used { totalAvailable }
+  const tam    = result?.total ?? result?.totalAvailable ?? 0;
   // Lloyd's rep-proof outreach formula:
   // TAM > 300K → cap at 100K/mo (QS practical maximum)
   // TAM ≤ 300K → exhaust market in exactly 3 months
@@ -3139,7 +3208,7 @@ const server = http.createServer(async (req, res) => {
       if (!job) { res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'Job not found' })); return; }
       const existingData = job.extracted_data || {};
       const existingIcp = existingData.icp || {};
-      const ICP_FIELDS = ['apollo_titles', 'apollo_industries', 'apollo_geography', 'apollo_employee_ranges', 'person_seniorities'];
+      const ICP_FIELDS = ['apollo_titles', 'apollo_keyword', 'apollo_geography', 'apollo_employee_ranges', 'person_seniorities', 'target_audience_type'];
       const updatedIcp = { ...existingIcp };
       for (const k of ICP_FIELDS) {
         if (body[k] !== undefined) updatedIcp[k] = body[k];
@@ -3169,7 +3238,9 @@ const server = http.createServer(async (req, res) => {
       const job = await getJob(jobId);
       if (!job) { res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'Job not found' })); return; }
       const icp = (job.extracted_data || {}).icp || {};
-      if (!icp.apollo_titles?.length && !icp.apollo_industries?.length) {
+      const hasKeyword = (typeof icp.apollo_keyword === 'string' && icp.apollo_keyword.trim().length > 0)
+        || (Array.isArray(icp.apollo_industries) && icp.apollo_industries.length > 0); // legacy
+      if (!icp.apollo_titles?.length && !hasKeyword) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'No ICP filters set — nothing to search' }));
         return;

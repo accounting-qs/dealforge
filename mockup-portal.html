@@ -788,6 +788,11 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
         </td></tr>
       </tbody>
     </table>
+    <div id="lead-market-too-small" style="display:none;margin-top:12px;padding:12px 16px;background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.3);border-radius:8px;color:#d97706;font-size:13px;line-height:1.5;">
+      <strong>This market is too small to show more contacts.</strong>
+      <span id="lead-market-too-small-detail" style="color:#b45309;"></span>
+      <div style="margin-top:6px;color:#a16207;font-size:12px;">Click ✏️ Edit Filters above to broaden the search (e.g. drop a constraint, add a country, or widen the seniority range), then Re-run Apollo Search.</div>
+    </div>
   </div>
 </div>
 
@@ -2880,19 +2885,26 @@ function runPersonalization(session) {
     const displayTitles = Array.isArray(icp.apollo_titles) && icp.apollo_titles.length
       ? icp.apollo_titles
       : (icp.role ? [icp.role] : null);
-    const displayIndustries = Array.isArray(icp.apollo_industries) && icp.apollo_industries.length
-      ? icp.apollo_industries
-      : (icp.industry ? [icp.industry] : null);
+    // apollo_keyword is the new single-phrase industry signal. Fall back to the
+    // legacy apollo_industries array (first value only) for jobs created before the cutover.
+    var keywordSingle = (typeof icp.apollo_keyword === 'string' && icp.apollo_keyword.trim())
+      ? icp.apollo_keyword.trim()
+      : (Array.isArray(icp.apollo_industries) && icp.apollo_industries.length
+          ? String(icp.apollo_industries[0] || '').trim()
+          : (icp.industry ? String(icp.industry).trim() : ''));
+    const displayIndustries = keywordSingle ? [keywordSingle] : null;
     const displayGeos = Array.isArray(icp.apollo_geography) && icp.apollo_geography.length
       ? icp.apollo_geography
       : (icp.geography ? [icp.geography] : null);
     const displaySize = icp.company_size || null;
 
     if (icpFiltersRow) {
-      // Store ICP data globally for filter editing
+      // Store ICP data globally for filter editing.
+      // apollo_keyword is a single string (not array) — the chip UI renders it as
+      // a single tag with × to clear and an inline input to replace.
       window._icpEditData = {
         apollo_titles: displayTitles ? displayTitles.slice() : [],
-        apollo_industries: displayIndustries ? displayIndustries.slice() : [],
+        apollo_keyword: keywordSingle || '',
         apollo_geography: displayGeos ? displayGeos.slice() : [],
         apollo_employee_ranges: (icp.apollo_employee_ranges || []).slice(),
         person_seniorities: (icp.person_seniorities || []).slice(),
@@ -3124,6 +3136,31 @@ function runPersonalization(session) {
     }
     // else: still pending — spinner row stays visible naturally
 
+    // ── Market-too-small banner ───────────────────────────────────────────────
+    // Shown when Apollo returned fewer than 25 leads AND the underlying market
+    // (total_entries / TAM) is itself smaller than 25. Distinct from "broaden filters"
+    // — this means the market is genuinely tiny, not that the filters are too tight.
+    try {
+      var mts = document.getElementById('lead-market-too-small');
+      if (mts) {
+        var leadsCount = Array.isArray(gen.leads) ? gen.leads.length : 0;
+        var apolloTotalRaw = (gen.tam_total != null ? gen.tam_total
+                              : (gen.apolloTotal != null ? gen.apolloTotal : null));
+        var apolloTotal = (typeof apolloTotalRaw === 'number') ? apolloTotalRaw
+                          : parseInt(String(apolloTotalRaw || '0').replace(/[^0-9]/g, ''), 10) || 0;
+        var taskDone = gen.leadsTaskStatus === 'completed' || gen.leadsTaskStatus === null;
+        if (taskDone && leadsCount > 0 && leadsCount < 25 && apolloTotal > 0 && apolloTotal < 25) {
+          var detail = document.getElementById('lead-market-too-small-detail');
+          if (detail) detail.textContent =
+            ' Apollo only has ' + apolloTotal + ' contact' + (apolloTotal === 1 ? '' : 's') +
+            ' that match these filters worldwide.';
+          mts.style.display = 'block';
+        } else {
+          mts.style.display = 'none';
+        }
+      }
+    } catch(e) { console.warn('[lead-market-too-small] render error:', e.message); }
+
     // ── Render Apollo Diagnostics ─────────────────────────────────────────────
     const diagPanel = document.getElementById('lead-diagnostics-panel');
     if (diagPanel) {
@@ -3137,9 +3174,23 @@ function runPersonalization(session) {
         diagPanel.style.color = '#d97706';
         diagPanel.style.fontSize = '13px';
         
-        let logsHtml = (gen.apollo_diagnostics.relaxationLog || []).map(log => 
-          `<div style="margin-top:4px;">⚠️ ${escHtml(log)}</div>`
-        ).join('');
+        function _formatRelaxLog(entry) {
+          if (entry == null) return '';
+          if (typeof entry === 'string') return entry;
+          var step = entry.step || entry.action || 'event';
+          var parts = [];
+          if (entry.filter)         parts.push('filter=' + entry.filter);
+          if (entry.action)         parts.push('action=' + entry.action);
+          if (entry.attempt != null) parts.push('attempt=' + entry.attempt);
+          if (entry.totalResults != null) parts.push('results=' + entry.totalResults);
+          if (entry.companiesFound != null) parts.push('companies=' + entry.companiesFound);
+          if (entry.reason)         parts.push('reason=' + entry.reason);
+          if (Array.isArray(entry.filtersUsed)) parts.push('filtersUsed=[' + entry.filtersUsed.join(', ') + ']');
+          return step + (parts.length ? ' — ' + parts.join(', ') : '');
+        }
+        let logsHtml = (gen.apollo_diagnostics.relaxationLog || []).map(function(log) {
+          return '<div style="margin-top:4px;">⚠️ ' + escHtml(_formatRelaxLog(log)) + '</div>';
+        }).join('');
         
         diagPanel.innerHTML = `
           <div style="font-weight:600;margin-bottom:6px;display:flex;align-items:center;gap:6px;">
@@ -3209,15 +3260,21 @@ function renderFilterTags() {
     html += makeAddInput('apollo_employee_ranges', 'e.g. 11,50');
     html += '<span class="filter-sep">&middot;</span>';
   }
-  // Industries
-  if (d.apollo_industries && d.apollo_industries.length) {
-    html += '<span class="filter-group-label">Industries</span>';
-    html += d.apollo_industries.map(function(v){ return makeTag(v, 'apollo_industries'); }).join('');
-    html += makeAddInput('apollo_industries', 'Add industry…');
+  // Industry keyword — single free-text phrase (e.g. "property management").
+  // Renders as one chip in display mode; in edit mode the chip × clears the field
+  // and an input replaces the value (typing Enter saves).
+  if (d.apollo_keyword && String(d.apollo_keyword).trim()) {
+    html += '<span class="filter-group-label">Industry</span>';
+    html += makeTag(d.apollo_keyword, 'apollo_keyword');
+    if (editMode) {
+      html += '<input class="filter-add-input" style="display:inline-block" placeholder="Replace…" '
+        + 'onkeydown="if(event.key===\'Enter\'){setKeyword(this.value);this.value=\'\'}">';
+    }
     html += '<span class="filter-sep">&middot;</span>';
   } else if (editMode) {
-    html += '<span class="filter-group-label">Industries</span>';
-    html += makeAddInput('apollo_industries', 'Add industry…');
+    html += '<span class="filter-group-label">Industry</span>';
+    html += '<input class="filter-add-input" style="display:inline-block" placeholder="+ e.g. property management" '
+      + 'onkeydown="if(event.key===\'Enter\'){setKeyword(this.value);this.value=\'\'}">';
     html += '<span class="filter-sep">&middot;</span>';
   }
   // Geographies
@@ -3259,6 +3316,12 @@ function toggleFilterEdit() {
 }
 
 function removeFilter(group, val) {
+  // apollo_keyword is a single string, not an array — × clears it.
+  if (group === 'apollo_keyword') {
+    window._icpEditData.apollo_keyword = '';
+    renderFilterTags();
+    return;
+  }
   if (!window._icpEditData[group]) return;
   window._icpEditData[group] = window._icpEditData[group].filter(function(v){ return v !== val; });
   renderFilterTags();
@@ -3267,8 +3330,18 @@ function removeFilter(group, val) {
 function addFilter(group, val) {
   val = (val || '').trim();
   if (!val) return;
+  if (group === 'apollo_keyword') {
+    window._icpEditData.apollo_keyword = val;
+    renderFilterTags();
+    return;
+  }
   if (!window._icpEditData[group]) window._icpEditData[group] = [];
   if (window._icpEditData[group].indexOf(val) === -1) window._icpEditData[group].push(val);
+  renderFilterTags();
+}
+
+function setKeyword(val) {
+  window._icpEditData.apollo_keyword = (val || '').trim();
   renderFilterTags();
 }
 

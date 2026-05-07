@@ -898,10 +898,13 @@ function njShowBrief() {
   setVal('bf-contact-name', prospect.contact_name);
   setVal('bf-contact-title',prospect.contact_title);
   setVal('bf-apollo-titles', Array.isArray(icp.apollo_titles) ? icp.apollo_titles.join(', ') : (icp.apollo_titles || ''));
-  // Industry: prefer apollo_industries array (multi-sector), fall back to single industry string
-  setVal('bf-industry', Array.isArray(icp.apollo_industries) && icp.apollo_industries.length
-    ? icp.apollo_industries.join(', ')
-    : (icp.industry || ''));
+  // Industry: apollo_keyword (single free-text phrase, e.g. "property management").
+  // Falls back to legacy apollo_industries[0] for jobs created before the cutover.
+  setVal('bf-industry', (typeof icp.apollo_keyword === 'string' && icp.apollo_keyword.trim())
+    ? icp.apollo_keyword.trim()
+    : (Array.isArray(icp.apollo_industries) && icp.apollo_industries.length
+        ? String(icp.apollo_industries[0] || '').trim()
+        : (icp.industry || '')));
   setVal('bf-company-size', icp.company_size);
   // Geography: prefer apollo_geography (clean countries), fall back to narrative geography
   setVal('bf-geography', Array.isArray(icp.apollo_geography) && icp.apollo_geography.length
@@ -967,10 +970,9 @@ function njGenerate() {
       contact_title: getVal('bf-contact-title')
     },
     icp: (function() {
+      // apollo_keyword is a single free-text phrase — store the raw value, no splitting.
       var industryRaw = getVal('bf-industry');
-      var apolloIndustriesArr = industryRaw
-        ? industryRaw.split(',').map(function(s){ return s.trim(); }).filter(function(s){ return s.length > 0; })
-        : null;
+      var apolloKeyword = industryRaw ? industryRaw.trim() : null;
       var geoRaw = getVal('bf-geography');
       var apolloGeoArr = geoRaw
         ? geoRaw.split(',').map(function(s){ return s.trim(); }).filter(function(s){ return s.length > 0; })
@@ -978,8 +980,8 @@ function njGenerate() {
       return {
         role:                 apolloTitlesArr ? apolloTitlesArr.join(', ') : null,
         apollo_titles:        apolloTitlesArr,
-        apollo_industries:    apolloIndustriesArr,
-        industry:             apolloIndustriesArr ? apolloIndustriesArr[0] : null,
+        apollo_keyword:       apolloKeyword,
+        industry:             apolloKeyword,
         company_size:         getVal('bf-company-size'),
         apollo_employee_ranges: (_njPrefetchResult && _njPrefetchResult.brief && _njPrefetchResult.brief.icp) ? (_njPrefetchResult.brief.icp.apollo_employee_ranges || null) : null,
         geography:            geoRaw,

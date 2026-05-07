@@ -307,7 +307,9 @@ function renderICP(data) {
   }
   var rows = [
     ['Titles', (icp.apollo_titles||[]).join(', ')],
-    ['Industry', (icp.apollo_industries||[]).join(', ')],
+    ['Industry', (typeof icp.apollo_keyword === 'string' && icp.apollo_keyword.trim())
+      ? icp.apollo_keyword.trim()
+      : (icp.apollo_industries || []).join(', ')],
     ['Geography', (icp.apollo_geography||[]).join(', ')],
     ['Company Size', (icp.apollo_employee_ranges||[]).join(', ')],
     ['Pain Point', icp.pain_point||'—'],
