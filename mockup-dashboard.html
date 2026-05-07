@@ -208,6 +208,7 @@
           <option value="">Select rep...</option>
           <option value="melissa">Melissa F.</option>
           <option value="ryan">Ryan Matsumori</option>
+          <option value="armando">Armando</option>
         </select>
       </div>
 
@@ -383,6 +384,7 @@
         <button class="rep-pill active" onclick="filterRep('all',this)">All</button>
         <button class="rep-pill" onclick="filterRep('melissa',this)">Melissa F.</button>
         <button class="rep-pill" onclick="filterRep('ryan',this)">Ryan Matsumori</button>
+        <button class="rep-pill" onclick="filterRep('armando',this)">Armando</button>
       </div>
       <!-- Search -->
       <div style="position:relative;min-width:200px;">
@@ -1040,7 +1042,10 @@ function njGenerate() {
 
     var portalUrl     = data.portal_url || ('/?job=' + data.job_id);
     var editPortalUrl = portalUrl + (portalUrl.includes('?') ? '&' : '?') + 'edit=true';
-    var repName = rep === 'melissa' ? 'Melissa F.' : 'Ryan Matsumori';
+    var repName = rep === 'melissa' ? 'Melissa F.'
+                : rep === 'ryan'    ? 'Ryan Matsumori'
+                : rep === 'armando' ? 'Armando'
+                : (rep || '');
     var today = new Date();
     var dateStr = today.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
     var displayName = contactName || email;
