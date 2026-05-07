@@ -1353,10 +1353,14 @@ async function guaranteedLeadSearch(sanitizedPayload, confidenceMap, relaxationO
       const body = {
         per_page: Math.max(payload.per_page || 50, MIN_LEADS),
         page: 1,
-        sort_by_field: 'person_name',
-        sort_ascending: true,
         ...payload
       };
+      // sort_by_field: 'person_name' was rejected by Apollo's api_search backend
+      // ("Fielddata is disabled on [person_name] in [people_v5]" — Elasticsearch
+      // can't sort on a text field). Strip both sort params explicitly in case the
+      // translator-built payload re-introduces them.
+      delete body.sort_by_field;
+      delete body.sort_ascending;
       // q_keywords is not supported by the api_search endpoint — it causes 0 results.
       // preflightCompanyCheck still uses it via q_organization_keyword_tags.
       delete body.q_keywords;
@@ -3254,22 +3258,36 @@ const server = http.createServer(async (req, res) => {
           console.log(`[rerun-apollo] Starting for job ${jobId}`);
           const result = await fetchLeadsFromApollo(icp);
           if (result && result.leads) {
+            // Mirror handleLeadList's outreach calculation so the "Recommended/month"
+            // stat refreshes with the rerun. TAM > 300K → cap at 100K/mo;
+            // otherwise exhaust the market in 3 months.
+            const tam = result.total || 0;
+            const recommendedOutreach = tam > 300000
+              ? 100000
+              : tam > 0 ? Math.max(1000, Math.round(tam / 3 / 1000) * 1000) : 30000;
+
             const existingData = job.extracted_data || {};
+            // Field names here MUST match what mockup-portal.html reads from
+            // existingGen (see line ~2074: `existingGen.leads`, `tam_total`, etc).
+            // Earlier this block wrote `lead_list` instead of `leads`, so the rerun
+            // never updated the visible lead table.
             const updatedData = {
               ...existingData,
               _generated: {
                 ...(existingData._generated || {}),
-                lead_list: result.leads,
-                tam_total: result.total,
-                tam_source: result.tamSource,
-                apollo_diagnostics: result.diagnostics
+                leads:                result.leads,
+                tam_total:            tam,
+                tam_source:           result.tamSource,
+                recommendedOutreach:  recommendedOutreach,
+                leadsTaskStatus:     'completed',
+                apollo_diagnostics:   result.diagnostics
               }
             };
             await supabaseRequest('PATCH', `/rest/v1/jobs?id=eq.${jobId}`,
               { extracted_data: updatedData, updated_at: new Date().toISOString() },
               { 'Prefer': 'return=minimal' }
             );
-            console.log(`[rerun-apollo] Job ${jobId}: saved ${result.leads.length} leads`);
+            console.log(`[rerun-apollo] Job ${jobId}: saved ${result.leads.length} leads, TAM=${tam}, outreach=${recommendedOutreach}/mo`);
           } else {
             console.warn(`[rerun-apollo] Job ${jobId}: search returned no result`);
           }
