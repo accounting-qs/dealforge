@@ -3725,7 +3725,7 @@ const server = http.createServer(async (req, res) => {
   if (urlPath === '/dashboard')          urlPath = '/mockup-dashboard.html';
   if (urlPath === '/calls')              urlPath = '/calls.html';
   if (urlPath === '/settings')           urlPath = '/settings.html';
-  if (urlPath === '/prompts')            urlPath = '/settings.html';  // legacy alias
+  if (urlPath === '/prompts' || urlPath === '/prompts.html') urlPath = '/settings.html';  // legacy alias
   if (urlPath === '/prospect' || urlPath.startsWith('/prospect?')) urlPath = '/prospect.html';
   const filePath = path.join(__dirname, urlPath);
   const ext      = path.extname(filePath);
