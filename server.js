@@ -3809,13 +3809,23 @@ const server = http.createServer(async (req, res) => {
           const result = await generateWebinarTitles(extracted, company, job);
           await writeRerun({ status: 'running', progress: 90, message: 'Saving variants…' });
 
-          // 1) Update the task row so portal's primary read path picks it up
+          // 1) Update the task row so portal's primary read path picks it up.
+          // Column is `error_message` (not `error`) — passing the wrong column made
+          // PostgREST reject the entire PATCH, leaving the task with the older
+          // output schema while the _generated mirror updated correctly. Log the
+          // status code so any future schema mismatch surfaces immediately instead
+          // of silently masking the new copy with stale task output.
           const taskR = await supabaseRequest('GET', `/rest/v1/tasks?job_id=eq.${jobId}&task_type=eq.webinar_titles&limit=1`);
           const taskRow = Array.isArray(taskR.body) ? taskR.body[0] : null;
           if (taskRow) {
-            await supabaseRequest('PATCH', `/rest/v1/tasks?id=eq.${taskRow.id}`,
-              { output_data: result, status: 'completed', error: null, updated_at: new Date().toISOString() },
+            const patchR = await supabaseRequest('PATCH', `/rest/v1/tasks?id=eq.${taskRow.id}`,
+              { output_data: result, status: 'completed', error_message: null, updated_at: new Date().toISOString() },
               { 'Prefer': 'return=minimal' });
+            if (patchR.status >= 400) {
+              console.error(`[regen-webinar-titles] Task PATCH FAILED status=${patchR.status} body=${JSON.stringify(patchR.body).slice(0,400)}`);
+            }
+          } else {
+            console.warn(`[regen-webinar-titles] No webinar_titles task row found for job ${jobId} — only the mirror was updated`);
           }
           // 2) Mirror to _generated for redundancy + final progress flag
           const fresh = await getJob(jobId);
