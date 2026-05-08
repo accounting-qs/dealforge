@@ -3097,29 +3097,80 @@ function runPersonalization(session) {
           }
         } else {
           var liSvg = '<svg width="11" height="11" fill="currentColor" viewBox="0 0 24 24"><path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433a2.062 2.062 0 01-2.063-2.065 2.064 2.064 0 112.063 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z"/></svg>';
-          tbody.innerHTML = gen.leads.slice(0, 25).map(function(lead, idx) {
+          // renderLeadRow lives at module scope so the reveal handler can re-render
+          // a single lead in place after the API responds.
+          window._renderLeadRow = function(lead, idx) {
             var websiteDomain = lead.website ? lead.website.replace(/^https?:\/\//, '') : '';
+            var websiteCell = lead.website
+              ? '<a class="web-link" href="' + lead.website + '" target="_blank">' + websiteDomain + '</a>'
+              : '<span style="color:#9ca3af">—</span>';
+            var liCell = lead.linkedin_url
+              ? '<a class="li-link" href="' + lead.linkedin_url + '" target="_blank">' + liSvg + ' View</a>'
+              : '<span style="color:#9ca3af">—</span>';
+            // Photo avatar (24px) — only renders after reveal populates photo_url
+            var avatar = lead.photo_url
+              ? '<img src="' + lead.photo_url + '" alt="" style="width:22px;height:22px;border-radius:50%;object-fit:cover;margin-right:8px;vertical-align:middle;">'
+              : '';
+            // Reveal button: only edit mode + has apollo_id + not yet revealed
+            var canReveal = IS_EDIT_MODE && lead.apollo_id && !lead.revealed;
+            var revealBtn = canReveal
+              ? '<button class="reveal-btn" data-apollo-id="' + lead.apollo_id + '" data-lead-idx="' + idx + '" title="Reveal full name + personal LinkedIn + work email (1 Apollo credit)" style="margin-left:8px;background:rgba(134,239,172,0.1);color:#86efac;border:1px solid rgba(134,239,172,0.3);border-radius:4px;padding:2px 8px;font-size:11px;font-weight:500;cursor:pointer;">🔓 Reveal</button>'
+              : '';
+            // Email below name — only present after reveal
+            var emailLine = lead.email
+              ? '<div style="font-size:11px;color:#71717a;margin-top:2px;">' + lead.email + '</div>'
+              : '';
+            var nameCell = '<td class="td-name" data-lead-idx="' + idx + '">'
+              + '<div style="display:flex;align-items:center;">' + avatar + '<span>' + lead.name + '</span>' + revealBtn + '</div>'
+              + emailLine
+              + '</td>';
+            return '<tr class="data-row" data-lead-idx="' + idx + '">'
+              + '<td style="color:#3f3f46;font-size:12px;">' + (idx + 1) + '</td>'
+              + nameCell
+              + '<td class="td-title">' + lead.title + '</td>'
+              + '<td class="td-company">' + lead.company + '</td>'
+              + '<td class="td-size">' + (lead.company_size || '—') + '</td>'
+              + '<td>' + websiteCell + '</td>'
+              + '<td>' + liCell + '</td>'
+              + '</tr>';
+          };
+          tbody.innerHTML = gen.leads.slice(0, 25).map(window._renderLeadRow).join('');
 
-          var websiteCell = lead.website
-            ? '<a class="web-link" href="' + lead.website + '" target="_blank">' + websiteDomain + '</a>'
-            : '<span style="color:#9ca3af">—</span>';
-          var liCell = lead.linkedin_url
-            ? '<a class="li-link" href="' + lead.linkedin_url + '" target="_blank">' + liSvg + ' View</a>'
-            : '<span style="color:#9ca3af">—</span>';
-          var dataRow = '<tr class="data-row">' +
-            '<td style="color:#3f3f46;font-size:12px;">' + (idx + 1) + '</td>' +
-            '<td class="td-name">' + lead.name + '</td>' +
-            '<td class="td-title">' + lead.title + '</td>' +
-            '<td class="td-company">' + lead.company + '</td>' +
-            '<td class="td-size">' + (lead.company_size || '—') + '</td>' +
-            '<td>' + websiteCell + '</td>' +
-            '<td>' + liCell + '</td>' +
-            '</tr>';
-          var detailRow = '';
-          return dataRow + detailRow;
-        }).join('');
+          // Wire reveal click handler — delegated via tbody
+          tbody.addEventListener('click', async function(e) {
+            var btn = e.target.closest('.reveal-btn');
+            if (!btn) return;
+            var apolloId = btn.dataset.apolloId;
+            var idx = parseInt(btn.dataset.leadIdx, 10);
+            var jobId = new URLSearchParams(window.location.search).get('job');
+            if (!apolloId || !jobId) return;
+            btn.disabled = true;
+            btn.textContent = '⏳ Revealing…';
+            try {
+              var r = await fetch('/api/jobs/' + encodeURIComponent(jobId) + '/leads/reveal', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ apollo_id: apolloId })
+              });
+              if (!r.ok) throw new Error('Reveal failed: ' + r.status);
+              var data = await r.json();
+              // Mutate in-memory list and re-render this row in place
+              gen.leads[idx] = data.lead;
+              var oldRow = tbody.querySelector('tr[data-lead-idx="' + idx + '"]');
+              if (oldRow) {
+                var tmp = document.createElement('tbody');
+                tmp.innerHTML = window._renderLeadRow(data.lead, idx);
+                oldRow.replaceWith(tmp.firstElementChild);
+              }
+            } catch(err) {
+              console.error('[reveal]', err);
+              btn.disabled = false;
+              btn.textContent = '🔓 Reveal';
+              alert('Could not reveal: ' + err.message);
+            }
+          }, { once: false });
 
-        console.log('[Deal Forge] Lead table populated with', gen.leads.length, 'Apollo leads');
+          console.log('[Deal Forge] Lead table populated with', gen.leads.length, 'Apollo leads');
         }
       }
     } else if (gen.leadsTaskStatus === 'completed' || (Array.isArray(gen.leads) && gen.leads.length === 0)) {

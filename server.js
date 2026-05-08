@@ -839,39 +839,31 @@ async function websiteQualityCheck(url, timeoutMs = 7000) {
   return { excerpt: text.slice(0, 500) };
 }
 function normalizePerson(p, source) {
-  // Normalize contact shape from people/search and contacts/search into one format.
-  // Apollo mixed_people/api_search returns obfuscated data on some plans:
-  //   - last_name_obfuscated instead of last_name
-  //   - no combined `name` field — must build from first_name + last_name_obfuscated
+  // Normalize contact shape from people search into one format.
+  //   - last_name_obfuscated instead of last_name on this plan
   //   - organization.name instead of organization_name
-  //   - no linkedin_url on the free tier
+  //   - personal linkedin_url is paywalled in search; hydrate via people/match on reveal
   const org = p.organization || p.account || {};
   const name = p.name
     || (p.first_name && (p.last_name || p.last_name_obfuscated)
         ? `${p.first_name} ${p.last_name || p.last_name_obfuscated}`.trim()
         : (p.first_name || null));
   const company = p.organization_name || org.name || org.short_description || null;
-  // Apollo's response shape varies by tier and contact — try every known path
-  // before giving up. org.domain and org.primary_domain_url are populated for
-  // some contacts where the primary three fields are null.
-  const website = p.website_url
-    || org.website_url
-    || org.primary_domain
-    || org.domain
-    || org.primary_domain_url
-    || null;
+  const website = p.website_url || org.website_url || org.primary_domain || org.domain || org.primary_domain_url || null;
   const employeeCount = p.organization_num_employees || org.estimated_num_employees || org.employees || null;
   return {
+    apollo_id:           p.id || null,                                  // needed for on-demand reveal
     name,
-    title: p.title,
+    title:               p.title,
     company,
-    company_size: fmtEmp(employeeCount),
+    company_size:        fmtEmp(employeeCount),
     website,
-    linkedin_url: p.linkedin_url || p.linkedin_url_obfuscated || null,
-    // LinkedIn headline — Apollo scrapes this from LinkedIn profiles. Far more specific
-    // than org.industry tags. "VP Strategy at Gov of Estonia | EU Policy Advisor" is
-    // an instant sector signal without any additional web request.
-    _headline: p.headline || null,
+    linkedin_url:        p.linkedin_url || null,                        // display URL — company LI fills this in via hydration; reveal swaps in personal LI
+    company_linkedin_url: null,                                         // populated by enrichLeadsWithCompanyData
+    photo_url:           null,                                          // populated on reveal
+    email:               null,                                          // populated on reveal
+    headline:            null,                                          // populated on reveal
+    revealed:            false,                                         // true after rep clicks Reveal (1 enrichment credit spent)
     _source: source
   };
 }
@@ -927,6 +919,10 @@ async function enrichLeadsWithCompanyData(leads) {
     const o = orgByName.get(l.company);
     if (!o) return;
     if (!l.website) l.website = o.website;
+    // Always store the canonical company LI; mirror to linkedin_url only as the
+    // pre-reveal display fallback. Reveal will overwrite linkedin_url with the
+    // personal URL but leave company_linkedin_url intact for reference.
+    l.company_linkedin_url = o.company_linkedin_url;
     if (!l.linkedin_url) l.linkedin_url = o.company_linkedin_url;
     hits++;
   });
@@ -3123,6 +3119,99 @@ const server = http.createServer(async (req, res) => {
       })();
     } catch(e) {
       console.error('[POST /api/jobs/rerun-apollo]', e.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  // ── POST /api/jobs/:id/leads/reveal — on-demand person enrichment (1 credit) ──
+  // Body: { apollo_id: "..." }. Calls Apollo people/match by id (no reveal flags
+  // for email/phone — work email comes back free in the default match response;
+  // personal email and phone require reveal flags we never set). Costs exactly
+  // 1 enrichment credit per call. Idempotent: if a lead is already revealed,
+  // returns the existing data without spending another credit.
+  if (req.method === 'POST' && urlPath.startsWith('/api/jobs/') && urlPath.endsWith('/leads/reveal')) {
+    setCors(res);
+    const jobId = urlPath.slice('/api/jobs/'.length, -'/leads/reveal'.length);
+    try {
+      const body = await parseBody(req);
+      const apolloId = (body.apollo_id || '').trim();
+      if (!apolloId) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'apollo_id required' })); return;
+      }
+      const job = await getJob(jobId);
+      if (!job) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Job not found' })); return;
+      }
+      const existingData = job.extracted_data || {};
+      // Source-of-truth resolution mirrors buildCompatSession in mockup-portal.html:
+      // _generated.leads wins; fall back to lead_list task output. We always write
+      // back to _generated so future reads pick up the revealed fields.
+      let leads = existingData._generated?.leads;
+      if (!Array.isArray(leads) || leads.length === 0) {
+        const taskRes = await supabaseRequest(
+          'GET',
+          `/rest/v1/tasks?job_id=eq.${jobId}&task_type=eq.lead_list&select=output_data&limit=1`
+        );
+        leads = taskRes.body?.[0]?.output_data?.leads || [];
+      }
+      const idx = leads.findIndex(l => l && l.apollo_id === apolloId);
+      if (idx === -1) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Lead not found in this job' })); return;
+      }
+      if (leads[idx].revealed) {
+        // Already revealed — return current state, do not re-spend the credit.
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ lead: leads[idx], cached: true })); return;
+      }
+      const apolloKey = process.env.APOLLO_API_KEY;
+      const matchRes = await fetch('https://api.apollo.io/api/v1/people/match', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-key': apolloKey },
+        body: JSON.stringify({ id: apolloId }),  // NO reveal_phone_number, NO reveal_personal_emails
+        signal: AbortSignal.timeout(10000)
+      });
+      if (!matchRes.ok) {
+        console.error(`[reveal] Apollo HTTP ${matchRes.status} for ${apolloId}`);
+        res.writeHead(502, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Apollo enrichment failed' })); return;
+      }
+      const matchData = await matchRes.json();
+      const p = matchData.person || {};
+      const fullName = (p.first_name && p.last_name)
+        ? `${p.first_name} ${p.last_name}`.trim()
+        : (p.name || leads[idx].name);
+      // Merge: keep search-time fields, layer revealed fields on top, set revealed flag.
+      // linkedin_url swaps from company LI to personal LI; company_linkedin_url is
+      // preserved so the UI can fall back if personal is somehow null.
+      const updatedLead = {
+        ...leads[idx],
+        name:         fullName,
+        linkedin_url: p.linkedin_url || leads[idx].linkedin_url,
+        photo_url:    p.photo_url || null,
+        email:        p.email || null,
+        headline:     p.headline || null,
+        revealed:     true
+      };
+      leads[idx] = updatedLead;
+      // Persist the mutated leads array back into _generated.
+      const updatedData = {
+        ...existingData,
+        _generated: { ...(existingData._generated || {}), leads }
+      };
+      await supabaseRequest('PATCH', `/rest/v1/jobs?id=eq.${jobId}`,
+        { extracted_data: updatedData, updated_at: new Date().toISOString() },
+        { 'Prefer': 'return=minimal' }
+      );
+      console.log(`[reveal] Job ${jobId} lead ${apolloId}: revealed → ${fullName} (1 credit)`);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ lead: updatedLead, cached: false }));
+    } catch(e) {
+      console.error('[POST /api/jobs/leads/reveal]', e.message);
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: e.message }));
     }
