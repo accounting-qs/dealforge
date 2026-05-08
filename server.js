@@ -1394,7 +1394,10 @@ async function fetchLeadsFromApollo(icp, progressCb) {
   if (progressCb) await progressCb({ progress: 65, message: 'Hydrating website + company LinkedIn…' });
   await enrichLeadsWithCompanyData(result.leads, progressCb);
 
-  // Expose wasRelaxed and relaxationLog at top level for handleLeadList
+  // Expose wasRelaxed and relaxationLog at top level for handleLeadList.
+  // wasRelaxed must also be inside `diagnostics` because that's what the
+  // frontend checks to decide whether to render the relaxation panel — without
+  // it, fresh rerun results never show the diff even when filters were dropped.
   return {
     leads: result.leads,
     total: result.totalAvailable,
@@ -1402,10 +1405,11 @@ async function fetchLeadsFromApollo(icp, progressCb) {
     wasRelaxed: result.wasRelaxed,
     relaxationLog: result.relaxationLog,
     finalPayload: result.finalPayload,
-    diagnostics: { 
+    diagnostics: {
+      wasRelaxed: result.wasRelaxed,
       relaxationLog: result.relaxationLog,
       finalPayload: result.finalPayload
-    } 
+    }
   };
 }
 

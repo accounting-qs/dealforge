@@ -2085,7 +2085,12 @@ function buildCompatSession(job) {
     recommendedOutreach:  existingGen.recommendedOutreach || tasks.lead_list?.output?.recommendedOutreach || null,
     tamSource:            existingGen.tam_source || tasks.lead_list?.output?.tamSource || null,
     leadsTaskStatus:      tasks.lead_list?.status || existingGen.leadsTaskStatus || null,
-    apollo_diagnostics:   tasks.lead_list?.output?.apollo_diagnostics || existingGen.apollo_diagnostics || null,
+    // Fresh rerun results in _generated take precedence over the original
+    // lead_list task output. Otherwise the relaxation panel keeps showing
+    // stale log entries (missing before/after, mentioning the
+    // absolute_fallback step that's no longer used) every time the rep
+    // re-runs the search.
+    apollo_diagnostics:   existingGen.apollo_diagnostics || tasks.lead_list?.output?.apollo_diagnostics || null,
     // AI-generated copy from Stage 3 tasks — portal reads these instead of hardcoded strings
     calendarEmails:       tasks.calendar_visual?.output?.emails || existingGen.calendarEmails || null,
     calendarTitle:        tasks.calendar_visual?.output?.title  || existingGen.calendarTitle  || null,
