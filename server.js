@@ -85,6 +85,42 @@ async function supabaseRequest(method, urlPath, body, extraHeaders = {}) {
 // Consumed by generateWebinarTitles to fill the {{business_context_block}},
 // {{format_rules_block}}, {{principles_block}} placeholders in the system prompt.
 // Falls back to the file-based WEBINAR_FALLBACK_FORMAT if DB config is empty.
+// Tiny HTML → markdown converter. Calendar Examples come from a contenteditable
+// WYSIWYG editor that emits HTML; we strip it to clean markdown so Claude sees
+// natural prompt text rather than raw <p>/<strong>/<ul> tags. Only handles the
+// tags the editor produces — not a general-purpose converter.
+function htmlToMarkdown(html) {
+  if (!html) return '';
+  let md = String(html);
+  // Headers
+  md = md.replace(/<h1[^>]*>([\s\S]*?)<\/h1>/gi, '\n# $1\n');
+  md = md.replace(/<h2[^>]*>([\s\S]*?)<\/h2>/gi, '\n## $1\n');
+  md = md.replace(/<h3[^>]*>([\s\S]*?)<\/h3>/gi, '\n### $1\n');
+  // Lists — handle ul + ol separately so numbering survives
+  md = md.replace(/<ul[^>]*>([\s\S]*?)<\/ul>/gi, function(_, inner) {
+    return '\n' + inner.replace(/<li[^>]*>([\s\S]*?)<\/li>/gi, '- $1\n');
+  });
+  md = md.replace(/<ol[^>]*>([\s\S]*?)<\/ol>/gi, function(_, inner) {
+    let i = 0;
+    return '\n' + inner.replace(/<li[^>]*>([\s\S]*?)<\/li>/gi, function(_, item) { i++; return i + '. ' + item + '\n'; });
+  });
+  // Bold + italic
+  md = md.replace(/<(strong|b)[^>]*>([\s\S]*?)<\/(strong|b)>/gi, '**$2**');
+  md = md.replace(/<(em|i)[^>]*>([\s\S]*?)<\/(em|i)>/gi, '*$2*');
+  // Paragraphs and line breaks
+  md = md.replace(/<p[^>]*>([\s\S]*?)<\/p>/gi, '$1\n\n');
+  md = md.replace(/<br\s*\/?>/gi, '\n');
+  md = md.replace(/<div[^>]*>/gi, '\n').replace(/<\/div>/gi, '');
+  // Strip any remaining tags
+  md = md.replace(/<[^>]+>/g, '');
+  // Decode entities
+  md = md.replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<')
+         .replace(/&gt;/g, '>').replace(/&#39;/g, "'").replace(/&quot;/g, '"');
+  // Cleanup
+  md = md.replace(/\n{3,}/g, '\n\n').trim();
+  return md;
+}
+
 async function loadCopyBrain() {
   try {
     const [pr, cr, er] = await Promise.all([
@@ -98,9 +134,16 @@ async function loadCopyBrain() {
     const principlesBlock = principles.length
       ? principles.map(p => `- ${p.text}`).join('\n')
       : '- Write as the prospect company hosting, never Quantum Scaling\n- Front-load ICP role in title first 40 chars\n- Every bullet is a transformation promise, not a topic';
-    // Render examples as numbered markdown sections so Claude can lift voice + structure
+    // Render Calendar Examples as numbered sections with explicit Title/Description
+    // so Claude sees the same shape it must produce: a calendar title + description.
+    // Description is converted from HTML (WYSIWYG editor output) to clean markdown.
     const examplesBlock = examples.length
-      ? examples.map((ex, i) => `### Example ${i + 1} — ${ex.label}\n${ex.content}`).join('\n\n')
+      ? examples.map((ex, i) => {
+          const title = ex.title || ex.label || '(untitled)';
+          const descRaw = ex.description || ex.content || '';
+          const desc = /<[a-z][^>]*>/i.test(descRaw) ? htmlToMarkdown(descRaw) : descRaw;
+          return `### Calendar Example ${i + 1}\n**Title:** ${title}\n\n**Description:**\n${desc}`;
+        }).join('\n\n---\n\n')
       : '(none loaded)';
     return {
       business_context_block: (config.business_context && config.business_context.trim())
@@ -3531,16 +3574,17 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // POST /api/copy-brain/examples — create { label, content, enabled?, position? }
+  // POST /api/copy-brain/examples — create { title, description, enabled?, position? }
   if (req.method === 'POST' && urlPath === '/api/copy-brain/examples') {
     setCors(res);
     try {
       const body = await parseBody(req);
-      const label = (body.label || '').trim();
-      const content = (body.content || '').trim();
-      if (!label || !content) {
+      // Accept legacy {label, content} for backward compat with any in-flight clients
+      const title = (body.title || body.label || '').trim();
+      const description = (body.description || body.content || '').trim();
+      if (!title || !description) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'label and content required' })); return;
+        res.end(JSON.stringify({ error: 'title and description required' })); return;
       }
       let position = body.position;
       if (typeof position !== 'number') {
@@ -3548,7 +3592,7 @@ const server = http.createServer(async (req, res) => {
         position = ((maxR.body && maxR.body[0] && maxR.body[0].position) || 0) + 1;
       }
       const r = await supabaseRequest('POST', '/rest/v1/copy_brain_examples',
-        { label, content, enabled: body.enabled !== false, position },
+        { title, description, enabled: body.enabled !== false, position },
         { 'Prefer': 'return=representation' }
       );
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -3567,8 +3611,11 @@ const server = http.createServer(async (req, res) => {
     try {
       const body = await parseBody(req);
       const patch = { updated_at: new Date().toISOString() };
-      if (typeof body.label === 'string') patch.label = body.label;
-      if (typeof body.content === 'string') patch.content = body.content;
+      if (typeof body.title === 'string') patch.title = body.title;
+      if (typeof body.description === 'string') patch.description = body.description;
+      // Legacy aliases
+      if (typeof body.label === 'string' && patch.title === undefined) patch.title = body.label;
+      if (typeof body.content === 'string' && patch.description === undefined) patch.description = body.content;
       if (typeof body.enabled === 'boolean') patch.enabled = body.enabled;
       if (typeof body.position === 'number') patch.position = body.position;
       const r = await supabaseRequest('PATCH', `/rest/v1/copy_brain_examples?id=eq.${encodeURIComponent(id)}`,

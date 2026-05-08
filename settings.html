@@ -146,15 +146,32 @@ h1{font-size:28px;font-weight:700;letter-spacing:-0.025em;color:#fff;margin:0 0 
 .cb-ex-rendered hr{border:none;border-top:1px solid rgba(255,255,255,0.08);margin:14px 0}
 
 .cb-ex-editor{padding:14px 0}
-.cb-ex-editor input.cb-add-input{margin-bottom:10px}
-.cb-ex-editor textarea{width:100%;min-height:280px;background:rgba(0,0,0,0.3);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:12px 14px;font-size:13px;color:#d1d5db;line-height:1.6;font-family:'Fira Code','SF Mono',monospace;resize:vertical;outline:none;transition:border-color 200ms}
-.cb-ex-editor textarea:focus{border-color:rgba(139,92,246,0.4)}
-.cb-ex-editor .cb-ex-toolbar{display:flex;justify-content:space-between;align-items:center;margin-top:10px;gap:10px}
-.cb-ex-editor .cb-ex-toolbar-left{display:flex;gap:6px}
-.cb-ex-toolbar button{font-size:11px;padding:5px 10px;border-radius:6px;border:1px solid rgba(255,255,255,0.08);background:none;color:#a1a1aa;cursor:pointer;font-family:inherit;transition:all 100ms}
-.cb-ex-toolbar button:hover{border-color:rgba(255,255,255,0.18);color:#e4e4e7}
-.cb-ex-toolbar .cb-ex-preview-pane{margin-top:14px;padding:14px;background:rgba(0,0,0,0.2);border:1px solid rgba(255,255,255,0.06);border-radius:8px;display:none}
-.cb-ex-toolbar.preview-on .cb-ex-preview-pane{display:block}
+.cb-ex-editor .cb-ex-field-label{font-size:10px;font-weight:600;letter-spacing:0.07em;text-transform:uppercase;color:#9aa0a6;margin-bottom:6px}
+.cb-ex-editor .cb-ex-title-input{width:100%;background:rgba(0,0,0,0.3);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:11px 14px;font-size:14px;color:#fff;font-weight:500;outline:none;font-family:inherit;margin-bottom:14px;transition:border-color 200ms}
+.cb-ex-editor .cb-ex-title-input:focus{border-color:rgba(139,92,246,0.4)}
+
+/* Rich-text WYSIWYG editor for description */
+.rt-shell{background:rgba(0,0,0,0.3);border:1px solid rgba(255,255,255,0.08);border-radius:8px;overflow:hidden;transition:border-color 200ms}
+.rt-shell:focus-within{border-color:rgba(139,92,246,0.4)}
+.rt-toolbar{display:flex;gap:4px;padding:6px 8px;background:rgba(255,255,255,0.02);border-bottom:1px solid rgba(255,255,255,0.06);flex-wrap:wrap;align-items:center}
+.rt-toolbar button{background:none;border:1px solid transparent;border-radius:5px;padding:4px 9px;color:#a1a1aa;font-family:inherit;font-size:12px;cursor:pointer;min-width:30px;transition:all 100ms}
+.rt-toolbar button:hover{background:rgba(255,255,255,0.05);border-color:rgba(255,255,255,0.1);color:#e4e4e7}
+.rt-toolbar button.rt-btn-bold{font-weight:700}
+.rt-toolbar button.rt-btn-italic{font-style:italic}
+.rt-toolbar .rt-divider{width:1px;height:18px;background:rgba(255,255,255,0.08);margin:0 4px}
+.rt-editor{min-height:340px;padding:14px 18px;outline:none;color:#d4d4d8;font-size:14px;line-height:1.7;font-family:-apple-system,BlinkMacSystemFont,'Inter',sans-serif}
+.rt-editor:focus{outline:none}
+.rt-editor h2{font-size:17px;font-weight:700;color:#fff;margin:14px 0 6px}
+.rt-editor h3{font-size:15px;font-weight:600;color:#fff;margin:12px 0 4px}
+.rt-editor p{margin:8px 0}
+.rt-editor ul,.rt-editor ol{margin:8px 0;padding-left:24px}
+.rt-editor li{margin:3px 0}
+.rt-editor strong,.rt-editor b{color:#fff;font-weight:700}
+.rt-editor em,.rt-editor i{color:#c4b5fd;font-style:italic}
+.rt-editor:empty::before{content:attr(data-placeholder);color:#52525b;pointer-events:none;display:block}
+
+/* Buttons row at the bottom of the editor */
+.cb-ex-editor .cb-ex-actions-row{display:flex;justify-content:flex-end;gap:8px;margin-top:14px}
 
 /* Brain Content textareas */
 .cb-block{margin-bottom:24px}
@@ -210,7 +227,7 @@ h1{font-size:28px;font-weight:700;letter-spacing:-0.025em;color:#fff;margin:0 0 
       <div class="cb-body">
         <div class="cb-subtabs">
           <button class="cb-subtab active" data-sub="principles" onclick="switchCbSub('principles', event)">Principles</button>
-          <button class="cb-subtab" data-sub="examples" onclick="switchCbSub('examples', event)">Examples</button>
+          <button class="cb-subtab" data-sub="examples" onclick="switchCbSub('examples', event)">Calendar Examples</button>
           <button class="cb-subtab" data-sub="brain" onclick="switchCbSub('brain', event)">Brain Content</button>
         </div>
 
@@ -226,12 +243,12 @@ h1{font-size:28px;font-weight:700;letter-spacing:-0.025em;color:#fff;margin:0 0 
           </div>
         </div>
 
-        <!-- Examples subsection — list of few-shot examples (label + markdown content) -->
+        <!-- Calendar Examples subsection — Title + rich-text Description per example -->
         <div class="cb-subsection" id="cb-sub-examples">
           <div class="cb-count" id="cb-ex-count">Loading…</div>
           <div style="margin-bottom:14px;">
-            <button class="cb-add-btn" id="cb-ex-new-btn" onclick="cbExStartNew()">+ Add example</button>
-            <span style="margin-left:10px;font-size:11px;color:#52525b;">Markdown supported — preserves headers, lists, emphasis when fed to the model</span>
+            <button class="cb-add-btn" id="cb-ex-new-btn" onclick="cbExStartNew()">+ Add Calendar Example</button>
+            <span style="margin-left:10px;font-size:11px;color:#52525b;">Title + rich-text Description · structure preserved when fed to the model</span>
           </div>
           <div id="cb-examples-list">
             <div class="loading">Loading examples…</div>
@@ -599,64 +616,40 @@ function cbDelete(id) {
     .catch(function(e){ showToast('Error: ' + e.message); });
 }
 
-// ── Examples ──────────────────────────────────────────────────────────────
+// ── Calendar Examples ─────────────────────────────────────────────────────
+// Each example = { title (single line), description (rich-text HTML) }. The
+// description is edited in a contenteditable WYSIWYG with a small toolbar.
+// Saved HTML is rendered as-is in view mode and converted to clean markdown
+// on the server before being injected into the LLM prompt.
 var CB_EXAMPLES = [];
-var CB_EX_EDITING_ID = null;     // id when editing existing
-var CB_EX_NEW_OPEN  = false;     // true when the inline "new example" form is open
-var CB_EX_EXPANDED = {};         // { id: bool } expand-to-view-rendered toggle
+var CB_EX_EDITING_ID = null;
+var CB_EX_NEW_OPEN  = false;
+var CB_EX_EXPANDED = {};
 
-// Tiny markdown → HTML renderer. Handles headers (# ## ###), bold (**), italic (*),
-// inline code (`), bullets (- or *), numbered lists (1.), horizontal rules (---).
-// Intentionally simple — full markdown isn't needed; the LLM sees the raw text.
-function cbMd(src) {
-  if (!src) return '';
-  var html = String(src).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-  // Code blocks (```...```)
-  html = html.replace(/```([\s\S]*?)```/g, function(_, code){
-    return '<pre style="background:rgba(0,0,0,0.4);padding:10px;border-radius:6px;overflow-x:auto;margin:8px 0;"><code>' + code + '</code></pre>';
-  });
-  // Headers
-  html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
-  html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
-  html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
-  // Horizontal rule
-  html = html.replace(/^---$/gm, '<hr>');
-  // Bold + italic + inline code
-  html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-  html = html.replace(/(^|[^*])\*([^*]+)\*/g, '$1<em>$2</em>');
-  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
-  // Lists — wrap consecutive bullet/numbered lines
-  var lines = html.split('\n');
-  var out = [];
-  var inList = null;
-  for (var i = 0; i < lines.length; i++) {
-    var line = lines[i];
-    var bm = line.match(/^[\-\*] (.+)$/);
-    var nm = line.match(/^\d+\. (.+)$/);
-    if (bm) {
-      if (inList !== 'ul') { if (inList) out.push('</' + inList + '>'); out.push('<ul>'); inList = 'ul'; }
-      out.push('<li>' + bm[1] + '</li>');
-    } else if (nm) {
-      if (inList !== 'ol') { if (inList) out.push('</' + inList + '>'); out.push('<ol>'); inList = 'ol'; }
-      out.push('<li>' + nm[1] + '</li>');
-    } else {
-      if (inList) { out.push('</' + inList + '>'); inList = null; }
-      out.push(line);
-    }
-  }
-  if (inList) out.push('</' + inList + '>');
-  // Paragraphs from remaining text — group consecutive non-empty, non-tag lines
-  return out.join('\n')
-    .replace(/\n{2,}/g, '\n\n')
-    .split('\n\n')
-    .map(function(block){
-      var trimmed = block.trim();
-      if (!trimmed) return '';
-      if (/^<(h[123]|ul|ol|pre|hr|li)/.test(trimmed)) return trimmed;
-      return '<p>' + trimmed.replace(/\n/g, '<br>') + '</p>';
-    })
-    .join('\n');
+// Sanitize incoming HTML — strip script/iframe/style and on* event handlers.
+// Internal admin tool, but defensive nonetheless.
+function cbSanitizeHTML(html) {
+  if (!html) return '';
+  return String(html)
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<iframe[\s\S]*?<\/iframe>/gi, '')
+    .replace(/\son\w+\s*=\s*"[^"]*"/gi, '')
+    .replace(/\son\w+\s*=\s*'[^']*'/gi, '');
 }
+
+// Plain text excerpt of HTML (for the row preview)
+function cbHTMLExcerpt(html, n) {
+  if (!html) return '';
+  var text = String(html).replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim();
+  return text.length > n ? text.slice(0, n) + '…' : text;
+}
+
+// Toolbar handlers — execCommand is deprecated but still works in all browsers
+// and is the simplest way to drive a contenteditable WYSIWYG. The mousedown
+// preventDefault keeps the editor's selection while a button is clicked.
+function rtFormat(cmd, value) { document.execCommand(cmd, false, value || null); }
+function rtFormatBlock(tag) { document.execCommand('formatBlock', false, '<' + tag + '>'); }
 
 function cbLoadExamples() {
   fetch('/api/copy-brain/examples')
@@ -670,6 +663,30 @@ function cbLoadExamples() {
     });
 }
 
+// Renders the rich-text editor block (toolbar + contenteditable). Used by both
+// "new" and "edit" modes. `idSuffix` differentiates DOM ids.
+function cbExEditorBlock(idSuffix, initialTitle, initialDescriptionHTML) {
+  return '' +
+    '<div class="cb-ex-field-label">Title</div>' +
+    '<input class="cb-ex-title-input" id="cb-ex-title-' + idSuffix + '" placeholder="The AI Growth System FinTech Founders Use to Lower CAC & Scale in 2026" value="' + esc(initialTitle || '') + '">' +
+    '<div class="cb-ex-field-label">Description</div>' +
+    '<div class="rt-shell">' +
+      '<div class="rt-toolbar">' +
+        '<button type="button" class="rt-btn-bold"   onmousedown="event.preventDefault();rtFormat(\'bold\')"   title="Bold">B</button>' +
+        '<button type="button" class="rt-btn-italic" onmousedown="event.preventDefault();rtFormat(\'italic\')" title="Italic">I</button>' +
+        '<div class="rt-divider"></div>' +
+        '<button type="button" onmousedown="event.preventDefault();rtFormatBlock(\'h2\')" title="Heading">H</button>' +
+        '<button type="button" onmousedown="event.preventDefault();rtFormatBlock(\'p\')" title="Paragraph">¶</button>' +
+        '<div class="rt-divider"></div>' +
+        '<button type="button" onmousedown="event.preventDefault();rtFormat(\'insertUnorderedList\')" title="Bullets">• List</button>' +
+        '<button type="button" onmousedown="event.preventDefault();rtFormat(\'insertOrderedList\')" title="Numbered">1. List</button>' +
+        '<div class="rt-divider"></div>' +
+        '<button type="button" onmousedown="event.preventDefault();rtFormat(\'removeFormat\')" title="Clear formatting" style="color:#71717a;">Clear</button>' +
+      '</div>' +
+      '<div class="rt-editor" id="cb-ex-desc-' + idSuffix + '" contenteditable="true" data-placeholder="Paste your example calendar invite description here. Use the toolbar for headers, bold, lists. Structure is preserved when fed to the model.">' + cbSanitizeHTML(initialDescriptionHTML || '') + '</div>' +
+    '</div>';
+}
+
 function cbRenderExamples() {
   var list = document.getElementById('cb-examples-list');
   var active = CB_EXAMPLES.filter(function(e){ return e.enabled; }).length;
@@ -679,50 +696,38 @@ function cbRenderExamples() {
   var checkSvg = '<svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"/></svg>';
   var html = '';
 
-  // Inline "new" form at the top when active
+  // Inline new-example form
   if (CB_EX_NEW_OPEN) {
     html += '<div class="cb-ex-row expanded">' +
       '<div class="cb-ex-editor">' +
-        '<input class="cb-add-input" id="cb-ex-new-label" placeholder="Example label (e.g. \'Calendar invite — B2B SaaS founder\')">' +
-        '<textarea id="cb-ex-new-content" placeholder="Paste a known-good example. Markdown preserved verbatim.\n\n## Title\nOne sentence hook...\n\n## Bullets\n- Transformation 1\n- Transformation 2\n..."></textarea>' +
-        '<div class="cb-ex-toolbar" id="cb-ex-new-toolbar">' +
-          '<div class="cb-ex-toolbar-left">' +
-            '<button onclick="cbExTogglePreview(\'new\')">👁 Preview</button>' +
-          '</div>' +
-          '<div style="display:flex;gap:8px;">' +
-            '<button onclick="cbExCancelNew()">Cancel</button>' +
-            '<button class="cb-add-btn" onclick="cbExSaveNew()">Save</button>' +
-          '</div>' +
-          '<div class="cb-ex-preview-pane" id="cb-ex-new-preview"></div>' +
+        cbExEditorBlock('new', '', '') +
+        '<div class="cb-ex-actions-row">' +
+          '<button class="cb-link" onclick="cbExCancelNew()">Cancel</button>' +
+          '<button class="cb-add-btn" onclick="cbExSaveNew()">Save</button>' +
         '</div>' +
       '</div>' +
     '</div>';
   }
 
   if (!CB_EXAMPLES.length && !CB_EX_NEW_OPEN) {
-    html += '<div class="loading">No examples yet — add one above.</div>';
+    html += '<div class="loading">No calendar examples yet — click <strong>+ Add Calendar Example</strong> above.</div>';
   }
 
   CB_EXAMPLES.forEach(function(ex){
+    var title = ex.title || ex.label || '(untitled)';
+    var descHTML = ex.description || ex.content || '';
     var rowClass = 'cb-ex-row' + (ex.enabled ? '' : ' disabled') + (CB_EX_EXPANDED[ex.id] ? ' expanded' : '');
     var cbClass = 'cb-checkbox' + (ex.enabled ? '' : ' off');
-    var preview = (ex.content || '').replace(/[#*`>]/g, '').slice(0, 80);
+    var preview = cbHTMLExcerpt(descHTML, 80);
     var isEditing = CB_EX_EDITING_ID === ex.id;
 
     if (isEditing) {
       html += '<div class="cb-ex-row expanded" id="cb-ex-row-' + ex.id + '">' +
         '<div class="cb-ex-editor">' +
-          '<input class="cb-add-input" id="cb-ex-edit-label-' + ex.id + '" value="' + esc(ex.label) + '">' +
-          '<textarea id="cb-ex-edit-content-' + ex.id + '">' + esc(ex.content) + '</textarea>' +
-          '<div class="cb-ex-toolbar" id="cb-ex-edit-toolbar-' + ex.id + '">' +
-            '<div class="cb-ex-toolbar-left">' +
-              '<button onclick="cbExTogglePreview(' + ex.id + ')">👁 Preview</button>' +
-            '</div>' +
-            '<div style="display:flex;gap:8px;">' +
-              '<button onclick="cbExCancelEdit()">Cancel</button>' +
-              '<button class="cb-add-btn" onclick="cbExSaveEdit(' + ex.id + ')">Save</button>' +
-            '</div>' +
-            '<div class="cb-ex-preview-pane" id="cb-ex-edit-preview-' + ex.id + '"></div>' +
+          cbExEditorBlock(String(ex.id), title, descHTML) +
+          '<div class="cb-ex-actions-row">' +
+            '<button class="cb-link" onclick="cbExCancelEdit()">Cancel</button>' +
+            '<button class="cb-add-btn" onclick="cbExSaveEdit(' + ex.id + ')">Save</button>' +
           '</div>' +
         '</div>' +
       '</div>';
@@ -730,15 +735,15 @@ function cbRenderExamples() {
       html += '<div class="' + rowClass + '" id="cb-ex-row-' + ex.id + '">' +
         '<div class="cb-ex-head">' +
           '<div class="' + cbClass + '" onclick="event.stopPropagation();cbExToggle(' + ex.id + ')">' + checkSvg + '</div>' +
-          '<div class="cb-ex-label" onclick="cbExExpand(' + ex.id + ')">' + esc(ex.label) + '</div>' +
-          '<div class="cb-ex-preview" onclick="cbExExpand(' + ex.id + ')">' + esc(preview) + (preview.length >= 80 ? '…' : '') + '</div>' +
+          '<div class="cb-ex-label" onclick="cbExExpand(' + ex.id + ')">' + esc(title) + '</div>' +
+          '<div class="cb-ex-preview" onclick="cbExExpand(' + ex.id + ')">' + esc(preview) + '</div>' +
           '<div class="cb-ex-actions">' +
             '<button class="cb-link" onclick="event.stopPropagation();cbExStartEdit(' + ex.id + ')">Edit</button>' +
             '<button class="cb-link danger" onclick="event.stopPropagation();cbExDelete(' + ex.id + ')">Delete</button>' +
           '</div>' +
         '</div>' +
         '<div class="cb-ex-body">' +
-          '<div class="cb-ex-rendered">' + cbMd(ex.content) + '</div>' +
+          '<div class="rt-editor" style="min-height:0;padding:14px 18px;">' + cbSanitizeHTML(descHTML) + '</div>' +
         '</div>' +
       '</div>';
     }
@@ -752,24 +757,25 @@ function cbExStartNew() {
   CB_EX_EDITING_ID = null;
   cbRenderExamples();
   setTimeout(function(){
-    var i = document.getElementById('cb-ex-new-label');
+    var i = document.getElementById('cb-ex-title-new');
     if (i) i.focus();
   }, 0);
 }
 
-function cbExCancelNew() {
-  CB_EX_NEW_OPEN = false;
-  cbRenderExamples();
-}
+function cbExCancelNew() { CB_EX_NEW_OPEN = false; cbRenderExamples(); }
 
 function cbExSaveNew() {
-  var label = document.getElementById('cb-ex-new-label').value.trim();
-  var content = document.getElementById('cb-ex-new-content').value.trim();
-  if (!label || !content) { showToast('Label and content required'); return; }
+  var title = document.getElementById('cb-ex-title-new').value.trim();
+  var descEl = document.getElementById('cb-ex-desc-new');
+  var description = descEl ? cbSanitizeHTML(descEl.innerHTML).trim() : '';
+  // Treat an empty editor (just <br> or empty paragraphs) as truly empty
+  if (!title || !description || /^(<br\s*\/?>|<p>(\s|<br\s*\/?>)*<\/p>|\s)*$/i.test(description)) {
+    showToast('Title and description required'); return;
+  }
   fetch('/api/copy-brain/examples', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ label: label, content: content, enabled: true })
+    body: JSON.stringify({ title: title, description: description, enabled: true })
   })
     .then(function(r){ return r.json(); })
     .then(function(ex){
@@ -790,29 +796,27 @@ function cbExStartEdit(id) {
   CB_EX_NEW_OPEN = false;
   cbRenderExamples();
   setTimeout(function(){
-    var i = document.getElementById('cb-ex-edit-label-' + id);
+    var i = document.getElementById('cb-ex-title-' + id);
     if (i) i.focus();
   }, 0);
 }
 
-function cbExCancelEdit() {
-  CB_EX_EDITING_ID = null;
-  cbRenderExamples();
-}
+function cbExCancelEdit() { CB_EX_EDITING_ID = null; cbRenderExamples(); }
 
 function cbExSaveEdit(id) {
-  var label = document.getElementById('cb-ex-edit-label-' + id).value.trim();
-  var content = document.getElementById('cb-ex-edit-content-' + id).value.trim();
-  if (!label || !content) { showToast('Label and content required'); return; }
+  var title = document.getElementById('cb-ex-title-' + id).value.trim();
+  var descEl = document.getElementById('cb-ex-desc-' + id);
+  var description = descEl ? cbSanitizeHTML(descEl.innerHTML).trim() : '';
+  if (!title || !description) { showToast('Title and description required'); return; }
   fetch('/api/copy-brain/examples/' + id, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ label: label, content: content })
+    body: JSON.stringify({ title: title, description: description })
   })
     .then(function(r){ return r.json(); })
     .then(function(updated){
       var ex = CB_EXAMPLES.find(function(x){ return x.id === id; });
-      if (ex && updated) { ex.label = updated.label; ex.content = updated.content; }
+      if (ex && updated) { ex.title = updated.title; ex.description = updated.description; }
       CB_EX_EDITING_ID = null;
       cbRenderExamples();
       showToast('Saved');
@@ -859,22 +863,6 @@ function cbExExpand(id) {
   if (CB_EX_EDITING_ID === id) return;
   CB_EX_EXPANDED[id] = !CB_EX_EXPANDED[id];
   cbRenderExamples();
-}
-
-function cbExTogglePreview(idOrNew) {
-  var prefix = idOrNew === 'new' ? 'cb-ex-new' : 'cb-ex-edit';
-  var idSuffix = idOrNew === 'new' ? '' : '-' + idOrNew;
-  var toolbarId = idOrNew === 'new' ? 'cb-ex-new-toolbar' : 'cb-ex-edit-toolbar-' + idOrNew;
-  var contentEl = document.getElementById(prefix + '-content' + idSuffix);
-  var previewEl = document.getElementById(prefix + '-preview' + idSuffix);
-  var toolbar = document.getElementById(toolbarId);
-  if (!contentEl || !previewEl || !toolbar) return;
-  if (toolbar.classList.contains('preview-on')) {
-    toolbar.classList.remove('preview-on');
-  } else {
-    previewEl.innerHTML = '<div class="cb-ex-rendered">' + cbMd(contentEl.value) + '</div>';
-    toolbar.classList.add('preview-on');
-  }
 }
 
 // ── Brain Content (config) ────────────────────────────────────────────────
