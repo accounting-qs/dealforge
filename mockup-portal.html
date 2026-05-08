@@ -825,8 +825,8 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
 
       <!-- Calendar Modal -->
       <div class="cal-modal">
-        <!-- Variant selector -->
-        <div style="display:flex;align-items:center;gap:8px;margin-bottom:16px;">
+        <!-- Variant selector + Regenerate -->
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:16px;flex-wrap:wrap;">
           <span style="font-size:10px;font-weight:600;letter-spacing:0.07em;text-transform:uppercase;color:#9aa0a6;">Angle</span>
           <div style="display:flex;gap:4px;">
             <button onclick="switchVariant(0)" id="var-btn-0" style="font-size:11px;font-weight:600;padding:3px 10px;border-radius:20px;border:1px solid #1a73e8;background:#1a73e8;color:#fff;cursor:pointer;transition:all 100ms;">A</button>
@@ -834,6 +834,19 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
             <button onclick="switchVariant(2)" id="var-btn-2" style="font-size:11px;font-weight:600;padding:3px 10px;border-radius:20px;border:1px solid #dadce0;background:#fff;color:#5f6368;cursor:pointer;transition:all 100ms;">C</button>
           </div>
           <span id="var-tag" style="font-size:11px;color:#9aa0a6;">Problem-aware</span>
+          <div style="margin-left:auto;display:flex;align-items:center;gap:8px;">
+            <button id="cal-regen-btn" onclick="regenerateCalendarCopy()" title="Re-run with current Copy Brain (Settings → Copy Brain)" style="font-size:11px;font-weight:600;padding:5px 12px;border-radius:8px;border:1px solid rgba(139,92,246,0.5);background:rgba(139,92,246,0.12);color:#c4b5fd;cursor:pointer;transition:all 100ms;font-family:inherit;">↻ Regenerate</button>
+            <a href="/settings" target="_blank" title="Edit Copy Brain" style="font-size:11px;color:#9aa0a6;text-decoration:none;border:1px solid #dadce0;border-radius:6px;padding:4px 8px;">Brain</a>
+          </div>
+        </div>
+        <div id="cal-regen-progress" style="display:none;margin-bottom:14px;padding:8px 12px;background:#f1f3f4;border-radius:8px;font-size:12px;color:#5f6368;">
+          <div style="display:flex;justify-content:space-between;margin-bottom:5px;">
+            <span id="cal-regen-msg">Starting…</span>
+            <span id="cal-regen-pct">0%</span>
+          </div>
+          <div style="height:4px;background:#dadce0;border-radius:2px;overflow:hidden;">
+            <div id="cal-regen-bar" style="height:100%;width:0%;background:linear-gradient(90deg,#a78bfa,#c4b5fd);transition:width 400ms ease-out;"></div>
+          </div>
         </div>
 
         <div class="cal-header">
@@ -3618,6 +3631,96 @@ function _startRerunPoll(jobId) {
       console.warn('[rerun-poll]', e.message);
     }
   }, 2000);
+}
+
+// ── Regenerate Calendar Invite copy (webinar_titles task) ────────────────────
+// Re-runs only the webinar_titles generator with the current Copy Brain.
+// Mirrors the rerun-apollo flow: POST → 202 → poll _generated.webinar_rerun
+// → on completed, fetch fresh job and call _reRunPersonalization to re-render
+// the variant titles & descriptions in place.
+function _showRegenProgress(progress, message) {
+  var box = document.getElementById('cal-regen-progress');
+  if (!box) return;
+  box.style.display = 'block';
+  var bar = document.getElementById('cal-regen-bar');
+  var pct = document.getElementById('cal-regen-pct');
+  var msg = document.getElementById('cal-regen-msg');
+  if (bar) bar.style.width = (progress || 0) + '%';
+  if (pct) pct.textContent = (progress || 0) + '%';
+  if (msg) msg.textContent = message || '';
+}
+function _hideRegenProgress() {
+  var box = document.getElementById('cal-regen-progress');
+  if (box) box.style.display = 'none';
+}
+
+var _regenPollTimer = null;
+function _startRegenPoll(jobId) {
+  if (_regenPollTimer) clearInterval(_regenPollTimer);
+  var stuckCounter = 0, lastPct = -1;
+  _regenPollTimer = setInterval(async function() {
+    try {
+      var r = await fetch('/api/jobs/' + encodeURIComponent(jobId) + '?_t=' + Date.now(), { cache: 'no-store' });
+      if (!r.ok) return;
+      var job = await r.json();
+      var rr = job.extracted_data && job.extracted_data._generated && job.extracted_data._generated.webinar_rerun;
+      if (!rr) return;
+      _showRegenProgress(rr.progress || 0, rr.message || '');
+      if (rr.progress === lastPct) { stuckCounter++; }
+      else { stuckCounter = 0; lastPct = rr.progress; }
+      if (stuckCounter > 45) {
+        clearInterval(_regenPollTimer); _regenPollTimer = null;
+        _showRegenProgress(rr.progress || 0, 'Stalled — please retry');
+        setTimeout(_hideRegenProgress, 2000);
+        var btn = document.getElementById('cal-regen-btn'); if (btn) btn.disabled = false;
+        return;
+      }
+      if (rr.status === 'completed') {
+        clearInterval(_regenPollTimer); _regenPollTimer = null;
+        if (typeof window._reRunPersonalization === 'function' && typeof buildCompatSession === 'function') {
+          window._reRunPersonalization(buildCompatSession(job));
+        }
+        _showRegenProgress(100, '✓ Variants regenerated');
+        setTimeout(_hideRegenProgress, 1500);
+        var btn = document.getElementById('cal-regen-btn'); if (btn) btn.disabled = false;
+      } else if (rr.status === 'failed') {
+        clearInterval(_regenPollTimer); _regenPollTimer = null;
+        _showRegenProgress(100, rr.message || 'Regeneration failed');
+        setTimeout(_hideRegenProgress, 3000);
+        var btn = document.getElementById('cal-regen-btn'); if (btn) btn.disabled = false;
+      }
+    } catch (e) {
+      console.warn('[regen-poll]', e.message);
+    }
+  }, 2000);
+}
+
+function regenerateCalendarCopy() {
+  var jobId = (typeof _getPortalJobId === 'function') ? _getPortalJobId() : null;
+  if (!jobId) {
+    var p = new URLSearchParams(window.location.search);
+    jobId = p.get('job') || p.get('session');
+  }
+  if (!jobId) { alert('No job ID in URL — cannot regenerate.'); return; }
+  var btn = document.getElementById('cal-regen-btn');
+  if (btn) btn.disabled = true;
+  _showRegenProgress(5, 'Starting regeneration…');
+  fetch('/api/jobs/' + encodeURIComponent(jobId) + '/regenerate/webinar-titles', { method: 'POST' })
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      if (d && d.ok) {
+        _startRegenPoll(jobId);
+      } else {
+        _showRegenProgress(100, 'Error: ' + ((d && d.error) || 'unknown'));
+        setTimeout(_hideRegenProgress, 3000);
+        if (btn) btn.disabled = false;
+      }
+    })
+    .catch(function(e){
+      _showRegenProgress(100, 'Error: ' + e.message);
+      setTimeout(_hideRegenProgress, 3000);
+      if (btn) btn.disabled = false;
+    });
 }
 
 function rerunApolloSearch() {

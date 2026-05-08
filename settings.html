@@ -1,0 +1,606 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Settings — Deal Forge</title>
+<style>
+*{box-sizing:border-box;-webkit-font-smoothing:antialiased}
+body{background:#0a0a0f;font-family:-apple-system,BlinkMacSystemFont,'Inter',sans-serif;color:#e4e4e7;margin:0}
+.glow{position:fixed;top:0;left:50%;transform:translateX(-50%);width:700px;height:300px;background:radial-gradient(ellipse at 50% 0%,rgba(245,158,11,0.09) 0%,transparent 70%);pointer-events:none;z-index:0}
+nav{height:48px;background:rgba(10,10,15,0.88);backdrop-filter:blur(12px);border-bottom:1px solid rgba(255,255,255,0.06);position:fixed;top:0;left:0;right:0;z-index:50;display:flex;align-items:center;justify-content:space-between;padding:0 24px}
+.logo{height:22px;width:auto}
+.page{max-width:900px;margin:0 auto;padding:72px 24px 64px;position:relative;z-index:1}
+h1{font-size:28px;font-weight:700;letter-spacing:-0.025em;color:#fff;margin:0 0 4px}
+.sub{font-size:13px;color:#52525b;margin-bottom:28px}
+
+/* Top section switcher */
+.section-tabs{display:flex;gap:6px;margin-bottom:24px;border-bottom:1px solid rgba(255,255,255,0.06);padding-bottom:0}
+.section-tab{font-size:13px;font-weight:500;padding:10px 18px;cursor:pointer;border:none;background:none;color:#71717a;border-bottom:2px solid transparent;font-family:inherit;transition:all 100ms;margin-bottom:-1px}
+.section-tab.active{color:#fbbf24;border-bottom-color:#fbbf24}
+.section-tab:hover:not(.active){color:#a1a1aa}
+
+/* Section visibility */
+.section{display:none}
+.section.active{display:block}
+
+/* Category tabs (Prompts) */
+.tabs{display:flex;gap:8px;margin-bottom:24px}
+.tab{font-size:12px;font-weight:500;padding:6px 14px;border-radius:20px;cursor:pointer;border:1px solid rgba(255,255,255,0.07);color:#71717a;background:none;transition:all 100ms;font-family:inherit}
+.tab.active{background:rgba(245,158,11,0.14);border-color:rgba(245,158,11,0.4);color:#fbbf24}
+.tab:hover:not(.active){border-color:rgba(255,255,255,0.14);color:#a1a1aa}
+
+/* Prompt card */
+.prompt-card{background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.07);border-radius:12px;padding:20px;margin-bottom:16px;transition:border-color 200ms}
+.prompt-card:hover{border-color:rgba(255,255,255,0.14)}
+.prompt-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
+.prompt-label{font-size:15px;font-weight:600;color:#fff}
+.prompt-meta{display:flex;align-items:center;gap:10px}
+.prompt-version{font-size:11px;color:#52525b;background:rgba(255,255,255,0.04);padding:2px 8px;border-radius:4px}
+.prompt-slug{font-size:11px;color:#3f3f46;font-family:monospace}
+.prompt-category{font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:0.06em;padding:2px 7px;border-radius:4px}
+.cat-agent{background:rgba(139,92,246,0.12);color:#a78bfa;border:1px solid rgba(139,92,246,0.25)}
+.cat-email{background:rgba(59,130,246,0.12);color:#93c5fd;border:1px solid rgba(59,130,246,0.25)}
+.cat-calendar{background:rgba(34,197,94,0.12);color:#4ade80;border:1px solid rgba(34,197,94,0.25)}
+.cat-webinar{background:rgba(239,68,68,0.12);color:#fca5a5;border:1px solid rgba(239,68,68,0.25)}
+
+/* Textarea */
+.prompt-content{width:100%;min-height:120px;background:rgba(0,0,0,0.3);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:12px 14px;font-size:13px;color:#d1d5db;line-height:1.6;font-family:'Fira Code','SF Mono',monospace;resize:vertical;outline:none;transition:border-color 200ms}
+.prompt-content:focus{border-color:rgba(245,158,11,0.4)}
+
+/* Actions */
+.prompt-actions{display:flex;align-items:center;justify-content:space-between;margin-top:12px}
+.btn{font-size:12px;font-weight:500;padding:7px 16px;border-radius:8px;cursor:pointer;border:1px solid;font-family:inherit;transition:all 100ms}
+.btn-save{background:rgba(245,158,11,0.12);border-color:rgba(245,158,11,0.35);color:#fbbf24}
+.btn-save:hover{background:rgba(245,158,11,0.22)}
+.btn-save:disabled{opacity:0.4;cursor:not-allowed}
+.btn-history{background:none;border-color:rgba(255,255,255,0.08);color:#71717a}
+.btn-history:hover{border-color:rgba(255,255,255,0.18);color:#a1a1aa}
+
+/* Notes input */
+.notes-input{background:rgba(0,0,0,0.2);border:1px solid rgba(255,255,255,0.06);border-radius:6px;padding:6px 10px;font-size:11px;color:#a1a1aa;outline:none;width:200px;font-family:inherit}
+.notes-input:focus{border-color:rgba(245,158,11,0.3)}
+
+/* History panel */
+.history-panel{display:none;margin-top:12px;padding:12px;background:rgba(0,0,0,0.2);border:1px solid rgba(255,255,255,0.06);border-radius:8px}
+.history-item{padding:8px 0;border-bottom:1px solid rgba(255,255,255,0.04);font-size:12px;color:#71717a}
+.history-item:last-child{border-bottom:none}
+.history-ver{font-weight:600;color:#fbbf24;margin-right:8px}
+.history-btn{font-size:11px;color:#60a5fa;cursor:pointer;background:none;border:none;font-family:inherit;padding:0}
+.history-btn:hover{text-decoration:underline}
+
+.status-msg{font-size:12px;margin-top:8px;min-height:18px}
+
+.toast{position:fixed;bottom:28px;left:50%;transform:translateX(-50%) translateY(20px);background:#18181b;border:1px solid rgba(255,255,255,0.1);border-radius:10px;padding:12px 20px;font-size:13px;color:#e4e4e7;z-index:400;opacity:0;transition:all 300ms;white-space:nowrap;box-shadow:0 8px 32px rgba(0,0,0,0.5)}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+
+.loading{padding:60px;text-align:center;color:#52525b;font-size:13px}
+
+/* ── Copy Brain styles ─────────────────────────────────────────────────── */
+.cb-card{background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.07);border-radius:12px;padding:0;margin-bottom:16px;overflow:hidden}
+.cb-head{display:flex;align-items:center;justify-content:space-between;padding:18px 22px;cursor:pointer;user-select:none}
+.cb-head-title{display:flex;align-items:baseline;gap:10px}
+.cb-head-title strong{font-size:16px;font-weight:700;color:#fff}
+.cb-head-title span{font-size:12px;color:#71717a}
+.cb-head-caret{color:#52525b;font-size:14px;transition:transform 150ms}
+.cb-card.collapsed .cb-body{display:none}
+.cb-card.collapsed .cb-head-caret{transform:rotate(180deg)}
+.cb-body{padding:0 22px 22px;border-top:1px solid rgba(255,255,255,0.05)}
+
+/* Sub-tabs inside Copy Brain */
+.cb-subtabs{display:flex;gap:8px;padding:18px 0 16px}
+.cb-subtab{font-size:12px;font-weight:500;padding:6px 14px;border-radius:8px;cursor:pointer;border:1px solid rgba(255,255,255,0.07);color:#71717a;background:none;font-family:inherit;transition:all 100ms}
+.cb-subtab.active{background:rgba(139,92,246,0.18);border-color:rgba(139,92,246,0.45);color:#c4b5fd}
+.cb-subtab:hover:not(.active){border-color:rgba(255,255,255,0.14);color:#a1a1aa}
+
+.cb-subsection{display:none}
+.cb-subsection.active{display:block}
+
+.cb-count{font-size:12px;color:#71717a;margin-bottom:14px}
+
+/* Add-new row */
+.cb-add-row{display:flex;gap:10px;margin-bottom:18px}
+.cb-add-input{flex:1;background:rgba(0,0,0,0.3);border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:11px 14px;font-size:13px;color:#e4e4e7;outline:none;font-family:inherit;transition:border-color 200ms}
+.cb-add-input:focus{border-color:rgba(139,92,246,0.4)}
+.cb-add-btn{padding:10px 22px;border-radius:10px;background:rgba(139,92,246,0.18);border:1px solid rgba(139,92,246,0.4);color:#c4b5fd;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;transition:all 100ms}
+.cb-add-btn:hover:not(:disabled){background:rgba(139,92,246,0.28)}
+.cb-add-btn:disabled{opacity:0.4;cursor:not-allowed}
+
+/* Principle row */
+.cb-row{display:flex;align-items:center;gap:12px;padding:12px 14px;background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.06);border-radius:10px;margin-bottom:8px;transition:border-color 150ms}
+.cb-row:hover{border-color:rgba(255,255,255,0.12)}
+.cb-checkbox{flex-shrink:0;width:22px;height:22px;border-radius:6px;border:1px solid rgba(139,92,246,0.5);background:rgba(139,92,246,0.18);cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all 120ms}
+.cb-checkbox.off{background:transparent;border-color:rgba(255,255,255,0.15)}
+.cb-checkbox svg{width:14px;height:14px;color:#c4b5fd}
+.cb-checkbox.off svg{display:none}
+.cb-text{flex:1;font-size:13px;color:#d4d4d8;line-height:1.5}
+.cb-row.disabled .cb-text{color:#52525b;text-decoration:line-through}
+.cb-actions{display:flex;gap:6px;flex-shrink:0}
+.cb-link{font-size:12px;color:#71717a;background:none;border:none;cursor:pointer;font-family:inherit;padding:4px 6px;border-radius:4px;transition:all 100ms}
+.cb-link:hover{color:#fbbf24;background:rgba(245,158,11,0.08)}
+.cb-link.danger:hover{color:#f87171;background:rgba(248,113,113,0.08)}
+
+/* Inline edit input */
+.cb-edit-input{flex:1;background:rgba(0,0,0,0.4);border:1px solid rgba(245,158,11,0.4);border-radius:8px;padding:8px 12px;font-size:13px;color:#fff;outline:none;font-family:inherit}
+
+/* Brain Content textareas */
+.cb-block{margin-bottom:24px}
+.cb-block-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+.cb-block-label{font-size:11px;font-weight:600;letter-spacing:0.07em;text-transform:uppercase;color:#9aa0a6}
+.cb-block-textarea{width:100%;min-height:280px;background:rgba(0,0,0,0.3);border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:14px 16px;font-size:13px;color:#d4d4d8;line-height:1.6;font-family:'Fira Code','SF Mono',monospace;resize:vertical;outline:none;transition:border-color 200ms}
+.cb-block-textarea:focus{border-color:rgba(139,92,246,0.4)}
+</style>
+</head>
+<body>
+<div class="glow"></div>
+
+<nav>
+  <img class="logo" src="https://cdn.prod.website-files.com/68f946bb8c1a312becb429c6/69332f8bb26fb636e5ff3553_QS%20white.png" alt="QS">
+  <div style="display:flex;align-items:center;gap:10px">
+    <a href="/dashboard" style="font-size:13px;color:#71717a;text-decoration:none;padding:5px 10px;border-radius:7px;border:1px solid rgba(255,255,255,0.08);" onmouseover="this.style.color='#e4e4e7'" onmouseout="this.style.color='#71717a'">← Dashboard</a>
+    <a href="/calls" style="font-size:13px;color:#71717a;text-decoration:none;padding:5px 10px;border-radius:7px;border:1px solid rgba(255,255,255,0.08);" onmouseover="this.style.color='#e4e4e7'" onmouseout="this.style.color='#71717a'">Calls</a>
+  </div>
+</nav>
+
+<div class="page">
+  <h1>⚙️ Settings</h1>
+  <p class="sub">Prompts, copywriting brain, and pipeline configuration.</p>
+
+  <div class="section-tabs">
+    <button class="section-tab active" data-section="prompts" onclick="switchSection('prompts', event)">Prompts</button>
+    <button class="section-tab" data-section="copy-brain" onclick="switchSection('copy-brain', event)">Copy Brain</button>
+  </div>
+
+  <!-- ── Prompts section ────────────────────────────────────────────────── -->
+  <div class="section active" id="section-prompts">
+    <div class="tabs">
+      <button class="tab active" onclick="filterCategory('all', event)">All</button>
+      <button class="tab" onclick="filterCategory('agent', event)">🤖 Agents</button>
+      <button class="tab" onclick="filterCategory('email', event)">📧 Email</button>
+      <button class="tab" onclick="filterCategory('webinar', event)">🎥 Webinar</button>
+    </div>
+    <div id="prompts-list">
+      <div class="loading">Loading prompts…</div>
+    </div>
+  </div>
+
+  <!-- ── Copy Brain section ─────────────────────────────────────────────── -->
+  <div class="section" id="section-copy-brain">
+    <div class="cb-card" id="cb-card">
+      <div class="cb-head" onclick="toggleCbCard()">
+        <div class="cb-head-title">
+          <strong>Copy Brain</strong>
+          <span>Principles &amp; business context</span>
+        </div>
+        <div class="cb-head-caret">▾</div>
+      </div>
+      <div class="cb-body">
+        <div class="cb-subtabs">
+          <button class="cb-subtab active" data-sub="principles" onclick="switchCbSub('principles', event)">Principles</button>
+          <button class="cb-subtab" data-sub="brain" onclick="switchCbSub('brain', event)">Brain Content</button>
+        </div>
+
+        <!-- Principles subsection -->
+        <div class="cb-subsection active" id="cb-sub-principles">
+          <div class="cb-count" id="cb-count">Loading…</div>
+          <div class="cb-add-row">
+            <input class="cb-add-input" id="cb-new-input" placeholder="Add a new copywriting principle..." onkeydown="if(event.key==='Enter') cbAddPrinciple()">
+            <button class="cb-add-btn" id="cb-add-btn" onclick="cbAddPrinciple()" disabled>Add</button>
+          </div>
+          <div id="cb-principles-list">
+            <div class="loading">Loading principles…</div>
+          </div>
+        </div>
+
+        <!-- Brain Content subsection -->
+        <div class="cb-subsection" id="cb-sub-brain">
+          <div class="cb-block">
+            <div class="cb-block-head">
+              <span class="cb-block-label">Business Context (Universal Brain)</span>
+              <button class="cb-add-btn" id="cb-save-bc" onclick="cbSaveConfig('business_context')" disabled>Save</button>
+            </div>
+            <textarea class="cb-block-textarea" id="cb-business-context" oninput="cbMarkConfigDirty('business_context')"></textarea>
+          </div>
+          <div class="cb-block">
+            <div class="cb-block-head">
+              <span class="cb-block-label">Format Rules (Calendar Invite Structure)</span>
+              <button class="cb-add-btn" id="cb-save-fr" onclick="cbSaveConfig('format_rules')" disabled>Save</button>
+            </div>
+            <textarea class="cb-block-textarea" id="cb-format-rules" oninput="cbMarkConfigDirty('format_rules')"></textarea>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function showToast(msg) {
+  var t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(function() { t.classList.remove('show'); }, 3000);
+}
+
+// ── Section switcher ────────────────────────────────────────────────────────
+function switchSection(name, event) {
+  document.querySelectorAll('.section-tab').forEach(function(b){ b.classList.remove('active'); });
+  if (event && event.target) event.target.classList.add('active');
+  document.querySelectorAll('.section').forEach(function(s){ s.classList.remove('active'); });
+  var el = document.getElementById('section-' + name);
+  if (el) el.classList.add('active');
+  if (name === 'copy-brain' && !window._cbLoaded) {
+    cbLoad();
+    window._cbLoaded = true;
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// PROMPTS — original prompts.html logic preserved
+// ════════════════════════════════════════════════════════════════════════════
+var ALL_PROMPTS = [];
+var categoryFilter = 'all';
+
+var PROMPT_VARS = {
+  icp_translation:  '{{rawTitles}}  {{rawIndustries}}  {{rawGeo}}  {{companySize}}  {{employeeRanges}}',
+  brief_extraction: '{{prospect_company}}  {{prospect_name}}',
+  email_reminder:   '{{webinar_title}}  {{host_name}}  {{result_delivered}}  {{customer_pain}}  {{prospect_company}}',
+  chat_messages:    '{{webinar_title}}  {{icp_role}}  {{icp_industry}}  {{customer_pain}}  {{result_delivered}}  {{host_name}}',
+  host_bio:         '{{host_name}}  {{company_name}}  {{icp_industry}}  {{result_delivered}}',
+  webinar_titles:   '{{prospect_company_name}}  {{icp_role}}  {{icp_industry}}  {{company_size_line}}  {{customer_pain}}  {{result_delivered}}'
+};
+
+function filterCategory(cat, event) {
+  categoryFilter = cat;
+  document.querySelectorAll('#section-prompts .tab').forEach(function(t) { t.classList.remove('active'); });
+  if (event && event.target) event.target.classList.add('active');
+  renderPrompts();
+}
+
+function loadPrompts() {
+  fetch('/api/prompts')
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      ALL_PROMPTS = Array.isArray(data) ? data : [];
+      renderPrompts();
+    })
+    .catch(function(e) {
+      document.getElementById('prompts-list').innerHTML = '<div class="loading">Error loading prompts: ' + esc(e.message) + '</div>';
+    });
+}
+
+function renderPrompts() {
+  var filtered = categoryFilter === 'all' ? ALL_PROMPTS : ALL_PROMPTS.filter(function(p) { return p.category === categoryFilter; });
+  if (!filtered.length) {
+    document.getElementById('prompts-list').innerHTML = '<div class="loading">No prompts found</div>';
+    return;
+  }
+  var html = filtered.map(function(p) {
+    var catClass = 'cat-' + (p.category || 'agent');
+    var updated = p.updated_at ? new Date(p.updated_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
+    var vars = PROMPT_VARS[p.slug] || '';
+    var varsHtml = vars ? '<div style="margin:8px 0 4px;font-size:11px;color:#52525b;">Available variables: <span style="color:#a78bfa;font-family:monospace;font-size:11px;">' + esc(vars) + '</span></div>' : '';
+    return '<div class="prompt-card" id="card-' + esc(p.slug) + '">' +
+      '<div class="prompt-header">' +
+        '<div>' +
+          '<div class="prompt-label">' + esc(p.name) + '</div>' +
+          '<div class="prompt-slug">' + esc(p.slug) + ' · ' + updated + '</div>' +
+        '</div>' +
+        '<div class="prompt-meta">' +
+          '<span class="prompt-category ' + catClass + '">' + esc(p.category || 'agent') + '</span>' +
+          '<span class="prompt-version">v' + (p.version || 1) + '</span>' +
+        '</div>' +
+      '</div>' +
+      varsHtml +
+      '<textarea class="prompt-content" id="content-' + esc(p.slug) + '" oninput="markDirty(\'' + esc(p.slug) + '\')">\n' + esc(p.content || '') + '</textarea>' +
+      '<div class="prompt-actions">' +
+        '<div style="display:flex;align-items:center;gap:8px">' +
+          '<input class="notes-input" id="notes-' + esc(p.slug) + '" placeholder="Version notes (optional)">' +
+          '<button class="btn btn-save" id="save-' + esc(p.slug) + '" disabled onclick="savePrompt(\'' + esc(p.slug) + '\')">Save</button>' +
+        '</div>' +
+        '<button class="btn btn-history" onclick="toggleHistory(\'' + esc(p.slug) + '\')">📜 History</button>' +
+      '</div>' +
+      '<div class="status-msg" id="status-' + esc(p.slug) + '"></div>' +
+      '<div class="history-panel" id="history-' + esc(p.slug) + '"></div>' +
+    '</div>';
+  }).join('');
+  document.getElementById('prompts-list').innerHTML = html;
+}
+
+function markDirty(slug) {
+  var btn = document.getElementById('save-' + slug);
+  if (btn) btn.disabled = false;
+}
+
+function savePrompt(slug) {
+  var content = document.getElementById('content-' + slug).value;
+  var notes = document.getElementById('notes-' + slug).value;
+  var statusEl = document.getElementById('status-' + slug);
+  var saveBtn = document.getElementById('save-' + slug);
+  statusEl.textContent = 'Saving…';
+  statusEl.style.color = '#a1a1aa';
+  saveBtn.disabled = true;
+
+  fetch('/api/prompts/' + encodeURIComponent(slug), {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content: content, notes: notes || null })
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(d) {
+    if (d.ok) {
+      statusEl.textContent = '✓ Saved as v' + d.version;
+      statusEl.style.color = '#4ade80';
+      showToast('Prompt "' + slug + '" saved (v' + d.version + ')');
+      var p = ALL_PROMPTS.find(function(x) { return x.slug === slug; });
+      if (p) { p.version = d.version; p.content = content; }
+      var verEl = document.querySelector('#card-' + slug + ' .prompt-version');
+      if (verEl) verEl.textContent = 'v' + d.version;
+      document.getElementById('notes-' + slug).value = '';
+    } else {
+      statusEl.textContent = 'Error: ' + (d.error || 'unknown');
+      statusEl.style.color = '#f87171';
+      saveBtn.disabled = false;
+    }
+  })
+  .catch(function(e) {
+    statusEl.textContent = 'Error: ' + e.message;
+    statusEl.style.color = '#f87171';
+    saveBtn.disabled = false;
+  });
+}
+
+function toggleHistory(slug) {
+  var panel = document.getElementById('history-' + slug);
+  if (panel.style.display === 'block') { panel.style.display = 'none'; return; }
+  panel.innerHTML = '<div style="font-size:12px;color:#52525b">Loading…</div>';
+  panel.style.display = 'block';
+
+  fetch('/api/prompts/' + encodeURIComponent(slug) + '/history')
+    .then(function(r) { return r.json(); })
+    .then(function(versions) {
+      if (!versions.length) { panel.innerHTML = '<div style="font-size:12px;color:#52525b">No previous versions</div>'; return; }
+      panel.innerHTML = versions.map(function(v) {
+        var dt = new Date(v.created_at).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+        var vNum = v.version_number || v.version || '?';
+        return '<div class="history-item">' +
+          '<span class="history-ver">v' + vNum + '</span>' +
+          '<span>' + dt + '</span>' +
+          (v.notes ? ' · <span style="color:#a1a1aa">' + esc(v.notes) + '</span>' : '') +
+          (v.created_by ? ' · <span style="color:#3f3f46">' + esc(v.created_by) + '</span>' : '') +
+          (v.content ? ' <button class="history-btn" onclick="restoreVersion(\'' + esc(slug) + '\',\'' + esc(v.content).replace(/\'/g, "\\\'") + '\')">Restore</button>' : '') +
+        '</div>';
+      }).join('');
+    })
+    .catch(function(e) { panel.innerHTML = '<div style="font-size:12px;color:#f87171">Error: ' + esc(e.message) + '</div>'; });
+}
+
+function restoreVersion(slug, content) {
+  document.getElementById('content-' + slug).value = content;
+  markDirty(slug);
+  showToast('Version restored — click Save to apply');
+}
+
+loadPrompts();
+
+// ════════════════════════════════════════════════════════════════════════════
+// COPY BRAIN
+// ════════════════════════════════════════════════════════════════════════════
+var CB_PRINCIPLES = [];
+var CB_CONFIG = { business_context: '', format_rules: '' };
+var CB_DIRTY = { business_context: false, format_rules: false };
+var CB_EDITING_ID = null;
+
+function toggleCbCard() {
+  document.getElementById('cb-card').classList.toggle('collapsed');
+}
+
+function switchCbSub(name, event) {
+  document.querySelectorAll('.cb-subtab').forEach(function(b){ b.classList.remove('active'); });
+  if (event && event.target) event.target.classList.add('active');
+  document.querySelectorAll('.cb-subsection').forEach(function(s){ s.classList.remove('active'); });
+  var el = document.getElementById('cb-sub-' + name);
+  if (el) el.classList.add('active');
+}
+
+function cbLoad() {
+  cbLoadPrinciples();
+  cbLoadConfig();
+}
+
+// ── Principles ────────────────────────────────────────────────────────────
+function cbLoadPrinciples() {
+  fetch('/api/copy-brain/principles')
+    .then(function(r){ return r.json(); })
+    .then(function(data){
+      CB_PRINCIPLES = Array.isArray(data) ? data : [];
+      cbRenderPrinciples();
+    })
+    .catch(function(e){
+      document.getElementById('cb-principles-list').innerHTML = '<div class="loading">Error: ' + esc(e.message) + '</div>';
+    });
+}
+
+function cbRenderPrinciples() {
+  var list = document.getElementById('cb-principles-list');
+  var active = CB_PRINCIPLES.filter(function(p){ return p.enabled; }).length;
+  var inactive = CB_PRINCIPLES.length - active;
+  document.getElementById('cb-count').textContent = active + ' active, ' + inactive + ' inactive';
+
+  if (!CB_PRINCIPLES.length) {
+    list.innerHTML = '<div class="loading">No principles yet — add one above.</div>';
+    return;
+  }
+  var checkSvg = '<svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"/></svg>';
+  list.innerHTML = CB_PRINCIPLES.map(function(p){
+    var rowClass = 'cb-row' + (p.enabled ? '' : ' disabled');
+    var cbClass = 'cb-checkbox' + (p.enabled ? '' : ' off');
+    var isEditing = CB_EDITING_ID === p.id;
+    var middle = isEditing
+      ? '<input class="cb-edit-input" id="cb-edit-' + p.id + '" value="' + esc(p.text) + '" onkeydown="if(event.key===\'Enter\')cbSaveEdit(' + p.id + ');if(event.key===\'Escape\')cbCancelEdit()">'
+      : '<div class="cb-text">' + esc(p.text) + '</div>';
+    var actions = isEditing
+      ? '<button class="cb-link" onclick="cbSaveEdit(' + p.id + ')">Save</button><button class="cb-link" onclick="cbCancelEdit()">Cancel</button>'
+      : '<button class="cb-link" onclick="cbStartEdit(' + p.id + ')">Edit</button><button class="cb-link danger" onclick="cbDelete(' + p.id + ')">Delete</button>';
+    return '<div class="' + rowClass + '" id="cb-row-' + p.id + '">' +
+      '<div class="' + cbClass + '" onclick="cbToggle(' + p.id + ')">' + checkSvg + '</div>' +
+      middle +
+      '<div class="cb-actions">' + actions + '</div>' +
+    '</div>';
+  }).join('');
+}
+
+document.getElementById('cb-new-input').addEventListener('input', function(e){
+  document.getElementById('cb-add-btn').disabled = !e.target.value.trim();
+});
+
+function cbAddPrinciple() {
+  var input = document.getElementById('cb-new-input');
+  var text = input.value.trim();
+  if (!text) return;
+  var btn = document.getElementById('cb-add-btn');
+  btn.disabled = true;
+  fetch('/api/copy-brain/principles', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text: text, enabled: true })
+  })
+    .then(function(r){ return r.json(); })
+    .then(function(p){
+      if (p && p.id) {
+        CB_PRINCIPLES.push(p);
+        cbRenderPrinciples();
+        input.value = '';
+        showToast('Principle added');
+      } else {
+        showToast('Add failed: ' + (p.error || 'unknown'));
+      }
+    })
+    .catch(function(e){ showToast('Error: ' + e.message); });
+}
+
+function cbToggle(id) {
+  var p = CB_PRINCIPLES.find(function(x){ return x.id === id; });
+  if (!p) return;
+  var next = !p.enabled;
+  fetch('/api/copy-brain/principles/' + id, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled: next })
+  })
+    .then(function(r){ return r.json(); })
+    .then(function(updated){
+      if (updated && typeof updated.enabled === 'boolean') {
+        p.enabled = updated.enabled;
+        cbRenderPrinciples();
+      }
+    })
+    .catch(function(e){ showToast('Error: ' + e.message); });
+}
+
+function cbStartEdit(id) {
+  CB_EDITING_ID = id;
+  cbRenderPrinciples();
+  setTimeout(function(){
+    var i = document.getElementById('cb-edit-' + id);
+    if (i) { i.focus(); i.setSelectionRange(i.value.length, i.value.length); }
+  }, 0);
+}
+
+function cbCancelEdit() {
+  CB_EDITING_ID = null;
+  cbRenderPrinciples();
+}
+
+function cbSaveEdit(id) {
+  var inp = document.getElementById('cb-edit-' + id);
+  if (!inp) return;
+  var text = inp.value.trim();
+  if (!text) return;
+  fetch('/api/copy-brain/principles/' + id, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text: text })
+  })
+    .then(function(r){ return r.json(); })
+    .then(function(updated){
+      var p = CB_PRINCIPLES.find(function(x){ return x.id === id; });
+      if (p && updated && updated.text) p.text = updated.text;
+      CB_EDITING_ID = null;
+      cbRenderPrinciples();
+      showToast('Saved');
+    })
+    .catch(function(e){ showToast('Error: ' + e.message); });
+}
+
+function cbDelete(id) {
+  if (!confirm('Delete this principle?')) return;
+  fetch('/api/copy-brain/principles/' + id, { method: 'DELETE' })
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      if (d.ok) {
+        CB_PRINCIPLES = CB_PRINCIPLES.filter(function(x){ return x.id !== id; });
+        cbRenderPrinciples();
+        showToast('Deleted');
+      } else {
+        showToast('Delete failed: ' + (d.error || 'unknown'));
+      }
+    })
+    .catch(function(e){ showToast('Error: ' + e.message); });
+}
+
+// ── Brain Content (config) ────────────────────────────────────────────────
+function cbLoadConfig() {
+  fetch('/api/copy-brain/config')
+    .then(function(r){ return r.json(); })
+    .then(function(c){
+      CB_CONFIG = { business_context: c.business_context || '', format_rules: c.format_rules || '' };
+      document.getElementById('cb-business-context').value = CB_CONFIG.business_context;
+      document.getElementById('cb-format-rules').value = CB_CONFIG.format_rules;
+      CB_DIRTY = { business_context: false, format_rules: false };
+      document.getElementById('cb-save-bc').disabled = true;
+      document.getElementById('cb-save-fr').disabled = true;
+    })
+    .catch(function(e){ showToast('Config load failed: ' + e.message); });
+}
+
+function cbMarkConfigDirty(field) {
+  CB_DIRTY[field] = true;
+  if (field === 'business_context') document.getElementById('cb-save-bc').disabled = false;
+  if (field === 'format_rules') document.getElementById('cb-save-fr').disabled = false;
+}
+
+function cbSaveConfig(field) {
+  var val = field === 'business_context'
+    ? document.getElementById('cb-business-context').value
+    : document.getElementById('cb-format-rules').value;
+  var body = {};
+  body[field] = val;
+  var btnId = field === 'business_context' ? 'cb-save-bc' : 'cb-save-fr';
+  document.getElementById(btnId).disabled = true;
+  fetch('/api/copy-brain/config', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  })
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      if (d && d.id !== undefined) {
+        CB_DIRTY[field] = false;
+        showToast('Saved');
+      } else {
+        showToast('Save failed: ' + (d.error || 'unknown'));
+        document.getElementById(btnId).disabled = false;
+      }
+    })
+    .catch(function(e){
+      showToast('Error: ' + e.message);
+      document.getElementById(btnId).disabled = false;
+    });
+}
+</script>
+</body>
+</html>

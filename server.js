@@ -81,6 +81,42 @@ async function supabaseRequest(method, urlPath, body, extraHeaders = {}) {
   });
 }
 
+// ── Copy Brain — DB-backed copywriting principles + business context + format rules ──
+// Consumed by generateWebinarTitles to fill the {{business_context_block}},
+// {{format_rules_block}}, {{principles_block}} placeholders in the system prompt.
+// Falls back to the file-based WEBINAR_FALLBACK_FORMAT if DB config is empty.
+async function loadCopyBrain() {
+  try {
+    const [pr, cr] = await Promise.all([
+      supabaseRequest('GET', '/rest/v1/copy_brain_principles?enabled=eq.true&order=position.asc'),
+      supabaseRequest('GET', '/rest/v1/copy_brain_config?order=id.asc&limit=1'),
+    ]);
+    const principles = Array.isArray(pr.body) ? pr.body : [];
+    const config = (Array.isArray(cr.body) ? cr.body[0] : null) || { business_context: '', format_rules: '' };
+    const principlesBlock = principles.length
+      ? principles.map(p => `- ${p.text}`).join('\n')
+      : '- Write as the prospect company hosting, never Quantum Scaling\n- Front-load ICP role in title first 40 chars\n- Every bullet is a transformation promise, not a topic';
+    return {
+      business_context_block: (config.business_context && config.business_context.trim())
+        ? config.business_context
+        : '(no business context configured — edit in /settings → Copy Brain)',
+      format_rules_block: (config.format_rules && config.format_rules.trim())
+        ? config.format_rules
+        : (WEBINAR_FALLBACK_FORMAT || '(use best-practice direct-response structure)'),
+      principles_block: principlesBlock,
+      examples_block: '(none loaded)',
+    };
+  } catch (e) {
+    console.warn('[copy-brain] load failed, using file-based fallback:', e.message);
+    return {
+      business_context_block: '(brain unreachable)',
+      format_rules_block: WEBINAR_FALLBACK_FORMAT || '(use best-practice direct-response structure)',
+      principles_block: '- Write as the prospect company hosting, never Quantum Scaling\n- Front-load ICP role in title first 40 chars\n- Every bullet is a transformation promise, not a topic',
+      examples_block: '(none loaded)',
+    };
+  }
+}
+
 // Upload file to Supabase Storage (bucket: sales-assets)
 async function storageUpload(storagePath, content, contentType = 'text/html') {
   return new Promise((resolve, reject) => {
@@ -1426,7 +1462,10 @@ async function generateWebinarTitles(extracted, companyName) {
   const outputSchema = `\nRuntime rules: write as ${companyName} hosting — NEVER as Quantum Scaling • titles HARD LIMIT 60 chars • bullets = specific transformations, not topics • ${cs?.numbers ? 'proof numbers verbatim: ' + cs.numbers : 'no fabricated proof numbers'}\nReturn valid JSON only matching the Output Format schema above.`;
   let systemPrompt, userPrompt;
   if (WEBINAR_SYSTEM_TEMPLATE) {
-    const businessContext = [
+    // Per-job context (always derived from extracted_data) — appended above the
+    // global Copy Brain so prospect-specific details override the universal
+    // brain when both are relevant.
+    const jobContext = [
       `- Company: ${companyName}`,
       `- Their clients are: ${role}s at ${size ? size + ' ' : ''}companies in ${industry}`,
       `- Core pain they solve: ${pain}`,
@@ -1434,12 +1473,14 @@ async function generateWebinarTitles(extracted, companyName) {
       cs?.numbers ? `- Client proof: ${cs.client_description || 'A client'} — ${cs.result || ''} (${cs.numbers})` : null,
       (extracted.webinar_angle || extracted.context?.why_webinar) ? `- Webinar angle: ${extracted.webinar_angle || extracted.context?.why_webinar}` : null
     ].filter(Boolean).join('\n');
+    const brain = await loadCopyBrain();
+    const businessContextBlock = `### Per-Job Context\n${jobContext}\n\n### Universal Brain\n${brain.business_context_block}`;
     systemPrompt = interpolate(WEBINAR_SYSTEM_TEMPLATE, {
       prospect_company_name: companyName, icp_role: role, icp_industry: industry,
-      business_context_block: businessContext,
-      format_rules_block:    WEBINAR_FALLBACK_FORMAT || '(use best-practice direct-response structure)',
-      principles_block:      '- Write as the prospect company hosting, never Quantum Scaling\n- Front-load ICP role in title first 40 chars\n- Every bullet is a transformation promise, not a topic',
-      examples_block:        '(none loaded)'
+      business_context_block: businessContextBlock,
+      format_rules_block:    brain.format_rules_block,
+      principles_block:      brain.principles_block,
+      examples_block:        brain.examples_block,
     }) + outputSchema;
     userPrompt = interpolate(WEBINAR_USER_TEMPLATE, {
       prospect_company_name: companyName, icp_role: role, icp_company_size: size, icp_industry: industry,
@@ -3424,6 +3465,211 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // ── Copy Brain — CRUD ─────────────────────────────────────────────────────
+  // GET /api/copy-brain/principles — list ordered by position
+  if (req.method === 'GET' && urlPath === '/api/copy-brain/principles') {
+    setCors(res);
+    try {
+      const r = await supabaseRequest('GET', '/rest/v1/copy_brain_principles?order=position.asc');
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(r.body || []));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  // POST /api/copy-brain/principles — create { text, enabled?, position? }
+  if (req.method === 'POST' && urlPath === '/api/copy-brain/principles') {
+    setCors(res);
+    try {
+      const body = await parseBody(req);
+      const text = (body.text || '').trim();
+      if (!text) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'text required' })); return;
+      }
+      // Default position: tail of the list
+      let position = body.position;
+      if (typeof position !== 'number') {
+        const maxR = await supabaseRequest('GET', '/rest/v1/copy_brain_principles?select=position&order=position.desc&limit=1');
+        position = ((maxR.body && maxR.body[0] && maxR.body[0].position) || 0) + 1;
+      }
+      const r = await supabaseRequest('POST', '/rest/v1/copy_brain_principles',
+        { text, enabled: body.enabled !== false, position },
+        { 'Prefer': 'return=representation' }
+      );
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(Array.isArray(r.body) ? r.body[0] : r.body));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  // PATCH /api/copy-brain/principles/:id — update text/enabled/position
+  if (req.method === 'PATCH' && urlPath.startsWith('/api/copy-brain/principles/')) {
+    setCors(res);
+    const id = urlPath.slice('/api/copy-brain/principles/'.length);
+    try {
+      const body = await parseBody(req);
+      const patch = { updated_at: new Date().toISOString() };
+      if (typeof body.text === 'string') patch.text = body.text;
+      if (typeof body.enabled === 'boolean') patch.enabled = body.enabled;
+      if (typeof body.position === 'number') patch.position = body.position;
+      const r = await supabaseRequest('PATCH', `/rest/v1/copy_brain_principles?id=eq.${encodeURIComponent(id)}`,
+        patch, { 'Prefer': 'return=representation' });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(Array.isArray(r.body) ? r.body[0] : r.body));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  // DELETE /api/copy-brain/principles/:id
+  if (req.method === 'DELETE' && urlPath.startsWith('/api/copy-brain/principles/')) {
+    setCors(res);
+    const id = urlPath.slice('/api/copy-brain/principles/'.length);
+    try {
+      await supabaseRequest('DELETE', `/rest/v1/copy_brain_principles?id=eq.${encodeURIComponent(id)}`);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  // GET /api/copy-brain/config — singleton { business_context, format_rules }
+  if (req.method === 'GET' && urlPath === '/api/copy-brain/config') {
+    setCors(res);
+    try {
+      const r = await supabaseRequest('GET', '/rest/v1/copy_brain_config?order=id.asc&limit=1');
+      const row = (Array.isArray(r.body) ? r.body[0] : null) || { business_context: '', format_rules: '' };
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(row));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  // PUT /api/copy-brain/config — update singleton (creates if missing)
+  if (req.method === 'PUT' && urlPath === '/api/copy-brain/config') {
+    setCors(res);
+    try {
+      const body = await parseBody(req);
+      const patch = { updated_at: new Date().toISOString() };
+      if (typeof body.business_context === 'string') patch.business_context = body.business_context;
+      if (typeof body.format_rules === 'string') patch.format_rules = body.format_rules;
+      const existing = await supabaseRequest('GET', '/rest/v1/copy_brain_config?order=id.asc&limit=1');
+      const row = Array.isArray(existing.body) ? existing.body[0] : null;
+      if (row) {
+        const r = await supabaseRequest('PATCH', `/rest/v1/copy_brain_config?id=eq.${row.id}`, patch, { 'Prefer': 'return=representation' });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(Array.isArray(r.body) ? r.body[0] : r.body));
+      } else {
+        const r = await supabaseRequest('POST', '/rest/v1/copy_brain_config', patch, { 'Prefer': 'return=representation' });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(Array.isArray(r.body) ? r.body[0] : r.body));
+      }
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  // ── POST /api/jobs/:id/regenerate/webinar-titles ──────────────────────────
+  // Re-runs the webinar_titles generator against the current Copy Brain.
+  // Mirrors the rerun-apollo pattern: respond 202 immediately, run async,
+  // write progress to extracted_data._generated.webinar_rerun every poll.
+  // On success, patches both the tasks.webinar_titles.output_data row AND
+  // _generated.webinarTitles so the portal hot-reloads in place.
+  if (req.method === 'POST' && urlPath.startsWith('/api/jobs/') && urlPath.endsWith('/regenerate/webinar-titles')) {
+    setCors(res);
+    const jobId = urlPath.slice('/api/jobs/'.length, -'/regenerate/webinar-titles'.length);
+    try {
+      const job = await getJob(jobId);
+      if (!job) { res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'Job not found' })); return; }
+      const extracted = job.extracted_data || {};
+      if (!extracted.icp && !extracted.prospect) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Job has no extracted_data — run extract first' })); return;
+      }
+      res.writeHead(202, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, message: 'Regeneration started — poll job for progress' }));
+
+      (async () => {
+        const writeRerun = async (snapshot) => {
+          try {
+            const fresh = await getJob(jobId);
+            const ext   = fresh?.extracted_data || {};
+            const updated = {
+              ...ext,
+              _generated: {
+                ...(ext._generated || {}),
+                webinar_rerun: { ...snapshot, updated_at: new Date().toISOString() }
+              }
+            };
+            await supabaseRequest('PATCH', `/rest/v1/jobs?id=eq.${jobId}`,
+              { extracted_data: updated }, { 'Prefer': 'return=minimal' });
+          } catch (e) { console.warn('[regen-webinar-titles] progress write failed:', e.message); }
+        };
+        try {
+          console.log(`[regen-webinar-titles] Starting for job ${jobId}`);
+          await writeRerun({ status: 'running', progress: 10, message: 'Loading Copy Brain…' });
+          const company = extracted.prospect?.company || job.prospect_company || 'Your Company';
+          await writeRerun({ status: 'running', progress: 30, message: 'Calling Claude Sonnet…' });
+          const result = await generateWebinarTitles(extracted, company);
+          await writeRerun({ status: 'running', progress: 90, message: 'Saving variants…' });
+
+          // 1) Update the task row so portal's primary read path picks it up
+          const taskR = await supabaseRequest('GET', `/rest/v1/tasks?job_id=eq.${jobId}&task_type=eq.webinar_titles&limit=1`);
+          const taskRow = Array.isArray(taskR.body) ? taskR.body[0] : null;
+          if (taskRow) {
+            await supabaseRequest('PATCH', `/rest/v1/tasks?id=eq.${taskRow.id}`,
+              { output_data: result, status: 'completed', error: null, updated_at: new Date().toISOString() },
+              { 'Prefer': 'return=minimal' });
+          }
+          // 2) Mirror to _generated for redundancy + final progress flag
+          const fresh = await getJob(jobId);
+          const ext   = fresh?.extracted_data || {};
+          const updated = {
+            ...ext,
+            _generated: {
+              ...(ext._generated || {}),
+              webinarTitles: result,
+              webinar_rerun: {
+                status: 'completed', progress: 100,
+                message: 'Variants regenerated',
+                finished_at: new Date().toISOString()
+              }
+            }
+          };
+          await supabaseRequest('PATCH', `/rest/v1/jobs?id=eq.${jobId}`,
+            { extracted_data: updated, updated_at: new Date().toISOString() },
+            { 'Prefer': 'return=minimal' });
+          console.log(`[regen-webinar-titles] Job ${jobId}: variants regenerated`);
+        } catch (e) {
+          console.error(`[regen-webinar-titles] Job ${jobId} error:`, e.message);
+          await writeRerun({ status: 'failed', progress: 100, message: 'Regeneration failed: ' + e.message });
+        }
+      })();
+    } catch (e) {
+      console.error('[POST /api/jobs/regenerate/webinar-titles]', e.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
   // ── GET /api/portal-data — legacy session endpoint ────────────────────────
   if (req.method === 'GET' && urlPath === '/api/portal-data') {
     setCors(res);
@@ -3478,7 +3724,8 @@ const server = http.createServer(async (req, res) => {
   if (urlPath === '/' || urlPath === '') urlPath = '/mockup-portal.html';
   if (urlPath === '/dashboard')          urlPath = '/mockup-dashboard.html';
   if (urlPath === '/calls')              urlPath = '/calls.html';
-  if (urlPath === '/prompts')            urlPath = '/prompts.html';
+  if (urlPath === '/settings')           urlPath = '/settings.html';
+  if (urlPath === '/prompts')            urlPath = '/settings.html';  // legacy alias
   if (urlPath === '/prospect' || urlPath.startsWith('/prospect?')) urlPath = '/prospect.html';
   const filePath = path.join(__dirname, urlPath);
   const ext      = path.extname(filePath);
