@@ -105,6 +105,11 @@ async function loadCopyBrain() {
         : (WEBINAR_FALLBACK_FORMAT || '(use best-practice direct-response structure)'),
       principles_block: principlesBlock,
       examples_block: '(none loaded)',
+      _meta: {
+        principles_count: principles.length,
+        config_updated_at: config.updated_at || null,
+        loaded_at: new Date().toISOString(),
+      },
     };
   } catch (e) {
     console.warn('[copy-brain] load failed, using file-based fallback:', e.message);
@@ -113,6 +118,12 @@ async function loadCopyBrain() {
       format_rules_block: WEBINAR_FALLBACK_FORMAT || '(use best-practice direct-response structure)',
       principles_block: '- Write as the prospect company hosting, never Quantum Scaling\n- Front-load ICP role in title first 40 chars\n- Every bullet is a transformation promise, not a topic',
       examples_block: '(none loaded)',
+      _meta: {
+        principles_count: 0,
+        config_updated_at: null,
+        loaded_at: new Date().toISOString(),
+        fallback: true,
+      },
     };
   }
 }
@@ -1450,7 +1461,11 @@ async function fetchLeadsFromApollo(icp, progressCb) {
 }
 
 // ── Webinar titles generation ─────────────────────────────────────────────────
-async function generateWebinarTitles(extracted, companyName) {
+// Accepts the full job so we can pull brand_data (host's tagline, website summary)
+// and research_data.host (founder name + bio) into the per-job context. These are
+// available cheaply (already populated by brand_scrape and prospect_research tasks)
+// and give Claude meaningfully more material than extracted_data alone.
+async function generateWebinarTitles(extracted, companyName, job = null) {
   const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
   const icp = extracted.icp || {};
   const role = icp.role || 'business owners', industry = icp.industry || 'B2B';
@@ -1459,21 +1474,33 @@ async function generateWebinarTitles(extracted, companyName) {
   const pain   = extracted.customer_pain   || extracted.angle?.pain   || 'unpredictable client acquisition';
   const result = extracted.result_delivered || extracted.angle?.result || 'predictable revenue growth';
   const cs     = extracted.case_study || null;
-  const outputSchema = `\nRuntime rules: write as ${companyName} hosting — NEVER as Quantum Scaling • titles HARD LIMIT 60 chars • bullets = specific transformations, not topics • ${cs?.numbers ? 'proof numbers verbatim: ' + cs.numbers : 'no fabricated proof numbers'}\nReturn valid JSON only matching the Output Format schema above.`;
+  const brand    = (job && job.brand_data)    || {};
+  const research = (job && job.research_data?.host) || {};
+  const hostName = research.name || extracted.prospect?.name || null;
+  const hostBio  = research.bio  || null;
+  const tagline  = brand.tagline || null;
+  const summary  = brand.website_summary ? brand.website_summary.slice(0, 400) : null;
+  const outputSchema = `\nRuntime rules: write as ${companyName} hosting — NEVER as Quantum Scaling • titles HARD LIMIT 60 chars, NO emojis in titles • bullets = specific transformations, not topics • ${cs?.numbers ? 'proof numbers verbatim: ' + cs.numbers : 'no fabricated proof numbers — set proof_story to null if no numbers in brief'} • return ALL 12 fields per variant\nReturn valid JSON only matching the Output Format schema above.`;
   let systemPrompt, userPrompt;
+  let brainMeta = null;
   if (WEBINAR_SYSTEM_TEMPLATE) {
-    // Per-job context (always derived from extracted_data) — appended above the
-    // global Copy Brain so prospect-specific details override the universal
-    // brain when both are relevant.
+    // Per-job context (always derived from extracted_data + brand_data + research_data) —
+    // appended above the global Copy Brain so prospect-specific details override the
+    // universal brain when both are relevant.
     const jobContext = [
       `- Company: ${companyName}`,
+      tagline    ? `- Host tagline: ${tagline}` : null,
+      hostName   ? `- Host: ${hostName}${hostBio ? ' — ' + hostBio : ''}` : null,
       `- Their clients are: ${role}s at ${size ? size + ' ' : ''}companies in ${industry}`,
+      geo ? `- Geography: ${geo}` : null,
       `- Core pain they solve: ${pain}`,
       `- Result they deliver: ${result}`,
-      cs?.numbers ? `- Client proof: ${cs.client_description || 'A client'} — ${cs.result || ''} (${cs.numbers})` : null,
-      (extracted.webinar_angle || extracted.context?.why_webinar) ? `- Webinar angle: ${extracted.webinar_angle || extracted.context?.why_webinar}` : null
+      cs?.numbers ? `- Client proof (use VERBATIM): ${cs.client_description || 'A client'} — ${cs.result || ''} (${cs.numbers})` : null,
+      (extracted.webinar_angle || extracted.context?.why_webinar) ? `- Webinar angle: ${extracted.webinar_angle || extracted.context?.why_webinar}` : null,
+      summary ? `- Website summary (positioning context, not for verbatim quoting): ${summary}` : null
     ].filter(Boolean).join('\n');
-    const brain = await loadCopyBrain();
+    var brain = await loadCopyBrain();
+    brainMeta = brain._meta;
     const businessContextBlock = `### Per-Job Context\n${jobContext}\n\n### Universal Brain\n${brain.business_context_block}`;
     systemPrompt = interpolate(WEBINAR_SYSTEM_TEMPLATE, {
       prospect_company_name: companyName, icp_role: role, icp_industry: industry,
@@ -1495,12 +1522,27 @@ async function generateWebinarTitles(extracted, companyName) {
   }
   console.log('[webinar_titles] Calling Claude Sonnet...');
   const message = await anthropic.messages.create({
-    model: 'claude-sonnet-4-6', max_tokens: 2000, temperature: 0.7,
+    model: 'claude-sonnet-4-6', max_tokens: 3000, temperature: 0.7,
     system: systemPrompt, messages: [{ role: 'user', content: userPrompt }]
   });
   const raw = message.content[0].text;
-  try { return JSON.parse(raw); }
-  catch(e) { const m = raw.match(/\{[\s\S]*\}/); if (m) return JSON.parse(m[0]); throw new Error('webinar_titles: unparseable JSON'); }
+  let parsed;
+  try { parsed = JSON.parse(raw); }
+  catch(e) { const m = raw.match(/\{[\s\S]*\}/); if (m) parsed = JSON.parse(m[0]); else throw new Error('webinar_titles: unparseable JSON'); }
+  // Attach brain meta + generation timestamp so the portal can show
+  // "Brain v25 principles · generated [time]" under the variant tag.
+  parsed._meta = {
+    ...(parsed._meta || {}),
+    brain: brainMeta || { principles_count: 0, fallback: true },
+    generated_at: new Date().toISOString(),
+    inputs: {
+      has_case_study: !!(cs && cs.numbers),
+      has_host_bio:   !!hostBio,
+      has_brand_tagline: !!tagline,
+      has_website_summary: !!summary,
+    },
+  };
+  return parsed;
 }
 
 // ── ROI model math ────────────────────────────────────────────────────────────
@@ -2191,7 +2233,7 @@ async function handleWebinarTitles(task, job) {
   const extracted = job.extracted_data;
   if (!extracted) throw new Error('webinar_titles: extracted_data missing');
   const company = extracted.prospect?.company || job.prospect_company || job.prospect_website || 'Your Company';
-  const result = await generateWebinarTitles(extracted, company);
+  const result = await generateWebinarTitles(extracted, company, job);
   return result;
 }
 
@@ -3627,7 +3669,7 @@ const server = http.createServer(async (req, res) => {
           await writeRerun({ status: 'running', progress: 10, message: 'Loading Copy Brain…' });
           const company = extracted.prospect?.company || job.prospect_company || 'Your Company';
           await writeRerun({ status: 'running', progress: 30, message: 'Calling Claude Sonnet…' });
-          const result = await generateWebinarTitles(extracted, company);
+          const result = await generateWebinarTitles(extracted, company, job);
           await writeRerun({ status: 'running', progress: 90, message: 'Saving variants…' });
 
           // 1) Update the task row so portal's primary read path picks it up

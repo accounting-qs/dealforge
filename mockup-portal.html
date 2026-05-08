@@ -834,6 +834,7 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
             <button onclick="switchVariant(2)" id="var-btn-2" style="font-size:11px;font-weight:600;padding:3px 10px;border-radius:20px;border:1px solid #dadce0;background:#fff;color:#5f6368;cursor:pointer;transition:all 100ms;">C</button>
           </div>
           <span id="var-tag" style="font-size:11px;color:#9aa0a6;">Problem-aware</span>
+          <span id="cal-brain-stamp" style="font-size:10px;color:#80868b;display:none;"></span>
           <div style="margin-left:auto;display:flex;align-items:center;gap:8px;">
             <button id="cal-regen-btn" onclick="regenerateCalendarCopy()" title="Re-run with current Copy Brain (Settings → Copy Brain)" style="font-size:11px;font-weight:600;padding:5px 12px;border-radius:8px;border:1px solid rgba(139,92,246,0.5);background:rgba(139,92,246,0.12);color:#c4b5fd;cursor:pointer;transition:all 100ms;font-family:inherit;">↻ Regenerate</button>
             <a href="/settings" target="_blank" title="Edit Copy Brain" style="font-size:11px;color:#9aa0a6;text-decoration:none;border:1px solid #dadce0;border-radius:6px;padding:4px 8px;">Brain</a>
@@ -851,7 +852,7 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
 
         <div class="cal-header">
           <div class="cal-event-color"></div>
-          <div class="cal-event-title" id="cal-title">Why 90% of Consulting Firms Plateau at $1.5M — and the Revenue System That Actually Breaks Through</div>
+          <div class="cal-event-title" id="cal-title" style="color:#9aa0a6;font-style:italic;">Generating calendar invite copy…</div>
           <div class="cal-close">×</div>
         </div>
 
@@ -867,30 +868,11 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
         </div>
 
         <div class="cal-desc" id="cal-desc">
-          <div class="cal-desc-cta">
-            👉 <strong>Click Yes or Maybe</strong> to reserve your spot.<br>
-            Click <strong>No</strong> and we'll remove you from this invite series.<br>
-            🔗 <a href="#">Your registration link →</a>
-          </div>
-          <div class="cal-desc-hook">If 80% of your pipeline comes from referrals, you don't have a business — you have a dependency. In 90 minutes, I'll show you the exact system 1,400+ consulting firms used to break through the $1.5M ceiling and build predictable revenue that doesn't rely on who you know.</div>
-          <div class="cal-desc-cases">
-            <div class="cal-desc-cases-label">What clients built in their first 90 days</div>
-            <div class="cal-desc-case"><strong>Sarah Chen (Meridian Advisory)</strong> — went from 100% referral-dependent to 847 registered attendees in her first webinar cycle.</div>
-            <div class="cal-desc-case"><strong>Derek Okonkwo (Vantage Partners)</strong> — booked 31 qualified sales calls in Month 2 using this exact outreach system.</div>
-            <div class="cal-desc-case"><strong>Marcus Webb (Sterling Growth)</strong> — broke through a $1.8M plateau and reached $212K/month recurring within 6 months.</div>
-          </div>
-          <div class="cal-desc-section">
-            <div class="cal-desc-section-label">What You'll Walk Away With</div>
-            <ul class="cal-desc-bullets">
-              <li>Why the referral ceiling exists — and the 3-phase system that breaks through it</li>
-              <li>How to run 30,000+ automated outreaches per month without cold calling or discounting</li>
-              <li>Live funnel math built with your firm's specific numbers</li>
-            </ul>
-          </div>
-          <div class="cal-desc-meta">
-            <span><strong>For:</strong> B2B consulting &amp; advisory founders · $1M–$5M revenue</span>
-            <span><strong>Host:</strong> <span id="cal-host-meta">Webinar host</span></span>
-            <span><strong>Duration:</strong> 90 min + live Q&amp;A · Join link sent on confirmation</span>
+          <div class="cal-desc-empty" style="padding:32px 20px;text-align:center;color:#80868b;">
+            <div style="font-size:24px;margin-bottom:10px;">⏳</div>
+            <div style="font-size:14px;font-weight:500;color:#5f6368;margin-bottom:4px;">Calendar invite copy not generated yet</div>
+            <div style="font-size:12px;color:#9aa0a6;margin-bottom:14px;">Either the webinar_titles task hasn't completed, or it failed.</div>
+            <div style="font-size:11px;color:#9aa0a6;">Try clicking <strong>↻ Regenerate</strong> above, or check task status in the dashboard.</div>
           </div>
         </div>
 
@@ -1593,46 +1575,22 @@ function clientCase(c) {
   return `<strong>${c.name} (${c.firm})</strong> — ${c.result}.`;
 }
 
+// Placeholder variants shown only until the LLM-generated webinarTitles arrive.
+// Once the personalization pass runs (mockup-portal.html ~line 3075), each entry
+// is replaced in place via `variants[n] = { tag, title, desc: buildGeneratedDesc(...) }`.
+// Empty defaults make missing/failed generation visible instead of being masked
+// by hardcoded consulting-firm mockup content.
+const PLACEHOLDER_DESC = `<div class="cal-desc-empty" style="padding:32px 20px;text-align:center;color:#80868b;">
+  <div style="font-size:24px;margin-bottom:10px;">⏳</div>
+  <div style="font-size:14px;font-weight:500;color:#5f6368;margin-bottom:4px;">Calendar invite copy not generated yet</div>
+  <div style="font-size:12px;color:#9aa0a6;margin-bottom:14px;">Either the webinar_titles task hasn't completed, or it failed.</div>
+  <div style="font-size:11px;color:#9aa0a6;">Try clicking <strong>↻ Regenerate</strong> above, or check task status in the dashboard.</div>
+</div>`;
+
 const variants = [
-  {
-    tag: 'Problem-aware',
-    title: 'Why 90% of Consulting Firms Plateau at $1.5M — and the Revenue System That Actually Breaks Through',
-    desc: descHTML(
-      'If 80% of your pipeline comes from referrals, you don\'t have a business — you have a dependency. In 90 minutes, I\'ll show you the exact system 1,400+ consulting firms used to break through the $1.5M ceiling and build predictable revenue that doesn\'t rely on who you know.',
-      [clientCase(QS_CLIENTS[0]), clientCase(QS_CLIENTS[1]), clientCase(QS_CLIENTS[2])],
-      [
-        'Why the referral ceiling exists — and the 3-phase system that breaks through it',
-        'How to run 30,000+ automated outreaches per month without cold calling or discounting',
-        'Live funnel math built with your firm\'s specific numbers'
-      ]
-    )
-  },
-  {
-    tag: 'Outcome-focused',
-    title: 'The Webinar Funnel That Generated $500M+ for Consulting Firms — Live Training',
-    desc: descHTML(
-      'The same acquisition system behind $500M+ in client revenue — now live, with your numbers built in.',
-      [clientCase(QS_CLIENTS[3]), clientCase(QS_CLIENTS[4]), clientCase(QS_CLIENTS[5])],
-      [
-        'The exact webinar funnel deployed across 1,400+ B2B firms — live, with your numbers',
-        'How clients scaled from referral-dependent to 30K+ outreaches/month on autopilot',
-        'Your 90-day revenue projection built live during the session'
-      ]
-    )
-  },
-  {
-    tag: 'Mechanism-led',
-    title: 'The 3-Phase Revenue Engine Replacing Referrals for $1M–$5M Consulting Firms',
-    desc: descHTML(
-      'Referrals work — until they don\'t. Here\'s the 3-phase system replacing them across 1,400+ consulting firms.',
-      [clientCase(QS_CLIENTS[6]), clientCase(QS_CLIENTS[7]), clientCase(QS_CLIENTS[8])],
-      [
-        'Phase 1: Market identification — pull your exact ICP from a database of 87M+ contacts',
-        'Phase 2: Automated webinar outreach — 30K+ targeted invites per month, zero cold calls',
-        'Phase 3: Pipeline conversion — the exact call flow that closes 25%+ of booked calls'
-      ]
-    )
-  }
+  { tag: 'Problem-aware',   title: 'Generating calendar invite copy…', desc: PLACEHOLDER_DESC },
+  { tag: 'Outcome-focused', title: 'Generating calendar invite copy…', desc: PLACEHOLDER_DESC },
+  { tag: 'Mechanism-led',   title: 'Generating calendar invite copy…', desc: PLACEHOLDER_DESC },
 ];
 
 function switchVariant(i) {
@@ -3076,27 +3034,104 @@ function runPersonalization(session) {
       const gtv = generated.webinarTitles.variants;
       const hostLabel = prospect.company || companyName;
 
+      // Renders all 9 sections of the format-rules structure when the LLM produces
+      // them. Each section is gracefully skipped if the field is missing or null,
+      // which is what Claude is instructed to do when no source data exists for it
+      // (e.g. proof_story is null when the brief has no verbatim numbers).
       function buildGeneratedDesc(v) {
-        const cta = `<div class="cal-desc-cta">
-  👉 <strong>Click Yes or Maybe</strong> to reserve your spot.<br>
-  Click <strong>No</strong> and we'll remove you from this invite series.
+        function escapeHTML(s) {
+          return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+        }
+        function section(label, html) {
+          return `<div class="cal-desc-section">
+  <div class="cal-desc-section-label">${label}</div>
+  ${html}
 </div>`;
-        const hook = `<div class="cal-desc-hook">${v.hook || ''}</div>`;
-        const bullets = v.bullets?.length ? `<div class="cal-desc-section">
-  <div class="cal-desc-section-label">What You'll Walk Away With</div>
-  <ul class="cal-desc-bullets">${v.bullets.map(function(b){ return '<li>' + b + '</li>'; }).join('')}</ul>
-</div>` : '';
-        const meta = `<div class="cal-desc-meta">
-  <span><strong>For:</strong> ${v.for_line || (icp.role + 's in ' + icp.industry)}</span>
-  <span><strong>Host:</strong> ${hostLabel}</span>
+        }
+        const parts = [];
+
+        // 1. Conditional opener (or fall back to legacy hook field)
+        const opener = v.conditional_opener || v.hook || '';
+        if (opener) parts.push(`<div class="cal-desc-hook">${escapeHTML(opener)}</div>`);
+
+        // 2. Proof story (skipped if null — LLM was told to null this when no numbers)
+        if (v.proof_story) {
+          parts.push(section('A real client story', `<div class="cal-desc-case">${escapeHTML(v.proof_story)}</div>`));
+        }
+
+        // 3. Contrast frame
+        if (v.contrast_frame) {
+          parts.push(`<div class="cal-desc-hook" style="font-style:italic;">${escapeHTML(v.contrast_frame)}</div>`);
+        }
+
+        // 4. Session promise
+        if (v.session_promise) {
+          parts.push(`<div class="cal-desc-hook">${escapeHTML(v.session_promise)}</div>`);
+        }
+
+        // 5. RSVP block — prefer LLM rsvp_block, fall back to canonical CTA
+        const rsvp = v.rsvp_block || `Click YES or MAYBE to confirm your attendance. Click Unsubscribe and we won't reach out again. Or visit the official registration page to sign up there.`;
+        parts.push(`<div class="cal-desc-cta">👉 ${escapeHTML(rsvp)}</div>`);
+
+        // 6. Discovery bullets
+        if (v.bullets?.length) {
+          const items = v.bullets.map(b => '<li>' + escapeHTML(b) + '</li>').join('');
+          parts.push(section("What You'll Walk Away With", `<ul class="cal-desc-bullets">${items}</ul>`));
+        }
+
+        // 7. Reframe line
+        if (v.reframe_line) {
+          parts.push(`<div class="cal-desc-hook" style="font-weight:600;">${escapeHTML(v.reframe_line)}</div>`);
+        }
+
+        // 8. Urgency close
+        if (v.urgency_close) {
+          parts.push(`<div class="cal-desc-hook">${escapeHTML(v.urgency_close)}</div>`);
+        }
+
+        // 9. P.S. replay hook
+        if (v.ps_replay) {
+          parts.push(`<div class="cal-desc-hook" style="color:#5f6368;font-size:13px;">${escapeHTML(v.ps_replay)}</div>`);
+        }
+
+        // Always append the meta footer (For / Host / Duration)
+        parts.push(`<div class="cal-desc-meta">
+  <span><strong>For:</strong> ${escapeHTML(v.for_line || (icp.role + 's in ' + icp.industry))}</span>
+  <span><strong>Host:</strong> ${escapeHTML(hostLabel)}</span>
   <span><strong>Duration:</strong> 90 min + live Q&amp;A · Join link sent on confirmation</span>
-</div>`;
-        return cta + hook + bullets + meta;
+</div>`);
+
+        return parts.join('');
       }
 
       variants[0] = { tag: 'Curiosity-first', title: gtv[0].title, desc: buildGeneratedDesc(gtv[0]) };
       variants[1] = { tag: 'Outcome-first',   title: gtv[1].title, desc: buildGeneratedDesc(gtv[1]) };
       variants[2] = { tag: 'Mechanism-first', title: gtv[2].title, desc: buildGeneratedDesc(gtv[2]) };
+
+      // Surface brain version + generation timestamp under the variant tag.
+      const meta = generated.webinarTitles._meta || {};
+      const brainCount = meta.brain?.principles_count;
+      const generatedAt = meta.generated_at;
+      const stampEl = document.getElementById('cal-brain-stamp');
+      if (stampEl) {
+        const parts = [];
+        if (typeof brainCount === 'number') parts.push(`Brain · ${brainCount} principles`);
+        if (generatedAt) {
+          const dt = new Date(generatedAt);
+          parts.push('generated ' + dt.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }));
+        }
+        if (meta.inputs) {
+          const i = meta.inputs;
+          const flags = [
+            i.has_case_study     ? 'proof' : null,
+            i.has_host_bio       ? 'bio'   : null,
+            i.has_brand_tagline  ? 'brand' : null,
+          ].filter(Boolean);
+          if (flags.length) parts.push('inputs: ' + flags.join(' · '));
+        }
+        stampEl.textContent = parts.join(' · ');
+        stampEl.style.display = parts.length ? 'inline' : 'none';
+      }
 
       // Re-apply with generated data
       switchVariant(0);

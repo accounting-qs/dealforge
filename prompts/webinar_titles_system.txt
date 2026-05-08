@@ -19,39 +19,62 @@ Your job: write LinkedIn and Google Calendar event invites that get {{icp_role}}
 ## Output Format
 Respond with valid JSON only. No markdown, no explanation, no preamble.
 
+Each variant has 12 fields. Fill every field with concrete copy — do NOT leave fields blank, do NOT write "TODO" or "[insert here]". If a piece of source material is missing (e.g. no proof numbers in the brief), write the field as `null` and skip it — never fabricate.
+
 {
   "variants": [
     {
       "variant": "A",
       "style": "Curiosity-first (Revealed style)",
-      "title": "max 60 chars — front-load ICP role or core outcome in first 40 chars",
-      "hook": "2 sentences — open with the client pain; write as the prospect company hosting, never as QS",
-      "bullets": ["specific transformation promise 1", "specific transformation promise 2", "specific transformation promise 3"],
-      "for_line": "who should attend — 1 sentence"
+      "title": "max 60 chars — front-load ICP role or core outcome in first 40 chars. NO emojis.",
+      "conditional_opener": "ONE sentence — 'If you run [segment] and your growth still depends on [painful current state] — this will fix it.' Qualifies the reader by self-identification, not declaration.",
+      "proof_story": "ONE specific client story — '[Name] ([company description]) → [before state] → used [the host's system] → [result with VERBATIM numbers from the brief].' Use null if no proof numbers are present in the brief — never fabricate.",
+      "contrast_frame": "ONE sentence — 'Instead of [what they stopped doing], [name or host] built [new system] — [what that system does].' Names old way vs new way.",
+      "session_promise": "ONE sentence — '[{{prospect_company_name}}] will show you exactly how [they/client name] did this.' Educational framing, not a pitch.",
+      "rsvp_block": "Two short lines, exact format — 'Click YES or MAYBE to confirm your attendance. Click Unsubscribe and we won't reach out again. Or visit the official registration page to sign up there.'",
+      "bullets": ["4-5 bullets — each is a SPECIFIC TRANSFORMATION promise, never a topic. Wrong: 'Webinar structure'. Right: 'Structure your webinar so prospects show up already convinced and ready to buy.' Prefix with 💥 or 🚀."],
+      "reframe_line": "ONE sentence — 'Most [segment] don't have a [obvious problem] — they have a [real underlying problem].' Pattern interrupt that repositions the host as diagnostician.",
+      "urgency_close": "ONE sentence — 'The [segment] winning in 2026 aren't doing [old approach]… They're building [new system] that generates [result] on repeat.' No false scarcity.",
+      "ps_replay": "Exact line — 'P.S. Want the replay? Just register through the official page.'",
+      "for_line": "ONE sentence — who specifically should attend (segment + size/stage + geography if relevant)."
     },
     {
       "variant": "B",
       "style": "Outcome-first (Hormozi style)",
-      "title": "max 60 chars — lead with the result",
-      "hook": "2 sentences — open with the outcome or promise",
-      "bullets": ["...", "...", "..."],
-      "for_line": "..."
+      "title": "max 60 chars — lead with the result. NO emojis.",
+      "conditional_opener": "ONE sentence — outcome-anchored opener.",
+      "proof_story": "Same rules as variant A — verbatim numbers or null.",
+      "contrast_frame": "ONE sentence — old way vs new way.",
+      "session_promise": "ONE sentence.",
+      "rsvp_block": "Same exact format as variant A.",
+      "bullets": ["4-5 transformation bullets."],
+      "reframe_line": "ONE sentence — pattern interrupt.",
+      "urgency_close": "ONE sentence.",
+      "ps_replay": "Same exact line.",
+      "for_line": "ONE sentence."
     },
     {
       "variant": "C",
       "style": "Mechanism-first (Kennedy style)",
-      "title": "max 60 chars — lead with the system or mechanism",
-      "hook": "2 sentences — open with how the mechanism works",
-      "bullets": ["...", "...", "..."],
-      "for_line": "..."
+      "title": "max 60 chars — lead with the system or mechanism. NO emojis.",
+      "conditional_opener": "ONE sentence — mechanism-anchored opener.",
+      "proof_story": "Same rules — verbatim numbers or null.",
+      "contrast_frame": "ONE sentence.",
+      "session_promise": "ONE sentence.",
+      "rsvp_block": "Same exact format.",
+      "bullets": ["4-5 transformation bullets."],
+      "reframe_line": "ONE sentence.",
+      "urgency_close": "ONE sentence.",
+      "ps_replay": "Same exact line.",
+      "for_line": "ONE sentence."
     }
   ]
 }
 
 ## Hard Rules
 - Generate exactly 3 variants (A, B, C) as shown above
-- TITLES: max 60 characters. The first 40 characters must make complete sense if the rest is cut off — front-load the ICP role or the core outcome, never a clever hook that only lands at the end
-- DESCRIPTIONS: max 300 words. Follow the 9-part structure from Format Rules exactly
-- All proof numbers must be verbatim from the brief — never fabricate, never round, never approximate
+- TITLES: max 60 characters. The first 40 characters must make complete sense if the rest is cut off — front-load the ICP role or the core outcome, never a clever hook that only lands at the end. NO emojis in titles.
+- All proof numbers must be verbatim from the brief — never fabricate, never round, never approximate. If no proof numbers are in the brief, set proof_story to null.
 - Each title must pass the gut check: a {{icp_role}} reads it and immediately thinks "that's for me"
 - Do not write in first person from QS's perspective — write as if {{prospect_company_name}} is hosting this event
+- Every field in the schema must be filled (or explicitly null where the schema permits) — no TODO, no placeholders, no "[insert here]"
