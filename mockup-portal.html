@@ -768,6 +768,15 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
         <button class="filter-action-btn filter-action-rerun" onclick="rerunApolloSearch()">🔄 Re-run Apollo Search</button>
         <span class="filter-status" id="filter-status"></span>
       </div>
+      <div id="rerun-progress" style="display:none;margin-top:10px;">
+        <div style="display:flex;justify-content:space-between;font-size:11px;color:#a1a1aa;margin-bottom:4px;">
+          <span id="rerun-progress-msg">Starting…</span>
+          <span id="rerun-progress-pct">0%</span>
+        </div>
+        <div style="background:rgba(255,255,255,0.06);border-radius:999px;height:6px;overflow:hidden;">
+          <div id="rerun-progress-bar" style="background:linear-gradient(90deg,#34d399,#86efac);height:100%;width:0%;transition:width 400ms ease-out;"></div>
+        </div>
+      </div>
       <div id="tam-kpi-line" style="display:none;font-size:12px;color:#52525b;margin-top:10px;line-height:1.5;"></div>
       <div id="lead-diagnostics-panel" class="lead-diag" style="display:none;"></div>
 
@@ -3543,25 +3552,96 @@ function saveFiltersOnly() {
     .catch(function(e){ _showFilterStatus('Error: ' + e.message, '#f87171'); });
 }
 
+// Polls the job and hot-reloads the lead table when the rerun completes.
+// Server writes progress to extracted_data._generated.apollo_rerun every ~700ms
+// during the search; the UI polls every 2s and renders a determinate progress bar.
+// When status flips to 'completed' we fetch the fresh job once more and call
+// _reRunPersonalization to re-render the page in place — no full reload.
+function _showRerunProgress(progress, message) {
+  var box = document.getElementById('rerun-progress');
+  if (!box) return;
+  box.style.display = 'block';
+  var bar = document.getElementById('rerun-progress-bar');
+  var pct = document.getElementById('rerun-progress-pct');
+  var msg = document.getElementById('rerun-progress-msg');
+  if (bar) bar.style.width = (progress || 0) + '%';
+  if (pct) pct.textContent = (progress || 0) + '%';
+  if (msg) msg.textContent = message || '';
+}
+function _hideRerunProgress() {
+  var box = document.getElementById('rerun-progress');
+  if (box) box.style.display = 'none';
+}
+
+var _rerunPollTimer = null;
+function _startRerunPoll(jobId) {
+  if (_rerunPollTimer) clearInterval(_rerunPollTimer);
+  var stuckCounter = 0;
+  var lastPct = -1;
+  _rerunPollTimer = setInterval(async function() {
+    try {
+      var r = await fetch('/api/jobs/' + encodeURIComponent(jobId) + '?_t=' + Date.now(), { cache: 'no-store' });
+      if (!r.ok) return;
+      var job = await r.json();
+      var rr = job.extracted_data && job.extracted_data._generated && job.extracted_data._generated.apollo_rerun;
+      if (!rr) return;
+      _showRerunProgress(rr.progress || 0, rr.message || '');
+      // Sanity guard — if progress sits at the same value for >90s, give up so the user isn't stuck
+      if (rr.progress === lastPct) { stuckCounter++; }
+      else { stuckCounter = 0; lastPct = rr.progress; }
+      if (stuckCounter > 45) {
+        clearInterval(_rerunPollTimer); _rerunPollTimer = null;
+        _showFilterStatus('Search stalled — please retry', '#f87171');
+        _hideRerunProgress();
+        return;
+      }
+      if (rr.status === 'completed') {
+        clearInterval(_rerunPollTimer); _rerunPollTimer = null;
+        _showFilterStatus('✓ ' + (rr.message || 'Apollo search complete'), '#4ade80');
+        // Hot-reload the lead table in place using the existing personalization path
+        if (typeof window._reRunPersonalization === 'function' && typeof buildCompatSession === 'function') {
+          window._reRunPersonalization(buildCompatSession(job));
+        }
+        // Hide the bar a moment later so users see the 100%
+        setTimeout(_hideRerunProgress, 1500);
+      } else if (rr.status === 'failed') {
+        clearInterval(_rerunPollTimer); _rerunPollTimer = null;
+        _showFilterStatus('✗ ' + (rr.message || 'Apollo search failed'), '#f87171');
+        _hideRerunProgress();
+      }
+    } catch (e) {
+      console.warn('[rerun-poll]', e.message);
+    }
+  }, 2000);
+}
+
 function rerunApolloSearch() {
   var jobId = _getPortalJobId();
   if (!jobId) { _showFilterStatus('⚠️ No job ID in URL', '#fbbf24'); return; }
-  _showFilterStatus('Saving & starting Apollo search…', '#60a5fa');
+  _showFilterStatus('Saving filters…', '#60a5fa');
+  _showRerunProgress(0, 'Saving filters…');
   fetch('/api/jobs/' + encodeURIComponent(jobId) + '/icp', {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(window._icpEditData)
   }).then(function(r){ return r.json(); })
     .then(function(d){
-      if (!d.ok) { _showFilterStatus('Save failed: ' + (d.error || 'unknown'), '#f87171'); return; }
+      if (!d.ok) { _showFilterStatus('Save failed: ' + (d.error || 'unknown'), '#f87171'); _hideRerunProgress(); return; }
+      _showRerunProgress(2, 'Filters saved — starting Apollo search…');
       return fetch('/api/jobs/' + encodeURIComponent(jobId) + '/rerun-apollo', { method: 'POST' });
     })
     .then(function(r){ if (r) return r.json(); })
     .then(function(d){
-      if (d && d.ok) _showFilterStatus('🔄 Apollo search running — refresh in a few minutes to see new leads', '#4ade80');
-      else if (d) _showFilterStatus('Error: ' + (d.error || 'unknown'), '#f87171');
+      if (d && d.ok) {
+        _showFilterStatus('🔄 Apollo search running…', '#60a5fa');
+        _showRerunProgress(5, 'Apollo search running…');
+        _startRerunPoll(jobId);
+      } else if (d) {
+        _showFilterStatus('Error: ' + (d.error || 'unknown'), '#f87171');
+        _hideRerunProgress();
+      }
     })
-    .catch(function(e){ _showFilterStatus('Error: ' + e.message, '#f87171'); });
+    .catch(function(e){ _showFilterStatus('Error: ' + e.message, '#f87171'); _hideRerunProgress(); });
 }
 
 </script>

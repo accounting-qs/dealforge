@@ -874,7 +874,7 @@ function normalizePerson(p, source) {
 // are stripped. mixed_companies/search by exact name returns website_url, primary_domain,
 // and linkedin_url for free. We never call /organizations/enrich (which would consume
 // credits). Employee count stays unknown — caller fills Size from the ICP filter range.
-async function enrichLeadsWithCompanyData(leads) {
+async function enrichLeadsWithCompanyData(leads, progressCb) {
   const APOLLO_KEY = process.env.APOLLO_API_KEY;
   if (!APOLLO_KEY || !leads.length) return leads;
 
@@ -883,6 +883,7 @@ async function enrichLeadsWithCompanyData(leads) {
 
   const orgByName = new Map();
   const CONCURRENCY = 5;
+  let done = 0;
 
   for (let i = 0; i < uniqueCompanies.length; i += CONCURRENCY) {
     const batch = uniqueCompanies.slice(i, i + CONCURRENCY);
@@ -912,6 +913,14 @@ async function enrichLeadsWithCompanyData(leads) {
         // Per-company failures are non-fatal — lead still renders without website/linkedin
       }
     }));
+    done = Math.min(uniqueCompanies.length, done + batch.length);
+    // Hydration phase = 65 → 90% of overall progress; 25% range distributed across companies.
+    // Awaited so a stale progress write can't land after the persist step at the end
+    // of rerun-apollo and clobber the final status='completed' state.
+    if (progressCb) {
+      const pct = 65 + Math.round((done / uniqueCompanies.length) * 25);
+      await progressCb({ progress: pct, message: `Looking up company data (${done}/${uniqueCompanies.length})…` });
+    }
   }
 
   let hits = 0;
@@ -1137,7 +1146,7 @@ function relaxFilter(payload, filterName) {
   }
 }
 
-async function guaranteedLeadSearch(sanitizedPayload, confidenceMap, relaxationOrder) {
+async function guaranteedLeadSearch(sanitizedPayload, confidenceMap, relaxationOrder, progressCb) {
   const MIN_LEADS = 25;
   const MAX_ATTEMPTS = 6;
   const APOLLO_KEY = process.env.APOLLO_API_KEY;
@@ -1213,6 +1222,7 @@ async function guaranteedLeadSearch(sanitizedPayload, confidenceMap, relaxationO
   };
 
   // ── STEP 1: Pre-flight company check ──
+  if (progressCb) await progressCb({ progress: 10, message: 'Checking the candidate company pool…' });
   const preflight = await preflightCompanyCheck(currentPayload);
   log.push({ step: 'preflight', companiesFound: preflight.companiesFound });
 
@@ -1235,8 +1245,10 @@ async function guaranteedLeadSearch(sanitizedPayload, confidenceMap, relaxationO
   }
 
   // ── STEP 2: Initial people search ──
+  if (progressCb) await progressCb({ progress: 20, message: 'Running initial Apollo search…' });
   let results = await apolloPeopleSearch(currentPayload);
   log.push({ step: 'initial_search', totalResults: results.total_entries, filtersUsed: Object.keys(currentPayload) });
+  if (progressCb) await progressCb({ progress: 30, message: `Initial search: ${results.total_entries.toLocaleString()} contacts` });
 
   // ── STEP 3: Progressive relaxation loop ──
   let relaxIdx = 0;
@@ -1280,6 +1292,7 @@ async function guaranteedLeadSearch(sanitizedPayload, confidenceMap, relaxationO
 
     const r = relaxFilter(currentPayload, filterToRelax);
     log.push({ step: 'relax', attempt, filter: filterToRelax, action: r.action, before: r.before, after: r.after });
+    if (progressCb) await progressCb({ progress: Math.min(60, 30 + attempt * 5), message: `Broadening ${filterToRelax} (retry ${attempt})…` });
 
     results = await apolloPeopleSearch(currentPayload);
     log.push({ step: 'search', attempt, totalResults: results.total_entries });
@@ -1310,7 +1323,7 @@ async function guaranteedLeadSearch(sanitizedPayload, confidenceMap, relaxationO
   };
 }
 
-async function fetchLeadsFromApollo(icp) {
+async function fetchLeadsFromApollo(icp, progressCb) {
   const APOLLO_KEY = process.env.APOLLO_API_KEY;
   if (!APOLLO_KEY) { console.log('[Apollo] No API key — skipping'); return null; }
 
@@ -1367,9 +1380,10 @@ async function fetchLeadsFromApollo(icp) {
   console.log('[Apollo] sanitizedPayload:', JSON.stringify(sanitizedPayload));
   console.log('[Apollo] Starting v3 guaranteed lead search...');
   const result = await guaranteedLeadSearch(
-    sanitizedPayload, 
-    icp.confidence_map || {}, 
-    icp.relaxation_order || defaultRelaxationOrder
+    sanitizedPayload,
+    icp.confidence_map || {},
+    icp.relaxation_order || defaultRelaxationOrder,
+    progressCb
   );
 
   console.log(`[Apollo] v3 Search Complete: ${result.leads.length} leads returned. TAM: ${result.totalAvailable}. Was relaxed: ${result.wasRelaxed}`);
@@ -1377,7 +1391,8 @@ async function fetchLeadsFromApollo(icp) {
   // Hydrate website + company LinkedIn via mixed_companies/search (no credit cost).
   // People search strips these fields on this plan tier — without this step the UI
   // shows "—" in the Website and LinkedIn columns even when the data exists in Apollo.
-  await enrichLeadsWithCompanyData(result.leads);
+  if (progressCb) await progressCb({ progress: 65, message: 'Hydrating website + company LinkedIn…' });
+  await enrichLeadsWithCompanyData(result.leads, progressCb);
 
   // Expose wasRelaxed and relaxationLog at top level for handleLeadList
   return {
@@ -3085,10 +3100,44 @@ const server = http.createServer(async (req, res) => {
       res.end(JSON.stringify({ ok: true, message: 'Apollo search started — poll job status for results' }));
       // Background: run search and save results
       (async () => {
+        // Throttled progress writer — at most one DB patch per 700ms unless progress
+        // hits 100. The frontend polls every 2s anyway, so finer-grained writes burn
+        // Supabase round-trips for no visible benefit.
+        let lastWrite = 0;
+        const writeProgress = async (snapshot) => {
+          const now = Date.now();
+          const isFinal = snapshot.progress >= 100 || snapshot.status === 'completed' || snapshot.status === 'failed';
+          if (!isFinal && now - lastWrite < 700) return;
+          lastWrite = now;
+          try {
+            const fresh = await getJob(jobId);
+            const ext = fresh?.extracted_data || {};
+            const updated = {
+              ...ext,
+              _generated: {
+                ...(ext._generated || {}),
+                apollo_rerun: { ...snapshot, updated_at: new Date().toISOString() }
+              }
+            };
+            await supabaseRequest('PATCH', `/rest/v1/jobs?id=eq.${jobId}`,
+              { extracted_data: updated },
+              { 'Prefer': 'return=minimal' }
+            );
+          } catch (e) {
+            // Progress writes are best-effort — never fail the search because we couldn't update progress
+            console.warn('[rerun-apollo] progress write failed:', e.message);
+          }
+        };
         try {
           console.log(`[rerun-apollo] Starting for job ${jobId}`);
-          const result = await fetchLeadsFromApollo(icp);
+          await writeProgress({ status: 'running', progress: 5, message: 'Starting Apollo search…' });
+          const result = await fetchLeadsFromApollo(icp, snapshot =>
+            writeProgress({ status: 'running', ...snapshot })
+          );
           if (result && result.leads) {
+            // Force the 95% write through even if it fell within the 700ms throttle.
+            lastWrite = 0;
+            await writeProgress({ status: 'running', progress: 95, message: 'Saving results…' });
             // Mirror handleLeadList's outreach calculation so the "Recommended/month"
             // stat refreshes with the rerun. TAM > 300K → cap at 100K/mo;
             // otherwise exhaust the market in 3 months.
@@ -3097,11 +3146,12 @@ const server = http.createServer(async (req, res) => {
               ? 100000
               : tam > 0 ? Math.max(1000, Math.round(tam / 3 / 1000) * 1000) : 30000;
 
-            const existingData = job.extracted_data || {};
+            // Re-read latest extracted_data so we don't clobber progress writes that
+            // landed during the search (writeProgress patches extracted_data too).
+            const fresh = await getJob(jobId);
+            const existingData = fresh?.extracted_data || {};
             // Field names here MUST match what mockup-portal.html reads from
             // existingGen (see line ~2074: `existingGen.leads`, `tam_total`, etc).
-            // Earlier this block wrote `lead_list` instead of `leads`, so the rerun
-            // never updated the visible lead table.
             const updatedData = {
               ...existingData,
               _generated: {
@@ -3111,7 +3161,13 @@ const server = http.createServer(async (req, res) => {
                 tam_source:           result.tamSource,
                 recommendedOutreach:  recommendedOutreach,
                 leadsTaskStatus:     'completed',
-                apollo_diagnostics:   result.diagnostics
+                apollo_diagnostics:   result.diagnostics,
+                apollo_rerun:         {
+                  status:     'completed',
+                  progress:   100,
+                  message:    `Done — ${result.leads.length} leads, TAM ${tam.toLocaleString()}`,
+                  finished_at: new Date().toISOString()
+                }
               }
             };
             await supabaseRequest('PATCH', `/rest/v1/jobs?id=eq.${jobId}`,
@@ -3121,9 +3177,11 @@ const server = http.createServer(async (req, res) => {
             console.log(`[rerun-apollo] Job ${jobId}: saved ${result.leads.length} leads, TAM=${tam}, outreach=${recommendedOutreach}/mo`);
           } else {
             console.warn(`[rerun-apollo] Job ${jobId}: search returned no result`);
+            await writeProgress({ status: 'failed', progress: 100, message: 'Apollo search returned no result.' });
           }
         } catch(e) {
           console.error(`[rerun-apollo] Job ${jobId} error:`, e.message);
+          await writeProgress({ status: 'failed', progress: 100, message: 'Search failed: ' + e.message });
         }
       })();
     } catch(e) {
