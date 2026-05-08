@@ -786,82 +786,19 @@ function fmtEmp(n) {
   if (n <= 1000) return `~${Math.round(n/100)*100} emp`;
   return `${Math.round(n/1000)}K+ emp`;
 }
-// Global TAM estimator — Apollo's global people/search requires a higher plan tier.
-// We estimate the global reachable market from known industry/size data.
-// These are conservative global counts of relevant decision-makers in Apollo's database.
-function estimateGlobalTAM(icp) {
-  // Industry base: sourced from the single free-text apollo_keyword (preferred)
-  // or the legacy industry field. apollo_industries (array) is no longer produced
-  // by the extractor — older jobs may still have it, so read as a fallback.
-  const industries = (typeof icp?.apollo_keyword === 'string' && icp.apollo_keyword.trim())
-    ? [icp.apollo_keyword.trim()]
-    : (Array.isArray(icp?.apollo_industries) && icp.apollo_industries.length
-        ? icp.apollo_industries
-        : [(icp?.industry || '')]);
-  function getIndBase(s) {
-    s = s.toLowerCase();
-    if (/coach/.test(s)) return 4000000;
-    if (/consult/.test(s)) return 2500000;
-    if (/agency|advertis|marketing/.test(s)) return 1200000;
-    if (/ecommerce|retail|consumer/.test(s)) return 1500000;
-    if (/manufactur/.test(s)) return 950000;
-    if (/software|tech|saas|information technology/.test(s)) return 900000;
-    if (/real.estate/.test(s)) return 750000;
-    if (/health|medical|pharma/.test(s)) return 650000;
-    if (/financ|banking|insurance/.test(s)) return 550000;
-    if (/legal|law/.test(s)) return 380000;
-    if (/government|public.sector|municipal/.test(s)) return 280000;
-    if (/education|school|university/.test(s)) return 420000;
-    if (/nonprofit|ngo/.test(s)) return 200000;
-    if (/construct|architect/.test(s)) return 220000;
-    if (/transport|logistics/.test(s)) return 310000;
-    if (/hospitality|hotel/.test(s)) return 180000;
-    if (/telecom/.test(s)) return 120000;
-    return 1100000;
-  }
-  // Cap at first 2 industries — additional industries are likely overlapping markets
-  // More than 2 would compound the base unrealistically (old formula produced 8.5M for 3+ industries)
-  const cappedIndustries = industries.slice(0, 2);
-  let base = cappedIndustries.reduce((sum, ind, i) => sum + getIndBase(ind) * Math.pow(0.6, i), 0);
 
-  // Size adjustment: larger company = fewer companies but same contact density
-  const sizeStr = (icp?.company_size || '').toLowerCase();
-  let sizeMult = 0.30; // default: 10-50 range
-  if (/solo|1.person|1.10|under 10/.test(sizeStr)) sizeMult = 0.42;
-  else if (/10.50|startup/.test(sizeStr)) sizeMult = 0.28;
-  else if (/50.200|mid.size/.test(sizeStr)) sizeMult = 0.18;
-  else if (/200.500|mid.market/.test(sizeStr)) sizeMult = 0.08;
-  else if (/500\+?|enterprise/.test(sizeStr)) sizeMult = 0.04;
-  // Revenue-based sizing (e.g. "$25M+" maps roughly to 50+ employees)
-  else if (/\$25m|\$50m|\$100m|million/.test(sizeStr)) sizeMult = 0.18;
-
-  // Geography adjustment — prefer apollo_geography (clean array) over raw geography string
-  const geoArr = Array.isArray(icp?.apollo_geography) && icp.apollo_geography.length ? icp.apollo_geography : null;
-  const geo = geoArr ? geoArr.join(' ').toLowerCase() : (icp?.geography || '').toLowerCase();
-  let geoMult = 1.0;
-  if (geo && !/global|worldwide|international/.test(geo)) {
-    // Count how many distinct markets
-    const marketCount = geoArr ? geoArr.length : 1;
-    if (/united states|usa/.test(geo)) geoMult = 0.35 * Math.min(marketCount, 3) / 1;
-    else if (/canada/.test(geo) && marketCount === 1) geoMult = 0.05;
-    else if (/uk|united kingdom/.test(geo) && marketCount === 1) geoMult = 0.07;
-    else if (/australia/.test(geo) && marketCount === 1) geoMult = 0.04;
-    else if (/germany|france/.test(geo) && marketCount === 1) geoMult = 0.06;
-    else {
-      // Multiple countries or unlisted single country — scale by count, capped at 0.5
-      geoMult = Math.min(0.50, marketCount * 0.06);
-    }
-    geoMult = Math.min(1.0, geoMult); // never exceed global
-  }
-
-  const raw = Math.round(base * sizeMult * geoMult);
-  // Round to a clean number — nearest 5K below 100K, nearest 25K above
-  // Hard cap at 500K: if heuristic says more, it's almost certainly wrong
-  // (Apollo's org search returns real counts; this is only used as a fallback)
-  const capped = Math.min(500000, raw);
-  if (capped < 10000) return Math.round(capped / 500) * 500;
-  if (capped < 100000) return Math.round(capped / 5000) * 5000;
-  return Math.round(capped / 25000) * 25000;
+// Collapses Apollo's apollo_employee_ranges (e.g. ['1,10','11,50','51,200']) into a
+// single display string for the Size column when exact employee counts aren't
+// returned by search. ['1,10','11,50','51,200'] → '1–200 emp'.
+function formatEmployeeRangeBand(ranges) {
+  if (!Array.isArray(ranges) || !ranges.length) return '';
+  const bounds = ranges
+    .map(r => String(r).split(',').map(n => parseInt(n, 10)))
+    .filter(([lo, hi]) => Number.isFinite(lo) && Number.isFinite(hi));
+  if (!bounds.length) return '';
+  const lo = Math.min(...bounds.map(b => b[0]));
+  const hi = Math.max(...bounds.map(b => b[1]));
+  return lo === hi ? `${lo} emp` : `${lo}–${hi} emp`;
 }
 const PARKING_SIGNALS = ['domain for sale','this domain is for sale','buy this domain','coming soon','under construction','parked by','domain parking'];
 // ── Jina AI Reader — JS-rendering-aware website scraper ─────────────────────
@@ -901,97 +838,6 @@ async function websiteQualityCheck(url, timeoutMs = 7000) {
   // Jina already strips nav/footer/boilerplate — just trim to 500 chars
   return { excerpt: text.slice(0, 500) };
 }
-async function classifyLeadsWithHaiku(leads, briefOrIcp) {
-  if (!leads.length) return [];
-  const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-  const brief = briefOrIcp && briefOrIcp.icp ? briefOrIcp : { icp: briefOrIcp || {} };
-  const icp = brief.icp || {};
-  const context = brief.context || {};
-  const angle = brief.angle || {};
-  const leadProfile = buildLeadProfile(brief);
-
-  // The sector is the primary classification signal.
-  // Titles/seniority are already pre-filtered by Apollo — we only need to confirm
-  // the company is genuinely in the right industry sector.
-  const targetSectors = (typeof icp.apollo_keyword === 'string' && icp.apollo_keyword.trim())
-    ? [icp.apollo_keyword.trim()]
-    : (Array.isArray(icp.apollo_industries) && icp.apollo_industries.length
-        ? icp.apollo_industries
-        : [icp.industry || icp.role || 'the target sector']);
-  const targetSector  = targetSectors.join(', ');
-  const targetTitles  = icp.apollo_titles?.join(', ') || icp.role || null;
-  const targetGeo     = icp.apollo_geography?.join(', ') || icp.geography || null;
-  const targetProfile = icp.company_size || null;
-  const targetPain    = brief.customer_pain || angle.pain || icp.target_pain || null;
-  const targetGoal    = brief.goals || context.goals || icp.target_goal || null;
-  const targetPreferences = leadProfile.strong_preferences.join(', ') || null;
-  const targetNegatives = leadProfile.negatives.join(', ') || null;
-  const targetHypotheses = leadProfile.search_hypotheses.join(', ') || null;
-  const systemPrompt = `You are a strict B2B lead classifier. Your job: determine if each company matches the target ICP on TWO dimensions — sector AND geography (if specified).
-
-Rules:
-1. PRIMARY SIGNAL — website content: does the copy, tone, and services described match ANY listed target sector? An agency writes about campaigns, clients, creative work. A university mentions students, courses, faculty, admissions. A consulting firm mentions strategy, engagements, frameworks.
-2. SECONDARY SIGNAL — LinkedIn headline: if the person's headline explicitly references the company type or sector, weight it heavily.
-3. SECTOR MISMATCH = NO MATCH. A CEO title does not overcome a wrong-sector company.
-4. GEOGRAPHY CHECK (SOFT): If TARGET GEOGRAPHY is specified AND the company's location is CLEARLY and CONFIDENTLY in the wrong region (e.g., ".co.au" domain for a Baltic ICP, website explicitly says "serving Africa only") → reject. When geography is ambiguous, unclear, or the company operates internationally → INCLUDE with confidence "low". Do NOT reject on geography alone if you are less than highly confident. When in doubt, include the lead — the rep will verify.
-5. NO SIGNAL RULE: If no website content AND no headline → default match: true with confidence "low" (benefit of the doubt — better to review than miss).
-6. CONFIDENCE: "high" = website/headline clearly confirms BOTH sector AND geo. "medium" = sector confirmed, geo plausible but not explicit. "low" = company name plausible, geo ambiguous, or only partial confirmation.
-7. Return valid JSON only. No markdown.`;
-
-  try {
-    const msg = await anthropic.messages.create({
-      model: 'claude-sonnet-4-6', max_tokens: 2000, temperature: 0,
-      system: systemPrompt,
-      messages: [{ role: 'user', content: userMsg }]
-    });
-    const raw = msg.content[0].text;
-    return JSON.parse(raw.match(/\[[\s\S]*\]/)?.[0] || raw);
-  } catch(e) {
-    console.warn('[Haiku classify] Failed:', e.message);
-    return leads.map((_, i) => ({ index: i+1, match: false, confidence: 'low', reason: 'classification unavailable' }));
-  }
-
-  return out;
-}
-// ── Path A: Industry pre-filter — fast keyword gate before AI classifier ─────
-// Removes obvious mismatches by company name before spending tokens on Haiku.
-// Relaxed: requires 2+ keyword matches to reject (1 match was too aggressive —
-// e.g., "TechConsult" got blocked because it contained "tech" for a consulting ICP).
-function preFilterLeadsByIndustry(leads, icp) {
-  const industry = (icp?.industry || '').toLowerCase();
-  const BLOCKLISTS = {
-    consulting: /\b(learning|e-?learning|academy|training|school|university|college|institute|software|saas|platform|apps?\b|tech\b|media|publishing|publisher|staffing|recruiting|recruitment|talent|insurance|banking|clinic|hospital|healthcare|dental|retail|store|restaurant|hotel|freight|logistics|shipping|transport)\b/i,
-    coaching:   /\b(software|saas|platform|banking|insurance|retail|manufacturing|logistics|shipping|freight|staffing|recruiting)\b/i,
-    software:   /\b(consulting|advisory|coaching|therapy|dental|clinic|hospital|school|university|college|staffing|recruiting)\b/i,
-    agency:     /\b(school|university|hospital|clinic|banking|insurance|manufacturing|logistics|recruiting|staffing|learning)\b/i,
-  };
-  const pattern = BLOCKLISTS[industry];
-  if (!pattern) return leads;
-
-  // Count matches per lead — require 2+ hits to reject
-  // Single-word matches are too prone to false positives (e.g. "TechConsult" for consulting ICP)
-  const out = leads.filter(l => {
-    const name = l.company || '';
-    const words = name.match(/\b\w+\b/g) || [];
-    const hits = words.filter(w => pattern.test(w)).length;
-    if (hits >= 2) {
-      console.log(`[PreFilter] Excluded "${name}" — ${hits} blocklist hits for ${industry} ICP`);
-      return false;
-    }
-    return true;
-  });
-
-  // Safety escape: if pre-filter would remove >80% of leads, bypass it entirely
-  // Better to let Haiku classify a few bad leads than return 0 leads
-  if (out.length < leads.length * 0.20 && leads.length >= 5) {
-    console.warn(`[PreFilter] Bypassed — would have removed ${leads.length - out.length}/${leads.length} leads (>80%). Sending all to Haiku.`);
-    return leads;
-  }
-
-  console.log(`[PreFilter] ${out.length}/${leads.length} passed (2+ keyword threshold)`);
-  return out;
-}
-
 function normalizePerson(p, source) {
   // Normalize contact shape from people/search and contacts/search into one format.
   // Apollo mixed_people/api_search returns obfuscated data on some plans:
@@ -1030,120 +876,62 @@ function normalizePerson(p, source) {
   };
 }
 
-// ── ICP Translation Agent — converts human-readable ICP to Apollo-optimized params ──
-// Runs before every Apollo search. Uses Claude Haiku (~$0.001/call) to:
-//   1. Expand job titles into 10-15 LinkedIn-indexed variants (primary + extended tiers)
-//   2. Map industry descriptions to Apollo's taxonomy
-//   3. Flag if employee range may be too restrictive for the geography
-// Result: reliable lead retrieval across all prospect types (EU pharma, US tech, APAC, etc.)
-async function translateIcpForApollo(icp) {
-  const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+// ── Company hydration — fills website + company LinkedIn from org-name search ──
+// People search (mixed_people/api_search) returns only first_name + obfuscated last,
+// title, and organization.name on this plan tier — website/linkedin/employee count
+// are stripped. mixed_companies/search by exact name returns website_url, primary_domain,
+// and linkedin_url for free. We never call /organizations/enrich (which would consume
+// credits). Employee count stays unknown — caller fills Size from the ICP filter range.
+async function enrichLeadsWithCompanyData(leads) {
+  const APOLLO_KEY = process.env.APOLLO_API_KEY;
+  if (!APOLLO_KEY || !leads.length) return leads;
 
-  const rawTitles     = Array.isArray(icp?.apollo_titles)     && icp.apollo_titles.length     ? icp.apollo_titles     : (icp?.role ? [icp.role] : []);
-  // apollo_keyword (single free-text phrase) is the new schema — fall back to legacy
-  // apollo_industries array for jobs created before the cutover.
-  const rawIndustries = (typeof icp?.apollo_keyword === 'string' && icp.apollo_keyword.trim())
-    ? [icp.apollo_keyword.trim()]
-    : (Array.isArray(icp?.apollo_industries) && icp.apollo_industries.length
-        ? icp.apollo_industries
-        : (icp?.industry ? [icp.industry] : []));
-  const rawGeo        = Array.isArray(icp?.apollo_geography)  && icp.apollo_geography.length  ? icp.apollo_geography  : [];
+  const uniqueCompanies = [...new Set(leads.map(l => l.company).filter(Boolean))];
+  if (!uniqueCompanies.length) return leads;
 
-  if (!rawTitles.length && !rawIndustries.length) {
-    console.log('[ICP Translator] No titles or keyword to translate — skipping');
-    return icp; // nothing to translate, return as-is
+  const orgByName = new Map();
+  const CONCURRENCY = 5;
+
+  for (let i = 0; i < uniqueCompanies.length; i += CONCURRENCY) {
+    const batch = uniqueCompanies.slice(i, i + CONCURRENCY);
+    await Promise.all(batch.map(async (name) => {
+      try {
+        const res = await fetch('https://api.apollo.io/api/v1/mixed_companies/search', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-api-key': APOLLO_KEY },
+          body: JSON.stringify({ q_organization_name: name, per_page: 1, page: 1 }),
+          signal: AbortSignal.timeout(8000)
+        });
+        if (!res.ok) return;
+        const d = await res.json();
+        const o = d.organizations?.[0];
+        if (!o) return;
+        // Confirm it's actually the same company — Apollo's name search is fuzzy and
+        // can return a near-match for unrelated firms. Require the searched name to
+        // appear in the matched org's name (case-insensitive) to avoid false hydration.
+        const a = name.toLowerCase().replace(/[^a-z0-9]/g, '');
+        const b = (o.name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+        if (!a || !b || (!b.includes(a) && !a.includes(b))) return;
+        orgByName.set(name, {
+          website: o.website_url || (o.primary_domain ? 'https://' + o.primary_domain : null),
+          company_linkedin_url: o.linkedin_url || null
+        });
+      } catch (e) {
+        // Per-company failures are non-fatal — lead still renders without website/linkedin
+      }
+    }));
   }
 
-  // Fallback prompt in case DB fetch fails
-  const fallbackPrompt = `You are an expert at translating B2B ICP (Ideal Customer Profile) data into Apollo.io search parameters.
-
-Apollo.io indexes job titles exactly as they appear on LinkedIn profiles. Many professional titles are abbreviated, shortened, or phrased differently.
-
-Given this ICP:
-- Target job titles: ${JSON.stringify(rawTitles)}
-- Industries: ${JSON.stringify(rawIndustries)}
-- Geography: ${JSON.stringify(rawGeo)}
-- Company size: ${icp?.company_size || 'not specified'}
-- Employee ranges (Apollo format): ${JSON.stringify(icp?.apollo_employee_ranges || [])}
-
-You have three axes to target people:
-1. Seniority (person_seniorities[]): Closed enum. Valid values are: "owner", "founder", "c_suite", "partner", "vp", "head", "director", "manager", "senior", "entry", "intern".
-2. Department (person_department_or_subdepartments[]): Closed enum. Common values: "c_suite", "product", "engineering_technical", "design", "education", "finance", "human_resources", "information_technology", "legal", "marketing", "medical_health", "operations", "sales", "consulting".
-3. Titles (person_titles[]): Free text. Use real LinkedIn conventions, abbreviations (CMO, CTO), and avoid overly generic titles alone.
-
-For industries, generate a SINGLE 'q_keywords' string (e.g. "saas b2b software") instead of an industry tag, because Apollo org search uses strict AND logic for tags.
-For geography (organization_locations[]), use English names (e.g. "United States", "Mexico").
-
-Your task is to generate:
-1. An "apollo_payload" object containing the optimal search filters for this ICP.
-2. A "confidence_map" mapping each parameter to "high", "medium", or "low" confidence.
-3. A "relaxation_order" array specifying the order in which parameters should be relaxed (removed/expanded) if we get fewer than 25 leads. Relax the least important or most restrictive filters first.
-
-Output ONLY valid JSON matching this exact schema:
-{
-  "apollo_payload": {
-    "person_titles": [],
-    "person_seniorities": [],
-    "person_department_or_subdepartments": [],
-    "q_keywords": "",
-    "organization_locations": [],
-    "organization_num_employees_ranges": [],
-    "contact_email_status": ["verified"],
-    "per_page": 25
-  },
-  "confidence_map": {
-    "person_titles": "high|medium|low",
-    "person_seniorities": "high|medium|low",
-    "person_department_or_subdepartments": "high|medium|low",
-    "q_keywords": "high|medium|low",
-    "organization_locations": "high|medium|low",
-    "organization_num_employees_ranges": "high|medium|low"
-  },
-  "relaxation_order": [ "q_keywords", "organization_num_employees_ranges", "person_department_or_subdepartments", "organization_locations", "person_seniorities", "person_titles" ]
-}`;
-
-  let finalPrompt = fallbackPrompt;
-  try {
-    const r = await supabaseRequest('GET', '/rest/v1/prompts?slug=eq.icp_translation&limit=1');
-    if (r && r.body && Array.isArray(r.body) && r.body.length > 0 && r.body[0].content) {
-      finalPrompt = r.body[0].content
-        .replace(/\{\{\s*rawTitles\s*\}\}/g, JSON.stringify(rawTitles))
-        .replace(/\{\{\s*rawIndustries\s*\}\}/g, JSON.stringify(rawIndustries))
-        .replace(/\{\{\s*rawGeo\s*\}\}/g, JSON.stringify(rawGeo))
-        .replace(/\{\{\s*companySize\s*\}\}/g, icp?.company_size || 'not specified')
-        .replace(/\{\{\s*employeeRanges\s*\}\}/g, JSON.stringify(icp?.apollo_employee_ranges || []));
-      console.log('[ICP Translator] Loaded prompt from DB');
-    }
-  } catch (e) {
-    console.warn('[ICP Translator] Failed to fetch prompt from DB, using fallback:', e.message);
-  }
-
-  try {
-    console.log('[ICP Translator] Translating ICP for Apollo — titles:', rawTitles.length, ', industries:', rawIndustries.length);
-    const msg = await anthropic.messages.create({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 1000,
-      messages: [{ role: 'user', content: finalPrompt }]
-    });
-
-    const raw = msg.content?.[0]?.text?.trim() || '';
-    // Strip markdown code fences if present
-    const jsonStr = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
-    const parsed = JSON.parse(jsonStr);
-
-    console.log(`[ICP Translator] ✓ Translation complete. Relaxation order: ${parsed.relaxation_order?.join(' > ') || 'fallback'}`);
-
-    return {
-      ...icp,
-      apollo_payload: parsed.apollo_payload || {},
-      confidence_map: parsed.confidence_map || {},
-      relaxation_order: parsed.relaxation_order || [],
-      _translated: true
-    };
-  } catch (e) {
-    console.warn('[ICP Translator] Translation failed — using original ICP:', e.message);
-    return icp; // fail-safe: use original ICP unchanged
-  }
+  let hits = 0;
+  leads.forEach(l => {
+    const o = orgByName.get(l.company);
+    if (!o) return;
+    if (!l.website) l.website = o.website;
+    if (!l.linkedin_url) l.linkedin_url = o.company_linkedin_url;
+    hits++;
+  });
+  console.log(`[Apollo] Company hydration: ${hits}/${leads.length} leads enriched (${orgByName.size}/${uniqueCompanies.length} companies matched)`);
+  return leads;
 }
 
 // ── EU countries list for Apollo geo expansion ─────────────────────────────────
@@ -1580,11 +1368,16 @@ async function fetchLeadsFromApollo(icp) {
   );
 
   console.log(`[Apollo] v3 Search Complete: ${result.leads.length} leads returned. TAM: ${result.totalAvailable}. Was relaxed: ${result.wasRelaxed}`);
-  
+
+  // Hydrate website + company LinkedIn via mixed_companies/search (no credit cost).
+  // People search strips these fields on this plan tier — without this step the UI
+  // shows "—" in the Website and LinkedIn columns even when the data exists in Apollo.
+  await enrichLeadsWithCompanyData(result.leads);
+
   // Expose wasRelaxed and relaxationLog at top level for handleLeadList
-  return { 
-    leads: result.leads, 
-    total: result.totalAvailable, 
+  return {
+    leads: result.leads,
+    total: result.totalAvailable,
     tamSource: 'apollo',
     wasRelaxed: result.wasRelaxed,
     relaxationLog: result.relaxationLog,
@@ -2246,35 +2039,6 @@ async function handleBrandScrape(task, job) {
   return brandData;
 }
 
-// ── Website quality filter — verify leads match ICP ──────────────────────────
-async function filterLeadsByWebsite(leads, icpKeywords) {
-  const CONCURRENCY = 5;
-  const TIMEOUT_MS  = 4000;
-  const qualified   = [];
-
-  for (let i = 0; i < leads.length; i += CONCURRENCY) {
-    const batch = leads.slice(i, i + CONCURRENCY);
-    const results = await Promise.all(batch.map(async (lead) => {
-      if (!lead.website) return lead; // No website — keep (benefit of doubt)
-      try {
-        const domain  = lead.website.replace(/^https?:\/\//, '').split('/')[0];
-        const scraped = await Promise.race([
-          scrapeWebsite(domain),
-          new Promise(resolve => setTimeout(() => resolve(null), TIMEOUT_MS))
-        ]);
-        if (!scraped?.bodyText) return lead; // Can't scrape — keep
-        const content = (scraped.bodyText + ' ' + (scraped.title || '') + ' ' + (scraped.metaDesc || '')).toLowerCase();
-        const hits    = icpKeywords.filter(kw => content.includes(kw));
-        if (!icpKeywords.length || hits.length > 0) return lead;
-        console.log(`[filter] Dropped: ${domain} (no ICP keyword match)`);
-        return null;
-      } catch(e) { return lead; } // Scrape error — keep
-    }));
-    qualified.push(...results.filter(Boolean));
-  }
-  return qualified.slice(0, 25);
-}
-
 async function handleLeadList(task, job) {
   // Brief is stored in extracted_data — confirmed by rep before job was created
   const brief = job.extracted_data || {};
@@ -2300,15 +2064,33 @@ async function handleLeadList(task, job) {
     return null; // signal needs_input — worker will not mark completed
   }
 
-  // ICP Translator (translateIcpForApollo) was previously called here to expand
-  // titles + map industries via Sonnet. Removed because the non-deterministic
-  // output frequently introduced over-restrictive fields (e.g.
-  // person_department_or_subdepartments) that returned 0 leads, forcing reps
-  // to manually re-run. Skipping it makes first-run identical to rerun:
-  // fetchLeadsFromApollo sees icp.apollo_payload === undefined and uses
-  // legacyPayload built from the rep's exact ICP fields.
   const result = await fetchLeadsFromApollo(icp);
-  const leads  = result?.leads || [];
+  const rawLeads = result?.leads || [];
+
+  // Unique-company dedup: spec §11b — never show two contacts from the same company
+  // in the prospect-facing list. Pick the first occurrence per company; Apollo's
+  // default ranking puts higher-relevance contacts first. Cap at 25.
+  const seen = new Set();
+  const dedupedLeads = [];
+  for (const l of rawLeads) {
+    const key = (l.company || '').trim().toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    dedupedLeads.push(l);
+    if (dedupedLeads.length >= 25) break;
+  }
+
+  // Size fallback: search responses on this plan don't return estimated_num_employees,
+  // but we filtered on apollo_employee_ranges so we know each company sits inside that
+  // band. Show the band as Size when the exact count is missing.
+  const sizeFallback = formatEmployeeRangeBand(icp.apollo_employee_ranges);
+  if (sizeFallback) {
+    dedupedLeads.forEach(l => { if (!l.company_size) l.company_size = sizeFallback; });
+  }
+
+  const leads = dedupedLeads;
+  console.log(`[lead_list] Dedup: ${rawLeads.length} → ${leads.length} unique-company leads (size fallback: ${sizeFallback || 'none'})`);
+
   // fetchLeadsFromApollo returns { total }; legacy callers used { totalAvailable }
   const tam    = result?.total ?? result?.totalAvailable ?? 0;
   // Lloyd's rep-proof outreach formula:
