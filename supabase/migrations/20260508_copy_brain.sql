@@ -104,3 +104,13 @@ SELECT * FROM (VALUES
   ('For discovery/strategy calls: include ''what to prepare'' so prospects show up ready. Reduces no-shows.', TRUE, 9)
 ) AS seed(text, enabled, position)
 WHERE NOT EXISTS (SELECT 1 FROM sales_assets.copy_brain_principles);
+
+-- Grant the Supabase API role full access on the new tables + identity sequences.
+-- The sales_assets schema does not auto-grant to service_role like public does;
+-- without these, GETs work via implicit SELECT but INSERT/UPDATE/DELETE 42501.
+GRANT ALL ON sales_assets.copy_brain_principles TO service_role;
+GRANT ALL ON sales_assets.copy_brain_config     TO service_role;
+GRANT USAGE, SELECT ON SEQUENCE sales_assets.copy_brain_principles_id_seq TO service_role;
+GRANT USAGE, SELECT ON SEQUENCE sales_assets.copy_brain_config_id_seq     TO service_role;
+
+NOTIFY pgrst, 'reload schema';
