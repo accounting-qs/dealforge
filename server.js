@@ -87,15 +87,21 @@ async function supabaseRequest(method, urlPath, body, extraHeaders = {}) {
 // Falls back to the file-based WEBINAR_FALLBACK_FORMAT if DB config is empty.
 async function loadCopyBrain() {
   try {
-    const [pr, cr] = await Promise.all([
+    const [pr, cr, er] = await Promise.all([
       supabaseRequest('GET', '/rest/v1/copy_brain_principles?enabled=eq.true&order=position.asc'),
       supabaseRequest('GET', '/rest/v1/copy_brain_config?order=id.asc&limit=1'),
+      supabaseRequest('GET', '/rest/v1/copy_brain_examples?enabled=eq.true&order=position.asc'),
     ]);
     const principles = Array.isArray(pr.body) ? pr.body : [];
     const config = (Array.isArray(cr.body) ? cr.body[0] : null) || { business_context: '', format_rules: '' };
+    const examples = Array.isArray(er.body) ? er.body : [];
     const principlesBlock = principles.length
       ? principles.map(p => `- ${p.text}`).join('\n')
       : '- Write as the prospect company hosting, never Quantum Scaling\n- Front-load ICP role in title first 40 chars\n- Every bullet is a transformation promise, not a topic';
+    // Render examples as numbered markdown sections so Claude can lift voice + structure
+    const examplesBlock = examples.length
+      ? examples.map((ex, i) => `### Example ${i + 1} — ${ex.label}\n${ex.content}`).join('\n\n')
+      : '(none loaded)';
     return {
       business_context_block: (config.business_context && config.business_context.trim())
         ? config.business_context
@@ -104,9 +110,10 @@ async function loadCopyBrain() {
         ? config.format_rules
         : (WEBINAR_FALLBACK_FORMAT || '(use best-practice direct-response structure)'),
       principles_block: principlesBlock,
-      examples_block: '(none loaded)',
+      examples_block: examplesBlock,
       _meta: {
         principles_count: principles.length,
+        examples_count: examples.length,
         config_updated_at: config.updated_at || null,
         loaded_at: new Date().toISOString(),
       },
@@ -120,6 +127,7 @@ async function loadCopyBrain() {
       examples_block: '(none loaded)',
       _meta: {
         principles_count: 0,
+        examples_count: 0,
         config_updated_at: null,
         loaded_at: new Date().toISOString(),
         fallback: true,
@@ -3507,7 +3515,89 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // ── Copy Brain — CRUD ─────────────────────────────────────────────────────
+  // ── Copy Brain — Examples CRUD ────────────────────────────────────────────
+  // Same shape as principles but with { label, content } instead of just text.
+  // GET /api/copy-brain/examples — list ordered by position
+  if (req.method === 'GET' && urlPath === '/api/copy-brain/examples') {
+    setCors(res);
+    try {
+      const r = await supabaseRequest('GET', '/rest/v1/copy_brain_examples?order=position.asc');
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(r.body || []));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  // POST /api/copy-brain/examples — create { label, content, enabled?, position? }
+  if (req.method === 'POST' && urlPath === '/api/copy-brain/examples') {
+    setCors(res);
+    try {
+      const body = await parseBody(req);
+      const label = (body.label || '').trim();
+      const content = (body.content || '').trim();
+      if (!label || !content) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'label and content required' })); return;
+      }
+      let position = body.position;
+      if (typeof position !== 'number') {
+        const maxR = await supabaseRequest('GET', '/rest/v1/copy_brain_examples?select=position&order=position.desc&limit=1');
+        position = ((maxR.body && maxR.body[0] && maxR.body[0].position) || 0) + 1;
+      }
+      const r = await supabaseRequest('POST', '/rest/v1/copy_brain_examples',
+        { label, content, enabled: body.enabled !== false, position },
+        { 'Prefer': 'return=representation' }
+      );
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(Array.isArray(r.body) ? r.body[0] : r.body));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  // PATCH /api/copy-brain/examples/:id
+  if (req.method === 'PATCH' && urlPath.startsWith('/api/copy-brain/examples/')) {
+    setCors(res);
+    const id = urlPath.slice('/api/copy-brain/examples/'.length);
+    try {
+      const body = await parseBody(req);
+      const patch = { updated_at: new Date().toISOString() };
+      if (typeof body.label === 'string') patch.label = body.label;
+      if (typeof body.content === 'string') patch.content = body.content;
+      if (typeof body.enabled === 'boolean') patch.enabled = body.enabled;
+      if (typeof body.position === 'number') patch.position = body.position;
+      const r = await supabaseRequest('PATCH', `/rest/v1/copy_brain_examples?id=eq.${encodeURIComponent(id)}`,
+        patch, { 'Prefer': 'return=representation' });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(Array.isArray(r.body) ? r.body[0] : r.body));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  // DELETE /api/copy-brain/examples/:id
+  if (req.method === 'DELETE' && urlPath.startsWith('/api/copy-brain/examples/')) {
+    setCors(res);
+    const id = urlPath.slice('/api/copy-brain/examples/'.length);
+    try {
+      await supabaseRequest('DELETE', `/rest/v1/copy_brain_examples?id=eq.${encodeURIComponent(id)}`);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  // ── Copy Brain — Principles CRUD ──────────────────────────────────────────
   // GET /api/copy-brain/principles — list ordered by position
   if (req.method === 'GET' && urlPath === '/api/copy-brain/principles') {
     setCors(res);
