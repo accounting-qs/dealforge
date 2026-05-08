@@ -3240,11 +3240,10 @@ function runPersonalization(session) {
         var rawLog = gen.apollo_diagnostics.relaxationLog || [];
         var changes = [];           // [{filter, action}] in order they happened
         var marketTooNarrow = false;
-        var stoppedShort = false;
+        var nuclearFired = false;
         rawLog.forEach(function(e) {
           if (e.step === 'relax' && e.filter) changes.push({ filter: e.filter, action: e.action });
-          if (e.action === 'removed' && e.filter && e.reason === 'preflight_zero_companies') changes.push({ filter: e.filter, action: 'dropped' });
-          if (e.step === 'stopped_short') stoppedShort = true;
+          if (e.step === 'nuclear_fallback') nuclearFired = true;
           if (e.step === 'stopped_short' && e.reason === 'no_matches_after_relaxation') marketTooNarrow = true;
         });
         // Dedupe filter changes — keep the last (final) action per filter
@@ -3265,23 +3264,104 @@ function runPersonalization(session) {
 
         var headline = marketTooNarrow
           ? 'Your ICP was too narrow — Apollo found no matches even after broadening'
-          : 'Your ICP was a tight fit — we broadened it to find enough leads';
-        var bodyParagraph = marketTooNarrow
-          ? 'No contacts matched any combination of your filters. The lead list above is empty — please review the ICP filters and try again.'
-          : (changeList.length
-              ? 'To find 25 leads, we adjusted these filters: <strong>' + changeList.map(escHtml).join(', ') + '</strong>. The leads above match the relaxed search, not your original ICP — review them carefully.'
-              : 'Filters were adjusted automatically to expand the candidate pool.');
+          : (nuclearFired
+              ? 'No combination of your filters matched — falling back to a title-only search'
+              : 'Your ICP was a tight fit — we broadened it to find enough leads');
+        var bodyParagraph;
+        if (marketTooNarrow) {
+          bodyParagraph = 'No contacts matched any combination of your filters. The lead list above is empty — please review the ICP filters and try again.';
+        } else if (nuclearFired) {
+          bodyParagraph = 'After relaxing every filter we still got zero matches, so the search dropped everything except job titles. The leads above are title-only matches and almost certainly will not fit your ICP — refine the brief and re-run lead search.';
+        } else if (changeList.length) {
+          bodyParagraph = 'To find 25 leads, we adjusted these filters: <strong>' + changeList.map(escHtml).join(', ') + '</strong>. The leads above match the relaxed search, not your original ICP — review them carefully.';
+        } else {
+          bodyParagraph = 'Filters were adjusted automatically to expand the candidate pool.';
+        }
+
+        // Render each relaxation step as a concrete before → after diff.
+        // labelMap is shared between the per-line describer and the fallback
+        // renderer that handles 'skip_protected' / 'protected' steps.
+        var labelMap = {
+          q_keywords: 'industry keyword',
+          q_organization_keyword_tags: 'industry keyword',
+          organization_num_employees_ranges: 'company size',
+          person_department_or_subdepartments: 'department',
+          organization_locations: 'company location',
+          person_locations: 'person location',
+          person_seniorities: 'seniority',
+          person_titles: 'job titles',
+          revenue_range: 'company revenue',
+          currently_using_any_of_technology_uids: 'technology'
+        };
+        function _fmtEmployeeRange(arr) {
+          if (!Array.isArray(arr) || !arr.length) return '—';
+          var bounds = arr.map(function(r) { return String(r).split(',').map(function(n){ return parseInt(n,10); }); }).filter(function(b){ return Number.isFinite(b[0]) && Number.isFinite(b[1]); });
+          if (!bounds.length) return arr.join(', ');
+          var lo = Math.min.apply(null, bounds.map(function(b){ return b[0]; }));
+          var hi = Math.max.apply(null, bounds.map(function(b){ return b[1]; }));
+          return lo + '–' + hi + ' emp';
+        }
+        function _fmtList(v, max) {
+          if (v == null) return '—';
+          if (Array.isArray(v)) {
+            var arr = v.slice(0, max || 6);
+            var more = v.length > arr.length ? ' …' : '';
+            return arr.join(', ') + more;
+          }
+          return String(v);
+        }
+        function _describeRelax(e) {
+          var name = labelMap[e.filter] || e.filter;
+          var fmt = (e.filter === 'organization_num_employees_ranges') ? _fmtEmployeeRange : _fmtList;
+          var beforeStr = fmt(e.before);
+          var afterStr  = fmt(e.after);
+          if (e.action === 'removed') {
+            return name + ': removed (was ' + beforeStr + ')';
+          }
+          if (e.action === 'simplified') {
+            return name + ': simplified "' + beforeStr + '" → "' + afterStr + '"';
+          }
+          if (e.action === 'expanded') {
+            return name + ': expanded ' + beforeStr + ' → ' + afterStr;
+          }
+          if (e.action === 'expanded_similar') {
+            return name + ': broadened to similar titles (kept ' + _fmtList(e.before) + ', plus Apollo-suggested variants)';
+          }
+          return name + ': ' + e.action;
+        }
 
         var rawDetailsHtml = rawLog.map(function(log) {
+          if (log.step === 'relax' || (log.action && log.filter && log.before !== undefined)) {
+            var line = _describeRelax(log);
+            if (log.reason === 'preflight_zero_companies') line += ' (preflight: no matching companies)';
+            return '<div>• ' + escHtml(line) + '</div>';
+          }
+          if (log.step === 'preflight') {
+            return '<div style="color:#92400e;">• Preflight company check: ' + (log.companiesFound || 0).toLocaleString() + ' companies match the original filters</div>';
+          }
+          if (log.step === 'initial_search') {
+            return '<div style="color:#92400e;">• Initial search: ' + (log.totalResults || 0).toLocaleString() + ' contacts</div>';
+          }
+          if (log.step === 'search') {
+            return '<div style="color:#92400e;padding-left:14px;">→ retry ' + (log.attempt || '?') + ': ' + (log.totalResults || 0).toLocaleString() + ' contacts</div>';
+          }
+          if (log.step === 'nuclear_fallback') {
+            return '<div style="color:#92400e;">• Last-resort search: titles only (other filters dropped)</div>';
+          }
+          if (log.step === 'stopped_short') {
+            return '<div style="color:#92400e;">• Stopped at ' + (log.finalResults || 0).toLocaleString() + ' contacts — ' + (log.reason || '') + '</div>';
+          }
+          if (log.step === 'skip_protected') {
+            return '<div style="color:#92400e;">• Kept ' + (labelMap[log.filter] || log.filter) + ' (core ICP signal — never auto-dropped)</div>';
+          }
+          if (log.step === 'protected') {
+            return '<div style="color:#92400e;">• Protected from removal: ' + (log.filters || []).join(', ') + '</div>';
+          }
+          // Fallback: stringify whatever fields exist
           var parts = [];
-          if (log.step) parts.push(log.step);
-          if (log.filter) parts.push('filter=' + log.filter);
-          if (log.action) parts.push(log.action);
-          if (log.attempt != null) parts.push('attempt=' + log.attempt);
-          if (log.totalResults != null) parts.push('results=' + log.totalResults);
-          if (log.companiesFound != null) parts.push('companies=' + log.companiesFound);
-          if (log.reason) parts.push(log.reason);
-          if (log.finalResults != null) parts.push('finalResults=' + log.finalResults);
+          ['step','filter','action','attempt','totalResults','companiesFound','reason'].forEach(function(k) {
+            if (log[k] != null) parts.push(k + '=' + (Array.isArray(log[k]) ? log[k].join(',') : log[k]));
+          });
           return '<div>' + escHtml(parts.join(' · ')) + '</div>';
         }).join('');
 

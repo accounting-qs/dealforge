@@ -1063,69 +1063,77 @@ async function preflightCompanyCheck(payload) {
   }
 }
 
+// Returns { action, before, after } so the diagnostics UI can show concrete diffs
+// instead of just verbs (e.g. "size 11–200 → 1–500" rather than "size expanded").
+// before/after are deep-copied so later mutations to currentPayload don't bleed in.
 function relaxFilter(payload, filterName) {
+  const cloneVal = v => Array.isArray(v) ? [...v] : v;
+  const before = cloneVal(payload[filterName]);
+
   switch (filterName) {
     case 'revenue_range':
     case 'currently_using_any_of_technology_uids':
       delete payload[filterName];
-      return 'removed';
+      return { action: 'removed', before, after: null };
 
     case 'organization_num_employees_ranges': {
       const ALL = ['1,10','11,20','21,50','51,100','101,200','201,500',
                    '501,1000','1001,2000','2001,5000','5001,10000', '10001+'];
       const indices = payload[filterName].map(r => ALL.indexOf(r)).filter(i => i >= 0);
-      if (indices.length === 0) { delete payload[filterName]; return 'removed'; }
+      if (indices.length === 0) { delete payload[filterName]; return { action: 'removed', before, after: null }; }
       const lo = Math.max(0, Math.min(...indices) - 1);
       const hi = Math.min(ALL.length - 1, Math.max(...indices) + 1);
       payload[filterName] = ALL.slice(lo, hi + 1);
-      return 'expanded';
+      return { action: 'expanded', before, after: cloneVal(payload[filterName]) };
     }
 
     case 'q_keywords': {
       const words = payload.q_keywords.split(' ');
       if (words.length > 1) {
         payload.q_keywords = words.slice(0, Math.ceil(words.length / 2)).join(' ');
-        return 'simplified';
+        return { action: 'simplified', before, after: payload.q_keywords };
       }
       delete payload.q_keywords;
-      return 'removed';
+      return { action: 'removed', before, after: null };
     }
 
     case 'q_organization_keyword_tags':
       // Single industry tag — broaden by removing it entirely (the keyword phrase
       // is the most expendable filter; titles + seniority + size + geo carry the rest).
       delete payload.q_organization_keyword_tags;
-      return 'removed';
+      return { action: 'removed', before, after: null };
 
     case 'person_department_or_subdepartments':
       delete payload[filterName];
-      return 'removed';
+      return { action: 'removed', before, after: null };
 
     case 'organization_locations':
     case 'person_locations':
       delete payload[filterName];
-      return 'removed';
+      return { action: 'removed', before, after: null };
 
     case 'person_seniorities': {
       const HIER = ['intern','entry','senior','manager','director','head','vp','partner','c_suite','founder','owner'];
       const idxs = payload[filterName].map(s => HIER.indexOf(s)).filter(i => i >= 0);
-      if (idxs.length === 0) { delete payload[filterName]; return 'removed'; }
+      if (idxs.length === 0) { delete payload[filterName]; return { action: 'removed', before, after: null }; }
       const lo = Math.max(0, Math.min(...idxs) - 1);
       const hi = Math.min(HIER.length - 1, Math.max(...idxs) + 1);
       const expanded = new Set(payload[filterName]);
       expanded.add(HIER[lo]);
       expanded.add(HIER[hi]);
       payload[filterName] = [...expanded];
-      return 'expanded';
+      return { action: 'expanded', before, after: cloneVal(payload[filterName]) };
     }
 
     case 'person_titles':
       payload.include_similar_titles = true;
-      return 'expanded_similar';
+      // Apollo expands these server-side — we don't see the resulting variants
+      // here. Show "include_similar_titles" as the after-state marker.
+      return { action: 'expanded_similar', before, after: before };
 
     default:
       delete payload[filterName];
-      return 'removed';
+      return { action: 'removed', before, after: null };
   }
 }
 
@@ -1213,15 +1221,15 @@ async function guaranteedLeadSearch(sanitizedPayload, confidenceMap, relaxationO
     // q_organization_keyword_tags (set by sanitizeApolloPayload), so if industry
     // is protected we leave q_keywords alone too — they carry the same signal.
     if (currentPayload.q_keywords && !protectedFilters.has('q_organization_keyword_tags')) {
-      log.push({ action: 'removed', filter: 'q_keywords', reason: 'preflight_zero_companies' });
+      log.push({ step: 'relax', action: 'removed', filter: 'q_keywords', before: currentPayload.q_keywords, after: null, reason: 'preflight_zero_companies' });
       delete currentPayload.q_keywords;
     }
     if (currentPayload.organization_num_employees_ranges) {
-      log.push({ action: 'removed', filter: 'organization_num_employees_ranges', reason: 'preflight_zero_companies' });
+      log.push({ step: 'relax', action: 'removed', filter: 'organization_num_employees_ranges', before: [...currentPayload.organization_num_employees_ranges], after: null, reason: 'preflight_zero_companies' });
       delete currentPayload.organization_num_employees_ranges;
     }
     if (currentPayload.revenue_range) {
-      log.push({ action: 'removed', filter: 'revenue_range', reason: 'preflight_zero_companies' });
+      log.push({ step: 'relax', action: 'removed', filter: 'revenue_range', before: currentPayload.revenue_range, after: null, reason: 'preflight_zero_companies' });
       delete currentPayload.revenue_range;
     }
   }
@@ -1270,8 +1278,8 @@ async function guaranteedLeadSearch(sanitizedPayload, confidenceMap, relaxationO
       break;
     }
 
-    const action = relaxFilter(currentPayload, filterToRelax);
-    log.push({ step: 'relax', attempt, filter: filterToRelax, action });
+    const r = relaxFilter(currentPayload, filterToRelax);
+    log.push({ step: 'relax', attempt, filter: filterToRelax, action: r.action, before: r.before, after: r.after });
 
     results = await apolloPeopleSearch(currentPayload);
     log.push({ step: 'search', attempt, totalResults: results.total_entries });
