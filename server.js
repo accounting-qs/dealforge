@@ -1277,19 +1277,19 @@ async function guaranteedLeadSearch(sanitizedPayload, confidenceMap, relaxationO
     log.push({ step: 'search', attempt, totalResults: results.total_entries });
   }
 
-  // ── STEP 4: Final absolute fallback ──
-  // Skipped entirely when protected filters are set — returning fewer specific
-  // leads (UI shows "Market too small") is preferred over many non-specific ones.
-  if (results.total_entries < MIN_LEADS && protectedFilters.size === 0) {
-    currentPayload = {
-      person_titles: sanitizedPayload.person_titles || [],
-      per_page: 25
-    };
-    results = await apolloPeopleSearch(currentPayload);
-    log.push({ step: 'absolute_fallback', totalResults: results.total_entries });
-  } else if (results.total_entries < MIN_LEADS && protectedFilters.size > 0) {
-    log.push({ step: 'absolute_fallback_skipped', reason: 'protected_filters_set', protectedFilters: [...protectedFilters] });
-    console.log('[Apollo] Absolute fallback skipped — protected filters are set, returning narrow result set instead');
+  // The previous "absolute_fallback" step stripped every filter except titles
+  // and ran one final search. For tight ICPs this returned millions of unrelated
+  // contacts (e.g. tekrisq → 2.5M). 25 random leads from a 2.5M pool look
+  // plausible but are not ICP-matched, which is worse than showing zero leads.
+  // We now stop after the relaxation loop. If the loop ended with zero results
+  // we surface that to the UI as "market too narrow — broaden your ICP" rather
+  // than padding with garbage.
+  if (results.total_entries < MIN_LEADS) {
+    log.push({
+      step: 'stopped_short',
+      reason: results.total_entries === 0 ? 'no_matches_after_relaxation' : 'partial_results',
+      finalResults: results.total_entries
+    });
   }
 
   return {
@@ -1297,7 +1297,8 @@ async function guaranteedLeadSearch(sanitizedPayload, confidenceMap, relaxationO
     totalAvailable: results.total_entries,
     finalPayload: currentPayload,
     relaxationLog: log,
-    wasRelaxed: attempt > 0
+    wasRelaxed: attempt > 0,
+    marketTooNarrow: results.total_entries === 0 && attempt > 0
   };
 }
 
@@ -3185,17 +3186,16 @@ const server = http.createServer(async (req, res) => {
       const fullName = (p.first_name && p.last_name)
         ? `${p.first_name} ${p.last_name}`.trim()
         : (p.name || leads[idx].name);
-      // Merge: keep search-time fields, layer revealed fields on top, set revealed flag.
-      // linkedin_url swaps from company LI to personal LI; company_linkedin_url is
-      // preserved so the UI can fall back if personal is somehow null.
+      // Reveal scope is intentionally minimal: full name + work email only.
+      // We do NOT swap linkedin_url (company URL stays — Apollo charges 1 credit
+      // either way and the rep already has the company link), we do NOT store
+      // photo_url, and we do NOT store headline. Same per-match cost, leaner DB,
+      // smaller blast radius if anything goes wrong.
       const updatedLead = {
         ...leads[idx],
-        name:         fullName,
-        linkedin_url: p.linkedin_url || leads[idx].linkedin_url,
-        photo_url:    p.photo_url || null,
-        email:        p.email || null,
-        headline:     p.headline || null,
-        revealed:     true
+        name:     fullName,
+        email:    p.email || null,
+        revealed: true
       };
       leads[idx] = updatedLead;
       // Persist the mutated leads array back into _generated.

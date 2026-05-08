@@ -3107,21 +3107,19 @@ function runPersonalization(session) {
             var liCell = lead.linkedin_url
               ? '<a class="li-link" href="' + lead.linkedin_url + '" target="_blank">' + liSvg + ' View</a>'
               : '<span style="color:#9ca3af">—</span>';
-            // Photo avatar (24px) — only renders after reveal populates photo_url
-            var avatar = lead.photo_url
-              ? '<img src="' + lead.photo_url + '" alt="" style="width:22px;height:22px;border-radius:50%;object-fit:cover;margin-right:8px;vertical-align:middle;">'
-              : '';
-            // Reveal button: only edit mode + has apollo_id + not yet revealed
+            // Reveal button: only edit mode + has apollo_id + not yet revealed.
+            // Reveal returns full name + work email only — no photo, no headline,
+            // no personal LinkedIn (company link is what we already display).
             var canReveal = IS_EDIT_MODE && lead.apollo_id && !lead.revealed;
             var revealBtn = canReveal
-              ? '<button class="reveal-btn" data-apollo-id="' + lead.apollo_id + '" data-lead-idx="' + idx + '" title="Reveal full name + personal LinkedIn + work email (1 Apollo credit)" style="margin-left:8px;background:rgba(134,239,172,0.1);color:#86efac;border:1px solid rgba(134,239,172,0.3);border-radius:4px;padding:2px 8px;font-size:11px;font-weight:500;cursor:pointer;">🔓 Reveal</button>'
+              ? '<button class="reveal-btn" data-apollo-id="' + lead.apollo_id + '" data-lead-idx="' + idx + '" title="Reveal full name + work email (1 Apollo credit)" style="margin-left:8px;background:rgba(134,239,172,0.1);color:#86efac;border:1px solid rgba(134,239,172,0.3);border-radius:4px;padding:2px 8px;font-size:11px;font-weight:500;cursor:pointer;">🔓 Reveal</button>'
               : '';
             // Email below name — only present after reveal
             var emailLine = lead.email
               ? '<div style="font-size:11px;color:#71717a;margin-top:2px;">' + lead.email + '</div>'
               : '';
             var nameCell = '<td class="td-name" data-lead-idx="' + idx + '">'
-              + '<div style="display:flex;align-items:center;">' + avatar + '<span>' + lead.name + '</span>' + revealBtn + '</div>'
+              + '<div style="display:flex;align-items:center;"><span>' + lead.name + '</span>' + revealBtn + '</div>'
               + emailLine
               + '</td>';
             return '<tr class="data-row" data-lead-idx="' + idx + '">'
@@ -3213,48 +3211,90 @@ function runPersonalization(session) {
     } catch(e) { console.warn('[lead-market-too-small] render error:', e.message); }
 
     // ── Render Apollo Diagnostics (rep edit-mode only) ────────────────────────
-    // The relaxation log is internal information meant for the rep to debug ICP
-    // filters. Prospects should never see it on the shareable URL.
+    // The diagnostics panel summarizes what the search engine had to do to find
+    // leads. Plain English for sales reps; raw log hidden behind a toggle. Only
+    // shown in edit mode — prospects never see it.
     const diagPanel = document.getElementById('lead-diagnostics-panel');
     if (diagPanel) {
       if (IS_EDIT_MODE && gen.apollo_diagnostics && gen.apollo_diagnostics.wasRelaxed) {
+        // Build human summary from the raw relaxationLog.
+        // Filter name → human label
+        var FILTER_LABEL = {
+          q_keywords: 'industry keyword',
+          q_organization_keyword_tags: 'industry keyword',
+          organization_num_employees_ranges: 'company size',
+          person_department_or_subdepartments: 'department',
+          organization_locations: 'company location',
+          person_locations: 'person location',
+          person_seniorities: 'seniority',
+          person_titles: 'job titles',
+          revenue_range: 'company revenue',
+          currently_using_any_of_technology_uids: 'technology'
+        };
+        var ACTION_LABEL = {
+          removed: 'dropped',
+          simplified: 'simplified',
+          expanded: 'broadened',
+          expanded_similar: 'broadened to similar titles'
+        };
+        var rawLog = gen.apollo_diagnostics.relaxationLog || [];
+        var changes = [];           // [{filter, action}] in order they happened
+        var marketTooNarrow = false;
+        var stoppedShort = false;
+        rawLog.forEach(function(e) {
+          if (e.step === 'relax' && e.filter) changes.push({ filter: e.filter, action: e.action });
+          if (e.action === 'removed' && e.filter && e.reason === 'preflight_zero_companies') changes.push({ filter: e.filter, action: 'dropped' });
+          if (e.step === 'stopped_short') stoppedShort = true;
+          if (e.step === 'stopped_short' && e.reason === 'no_matches_after_relaxation') marketTooNarrow = true;
+        });
+        // Dedupe filter changes — keep the last (final) action per filter
+        var byFilter = {};
+        changes.forEach(function(c) { byFilter[c.filter] = c.action; });
+        var changeList = Object.keys(byFilter).map(function(f) {
+          return (FILTER_LABEL[f] || f) + ' (' + (ACTION_LABEL[byFilter[f]] || byFilter[f]) + ')';
+        });
+
         diagPanel.style.display = 'block';
-        diagPanel.style.padding = '12px 16px';
+        diagPanel.style.padding = '14px 18px';
         diagPanel.style.background = 'rgba(245, 158, 11, 0.08)';
         diagPanel.style.border = '1px solid rgba(245, 158, 11, 0.3)';
         diagPanel.style.borderRadius = '8px';
         diagPanel.style.marginBottom = '16px';
         diagPanel.style.color = '#d97706';
         diagPanel.style.fontSize = '13px';
-        
-        function _formatRelaxLog(entry) {
-          if (entry == null) return '';
-          if (typeof entry === 'string') return entry;
-          var step = entry.step || entry.action || 'event';
+
+        var headline = marketTooNarrow
+          ? 'Your ICP was too narrow — Apollo found no matches even after broadening'
+          : 'Your ICP was a tight fit — we broadened it to find enough leads';
+        var bodyParagraph = marketTooNarrow
+          ? 'No contacts matched any combination of your filters. The lead list above is empty — please review the ICP filters and try again.'
+          : (changeList.length
+              ? 'To find 25 leads, we adjusted these filters: <strong>' + changeList.map(escHtml).join(', ') + '</strong>. The leads above match the relaxed search, not your original ICP — review them carefully.'
+              : 'Filters were adjusted automatically to expand the candidate pool.');
+
+        var rawDetailsHtml = rawLog.map(function(log) {
           var parts = [];
-          if (entry.filter)         parts.push('filter=' + entry.filter);
-          if (entry.action)         parts.push('action=' + entry.action);
-          if (entry.attempt != null) parts.push('attempt=' + entry.attempt);
-          if (entry.totalResults != null) parts.push('results=' + entry.totalResults);
-          if (entry.companiesFound != null) parts.push('companies=' + entry.companiesFound);
-          if (entry.reason)         parts.push('reason=' + entry.reason);
-          if (Array.isArray(entry.filtersUsed)) parts.push('filtersUsed=[' + entry.filtersUsed.join(', ') + ']');
-          return step + (parts.length ? ' — ' + parts.join(', ') : '');
-        }
-        let logsHtml = (gen.apollo_diagnostics.relaxationLog || []).map(function(log) {
-          return '<div style="margin-top:4px;">⚠️ ' + escHtml(_formatRelaxLog(log)) + '</div>';
+          if (log.step) parts.push(log.step);
+          if (log.filter) parts.push('filter=' + log.filter);
+          if (log.action) parts.push(log.action);
+          if (log.attempt != null) parts.push('attempt=' + log.attempt);
+          if (log.totalResults != null) parts.push('results=' + log.totalResults);
+          if (log.companiesFound != null) parts.push('companies=' + log.companiesFound);
+          if (log.reason) parts.push(log.reason);
+          if (log.finalResults != null) parts.push('finalResults=' + log.finalResults);
+          return '<div>' + escHtml(parts.join(' · ')) + '</div>';
         }).join('');
-        
-        diagPanel.innerHTML = `
-          <div style="font-weight:600;margin-bottom:6px;display:flex;align-items:center;gap:6px;">
-            <svg width="14" height="14" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"></path></svg>
-            Apollo Search Relaxed
-          </div>
-          <div>Original filters yielded insufficient leads. The search engine automatically relaxed constraints to guarantee results:</div>
-          <div style="margin-top:8px;font-family:monospace;font-size:12px;color:#b45309;line-height:1.6;">
-            ${logsHtml}
-          </div>
-        `;
+
+        diagPanel.innerHTML =
+          '<div style="font-weight:600;margin-bottom:6px;display:flex;align-items:center;gap:6px;">'
+          + '<svg width="14" height="14" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"></path></svg>'
+          + escHtml(headline)
+          + '</div>'
+          + '<div style="line-height:1.5;">' + bodyParagraph + '</div>'
+          + '<details style="margin-top:8px;font-size:11px;color:#b45309;">'
+          + '<summary style="cursor:pointer;user-select:none;">Technical details</summary>'
+          + '<div style="margin-top:6px;font-family:monospace;line-height:1.5;">' + rawDetailsHtml + '</div>'
+          + '</details>';
       } else {
         diagPanel.style.display = 'none';
       }
