@@ -940,6 +940,13 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
 <!-- TAB 3: WEBINAR EXPERIENCE      -->
 <!-- ═══════════════════════════════ -->
 <div class="tab-content" id="tab-2">
+  <!-- Regenerate row — rep-only (edit mode) -->
+  <div id="webinar-regen-row" style="display:none;max-width:1280px;margin:0 auto 14px;padding:10px 14px;background:rgba(34,197,94,0.06);border:1px solid rgba(34,197,94,0.18);border-radius:8px;align-items:center;gap:10px;font-size:13px;">
+    <span style="font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#86efac;flex-shrink:0;">Rep only</span>
+    <input id="webinar-regen-input" type="text" maxlength="600" placeholder="How should this regenerate? e.g. 'Make the chat skew more enterprise, less chatty'" style="flex:1;background:rgba(0,0,0,0.3);border:1px solid rgba(255,255,255,0.08);border-radius:6px;padding:8px 12px;font-size:13px;color:#e2e8f0;outline:none;font-family:inherit;">
+    <button id="webinar-regen-btn" onclick="regenerateWebinarMock()" style="background:#22c55e;border:none;border-radius:6px;color:#052e16;font-size:13px;font-weight:600;padding:8px 16px;cursor:pointer;flex-shrink:0;">↻ Regenerate</button>
+    <span id="webinar-regen-status" style="font-size:11px;color:#94a3b8;min-width:120px;text-align:right;"></span>
+  </div>
   <div class="webinar-wrap">
     <div class="webinar-top-bar">
       <div style="display:flex;align-items:center;gap:16px;">
@@ -2316,6 +2323,7 @@ function wireROIEditMode() {
       .override-input { background:#1e293b!important;color:#f1f5f9!important;border:1px solid #86efac!important;border-radius:6px!important;padding:4px 8px!important;font-size:inherit!important;width:auto!important;min-width:80px; }
     `;
     document.head.appendChild(style);
+    if (typeof _initWebinarRegenRow === 'function') _initWebinarRegenRow();
   }
 
   // ── saveOverride and addEditIcon are now module-level (defined above IIFE)
@@ -3641,6 +3649,48 @@ function setKeyword(val) {
 
 function _getPortalJobId() {
   return new URLSearchParams(window.location.search).get('job');
+}
+
+// ── Webinar Experience: rep-only regenerate ──────────────────────────────────
+// Surfaces the regenerate control inside the Webinar Experience tab whenever
+// IS_EDIT_MODE is true. Hits the same /api/webinar_mock/regenerate endpoint
+// the standalone HTML uses; on success reloads the page so the freshly
+// generated chat + slide data hydrate from the updated task output.
+function _initWebinarRegenRow() {
+  if (typeof IS_EDIT_MODE === 'undefined' || !IS_EDIT_MODE) return;
+  const row = document.getElementById('webinar-regen-row');
+  if (row) row.style.display = 'flex';
+}
+
+function regenerateWebinarMock() {
+  const jobId   = _getPortalJobId();
+  const btn     = document.getElementById('webinar-regen-btn');
+  const input   = document.getElementById('webinar-regen-input');
+  const statusEl = document.getElementById('webinar-regen-status');
+  if (!jobId) { statusEl.textContent = '⚠️ No job ID in URL'; statusEl.style.color = '#fbbf24'; return; }
+  const instructions = (input && input.value || '').trim();
+  btn.disabled = true;
+  btn.style.opacity = '.6';
+  statusEl.textContent = 'Regenerating…';
+  statusEl.style.color = '#a1a1aa';
+  fetch('/api/webinar_mock/regenerate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ job_id: jobId, instructions: instructions })
+  })
+    .then(r => r.json().then(d => ({ ok: r.ok, body: d })))
+    .then(r => {
+      if (!r.ok) throw new Error(r.body && r.body.error || 'Regenerate failed');
+      statusEl.textContent = '✓ Done — reloading';
+      statusEl.style.color = '#4ade80';
+      setTimeout(() => { window.location.reload(); }, 700);
+    })
+    .catch(e => {
+      statusEl.textContent = '✗ ' + (e.message || 'Failed');
+      statusEl.style.color = '#f87171';
+      btn.disabled = false;
+      btn.style.opacity = '1';
+    });
 }
 
 function _showFilterStatus(msg, color) {
