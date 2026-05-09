@@ -28,18 +28,31 @@ Generates a self-contained HTML file that simulates a live webinar interface —
 
 | Field | Source | Required | Null handling |
 |-------|--------|----------|---------------|
-| `brand_scrape.output_data.primary_color` | tasks.output_data | Optional | null → use QS default teal (#0D9488) |
-| `brand_scrape.output_data.secondary_color` | tasks.output_data | Optional | null → use dark gray (#1F2937) |
-| `brand_scrape.output_data.logo_url` | tasks.output_data | Optional | null → omit logo, use company name text instead |
-| `brand_scrape.output_data.company_name` | tasks.output_data | Optional | null → use extracted_data.prospect.company |
-| `webinar_titles.output_data.titles[0]` | tasks.output_data | Required | null → `needs_input` |
-| `prospect_research.output_data.name` | tasks.output_data | Required | null → use extracted_data.prospect.name |
-| `prospect_research.output_data.bio` | tasks.output_data | Optional | null → use extracted_data.business.positioning |
-| `prospect_research.output_data.linkedin_photo_url` | tasks.output_data | Optional | null or low-res → omit photo entirely |
+| `brand_data.primary_color` | jobs.brand_data | Optional | null → QS default teal (#0D9488) |
+| `brand_data.secondary_color` | jobs.brand_data | Optional | null → dark gray (#1F2937) |
+| `brand_data.accent_color` | jobs.brand_data | Optional | null → fall back to primary_color |
+| `brand_data.font_family` | jobs.brand_data | Optional | null → system sans-serif fallback |
+| `brand_data.logo_url` | jobs.brand_data | Optional | null → omit logo, render company name text instead |
+| `brand_data.company_name` | jobs.brand_data | Optional | null → extracted_data.prospect.company |
+| `brand_data.tagline` | jobs.brand_data | Optional | null → fall back to "How {company} Grows Your Business" subtitle |
+| `brand_data.images[]` (type='hero') | jobs.brand_data | Optional | null → no hero overlay, gradient only |
+| `webinar_titles.variants[0].title` | tasks.output_data | Required | null → task fails ("no title variant found") |
+| `webinar_titles.variants[0].bullets` | tasks.output_data | Optional | null → 3-bullet generic agenda fallback |
+| `webinar_titles.variants[0].for_line` | tasks.output_data | Optional | null → omit "for-line" pill on hero |
+| `webinar_titles.variants[0].proof_story` | tasks.output_data | Optional | drives Proof slide (priority 1); null → fall back to extracted.angle.proof |
+| `research_data.host.name` | jobs.research_data | Required | null → extracted_data.prospect.name |
+| `research_data.host.title` | jobs.research_data | Optional | null → "Webinar Host" |
+| `research_data.host.bio` | jobs.research_data | Optional | null → omit bio (truncated to 140 chars when present) |
+| `research_data.host.headshot_url` | jobs.research_data | Optional | null OR HEAD-check fails → fall back to initial-letter avatar |
 | `extracted_data.icp.role` | jobs.extracted_data | Required for chat generation | null → generic ICP attendee names |
 | `extracted_data.icp.industry` | jobs.extracted_data | Required for chat generation | null → generic |
-| `extracted_data.customer_pain` | jobs.extracted_data | Optional | null → chat messages omit pain hooks |
-| `extracted_data.result_delivered` | jobs.extracted_data | Optional | null → chat messages omit outcome hooks |
+| `extracted_data.icp.geography` (or apollo_geography[0]) | jobs.extracted_data | Optional | null → chat omits regional grounding |
+| `extracted_data.situation.current_lead_gen` | jobs.extracted_data | Optional | null → chat omits lead-gen-pattern echo |
+| `extracted_data.angle.pain` | jobs.extracted_data | Optional | null → chat messages omit pain hooks |
+| `extracted_data.angle.result` | jobs.extracted_data | Optional | null → chat messages omit outcome hooks |
+| `extracted_data.angle.proof` | jobs.extracted_data | Optional | drives Proof slide fallback (priority 2) |
+| `extracted_data.angle.methodology` | jobs.extracted_data | Optional | null → omit methodology micro-line on Proof slide |
+| `extracted_data.verbatim.result_quote` | jobs.extracted_data | Optional | drives Proof slide pull-quote when proof_story unavailable |
 
 **LinkedIn photo quality check:** Before injecting the photo, perform a HEAD request to the URL. If the response is not 200 OK, or if width/height metadata indicates under 100×100px, omit the photo. No placeholder shown — just cleaner slide without image.
 
@@ -119,26 +132,38 @@ Full-width interface, dark-themed (webinar platform aesthetic):
 
 ### Left panel — Slide viewer
 
-Two slides, navigable with Previous / Next arrow buttons (left/right edges of panel).
+Up to **3 slides** (Proof slide is conditional — omitted when no proof data is available, in which case the deck collapses to 2 slides and `MAX_SLIDES` adjusts). Navigable with Previous / Next arrow buttons (left/right edges of panel) and keyboard arrow keys.
+
+**Brand typography is applied site-wide** via the `--brand-font` CSS variable (sourced from `brand_data.font_family`). Falls back to system sans-serif when null.
 
 **Slide 1 — Hero slide:**
-- Background: prospect's primary_color (or gradient from primary to secondary)
-- Logo: top-left corner (if available and quality check passes)
+- Background: prospect's `primary_color` with gradient overlay; hero image (from `brand_data.images[type='hero']`) layered when present
+- Logo: top-center (if available, white-inverted via CSS `filter: brightness(0) invert(1)`)
+- "For-line" pill: small accent-colored pill above title — sourced from `webinar_titles.variants[0].for_line`. Hidden when null.
 - Webinar title: large, centered, white text
-- Subtitle: first sentence of webinar description
-- Bottom strip: host name + "LIVE Masterclass" label
+- Subtitle: `brand_data.tagline` if present, else `"How {company} Grows Your Business"` fallback
+- Bottom-left host bar: circular avatar (host headshot if HEAD-check passes, else initial letter) + host name + host title
+- Bottom-right QS aggregate proof strip: three small stats — `$500M+ Client Revenue`, `1,400+ Clients Served`, `150K+ Webinar Registrations`. Hardcoded QS-house numbers, NOT prospect-personalized; preserves Quantum Scaling brand authority on the asset.
 
-**Slide 2 — Problem/Promise slide:**
-- Background: dark variation of primary_color (darken by 20%)
-- Section header: "What You'll Discover" or "Why [ICP's Core Problem] Happens"
-- 3 bullet points extracted from webinar description (first 3 sentences/points reformatted)
-- Host photo (bottom right corner, circular crop, ~80px) — only if quality check passes
-- Host name + title below photo
+**Slide 2 — Proof slide (conditional):**
+- Background: gradient from `primary_color` to `secondary_color`
+- Eyebrow: "Recent Result"
+- Heading: first sentence of `webinar_titles.variants[0].proof_story`, OR first sentence of `extracted.angle.proof` as fallback
+- Pull-quote: `extracted.verbatim.result_quote` (wrapped in quotes) if available, else second sentence of `extracted.angle.proof`. Left border in accent color.
+- Attribution row: `[Name] — [outcome]` extracted from `proof_story` via regex (first occurrence of the `Name → numbers` pattern)
+- Methodology micro-line (bottom-left, optional): `extracted.angle.methodology` when present
+- **Skip rule:** if `deriveProof()` returns `show: false`, this slide is omitted entirely; nav-dot count and `MAX_SLIDES` adjust.
+
+**Slide 3 (or 2 if no proof) — Agenda slide:**
+- Background: `secondary_color`
+- Section header: "What You'll Learn Today"
+- 3-4 bullet points from `webinar_titles.variants[0].bullets` (truncated to 4 max)
+- Bullet checkmarks colored with accent color
 
 **Slide navigation:**
-- Current slide indicator: "1 / 2" centered below slides
-- Arrow buttons: subtle, appear on hover
-- Keyboard arrows also work (left/right)
+- Bottom-center: prev arrow + dot indicators (count = `MAX_SLIDES`) + next arrow
+- Keyboard arrow keys (← / →) work
+- Wraps at boundaries (next on last slide → first slide)
 
 ### Right panel — Live chat
 
@@ -179,12 +204,12 @@ Written to: `tasks.output_data` (JSONB on tasks table)
 ```json
 {
   "url": "https://[supabase].supabase.co/storage/v1/object/public/sales-assets/{job_id}/webinar_mock.html",
-  "webinar_title": "string — title used",
+  "title": "string — webinar title used",
   "host_name": "string",
-  "brand_applied": true,
-  "photo_injected": true,
+  "host_headshot_used": "boolean — true if LinkedIn headshot passed HEAD-check and was injected",
+  "proof_slide_shown": "boolean — true if the Proof slide was rendered (deriveProof returned show:true)",
   "attendee_count": 847,
-  "chat_messages_generated": 18
+  "messages": "Array<{ sender, text, is_team, timestamp }> — 18 messages, read by rep portal for live chat replay"
 }
 ```
 

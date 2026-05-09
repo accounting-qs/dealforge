@@ -1697,8 +1697,10 @@ Return this exact JSON:
 }
 
 // ── Webinar mock: live chat messages ─────────────────────────────────────────
-async function generateChatMessages(title, icp, customerPain, resultDelivered, hostName) {
+async function generateChatMessages(title, icp, customerPain, resultDelivered, hostName, geography, currentLeadGen, proofStory, customInstructions) {
   const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  const proofSnippet = (proofStory || '').slice(0, 240);
+  const customSnippet = (customInstructions || '').slice(0, 600);
   const fallback = `You are generating realistic live chat messages for a webinar. Return valid JSON only. No markdown.
 
 Generate 18 live chat messages for this webinar:
@@ -1706,26 +1708,38 @@ Generate 18 live chat messages for this webinar:
 Webinar title: ${title}
 Target audience role: ${icp?.role || 'business owners'}
 Target audience industry: ${icp?.industry || 'B2B'}
+Target audience geography: ${geography || 'global'}
+How they currently get clients: ${currentLeadGen || 'mixed channels'}
 Core problem they face: ${customerPain || 'growing their business'}
 Result they want: ${resultDelivered || 'more revenue'}
 Host / company name: ${hostName}
-
+Recent client outcome (for support-team booking messages): ${proofSnippet || 'n/a'}
+${customSnippet ? `\nRep override instructions (must be respected — they tell you how the rep wants this regenerated): ${customSnippet}\n` : ''}
 Requirements:
-- 14 attendee messages: realistic first names, short messages (max 15 words), mix of questions + reactions + struggles that reference the specific industry and pain points above
-- 4 support team messages from "${hostName} Team": encourage booking a call, answer questions naturally
+- 14 attendee messages: realistic first names, short messages (max 15 words). Mix of questions + reactions + struggles that reference the specific industry, region, and current-lead-gen pattern above
+- 1-2 attendee messages should echo the "how they currently get clients" struggle in customer language
+- 4 support team messages from "${hostName} Team": encourage booking a call. At least one team message should reference the recent client outcome above (only if it contains real numbers)
 - Messages should feel chronologically natural
 - Attendee questions MUST reference the webinar topic and industry specifically
 
 Return:
 {"messages":[{"sender":"string","text":"string — max 15 words","is_team":boolean,"timestamp":"string e.g. 12:14 PM"}]}`;
   const promptText = await loadPromptFromDB('chat_messages', fallback);
-  const userContent = promptText
+  let userContent = promptText
     .replace(/\{\{webinar_title\}\}/g, title || '')
     .replace(/\{\{icp_role\}\}/g, icp?.role || 'business owners')
     .replace(/\{\{icp_industry\}\}/g, icp?.industry || 'B2B')
+    .replace(/\{\{icp_geography\}\}/g, geography || 'global')
+    .replace(/\{\{current_lead_gen\}\}/g, currentLeadGen || 'mixed channels')
     .replace(/\{\{customer_pain\}\}/g, customerPain || 'growing their business')
     .replace(/\{\{result_delivered\}\}/g, resultDelivered || 'more revenue')
-    .replace(/\{\{host_name\}\}/g, hostName || 'Your Host');
+    .replace(/\{\{host_name\}\}/g, hostName || 'Your Host')
+    .replace(/\{\{proof_story\}\}/g, proofSnippet || 'n/a')
+    .replace(/\{\{custom_instructions\}\}/g, customSnippet || '');
+  // If the DB-stored prompt has no {{custom_instructions}} placeholder, append the override at the end so it still affects generation.
+  if (customSnippet && !/custom_instructions/.test(promptText)) {
+    userContent += `\n\nRep override instructions (must be respected): ${customSnippet}`;
+  }
   const msg = await anthropic.messages.create({
     model: 'claude-sonnet-4-6', max_tokens: 900, temperature: 0.7,
     messages: [{ role: 'user', content: userContent }]
@@ -1990,7 +2004,7 @@ async function handleBrandScrape(task, job) {
   const website = job.prospect_website;
   console.log(`[brand_scrape] ${website ? 'Scraping ' + website : 'No website — completing with null'}`);
 
-  const nullOutput = { logo_url: null, favicon_url: null, primary_color: null, secondary_color: null, accent_color: null, all_colors: [], tagline: null, company_name: null, website_summary: null, images: [], scraped: false, source: 'none' };
+  const nullOutput = { logo_url: null, favicon_url: null, primary_color: null, secondary_color: null, accent_color: null, all_colors: [], tagline: null, company_name: null, website_summary: null, font_family: null, images: [], scraped: false, source: 'none' };
 
   if (!website) {
     await updateJobBrandData(job.id, nullOutput);
@@ -2176,6 +2190,36 @@ async function handleBrandScrape(task, job) {
   // website_summary: first 600 chars of Jina-rendered text — shown in Source Intelligence panel
   const websiteSummary = bodyText.slice(0, 600) || null;
 
+  // ── 5. FONT FAMILY: 3-path waterfall (CSS variables → body declaration → Google Fonts link) ──
+  // Captured as a comma-separated value safe to drop into a `font-family:` declaration.
+  const cleanFontValue = (raw) => {
+    if (!raw) return null;
+    let v = raw.trim().replace(/[;{}]/g, '').replace(/\s+/g, ' ').trim();
+    if (v.length > 120) v = v.slice(0, 120);
+    return v.length >= 3 ? v : null;
+  };
+  let fontFamily = null;
+
+  // Path 1: CSS variables in inline <style> blocks or external CSS we already fetched
+  const fontVarPattern = /--(?:font-primary|font-family|font-heading|font-body|brand-font|font-sans|font-display|font-base)\s*:\s*([^;\n}]+)/i;
+  const fontVarMatch = styleBlocks.match(fontVarPattern);
+  if (fontVarMatch?.[1]) fontFamily = cleanFontValue(fontVarMatch[1]);
+
+  // Path 2: body / html { font-family: ... } declaration
+  if (!fontFamily) {
+    const bodyFontMatch = styleBlocks.match(/(?:^|[\s,{])(?:body|html|:root)[^{]*\{[^}]*font-family\s*:\s*([^;}]+)/i);
+    if (bodyFontMatch?.[1]) fontFamily = cleanFontValue(bodyFontMatch[1]);
+  }
+
+  // Path 3: Google Fonts <link> — pull the family name from the URL
+  if (!fontFamily) {
+    const gfontMatch = html.match(/<link[^>]+href=["']https?:\/\/fonts\.googleapis\.com\/css2?\?[^"']*family=([^&"':]+)/i);
+    if (gfontMatch?.[1]) {
+      const family = decodeURIComponent(gfontMatch[1]).replace(/\+/g, ' ').split(/[:,]/)[0].trim();
+      if (family) fontFamily = cleanFontValue(`'${family}', sans-serif`);
+    }
+  }
+
   const brandData = {
     scraped:          true,
     source:           'html',
@@ -2189,11 +2233,12 @@ async function handleBrandScrape(task, job) {
     secondary_color:  secondaryColor,
     accent_color:     accentColor,
     all_colors:       [...new Set(allColors)].filter(isValidColor).slice(0, 6),
+    font_family:      fontFamily,
     images:           images.slice(0, 8),
   };
 
   await updateJobBrandData(job.id, brandData);
-  console.log(`[brand_scrape] Done: logo=${!!logoUrl}, color=${primaryColor||'none'}, images=${images.length}, summary=${websiteSummary?.length||0}chars`);
+  console.log(`[brand_scrape] Done: logo=${!!logoUrl}, color=${primaryColor||'none'}, font=${fontFamily||'none'}, images=${images.length}, summary=${websiteSummary?.length||0}chars`);
   return brandData;
 }
 
@@ -2403,7 +2448,60 @@ async function handleCalendarVisual(task, job) {
   };
 }
 
-async function handleWebinarMock(task, job) {
+// HEAD-check a candidate headshot URL. Returns the URL on 200, null otherwise.
+// 2s timeout — webinar_mock should never block on a slow image host.
+async function checkHeadshot(url) {
+  if (!url || typeof url !== 'string' || !url.startsWith('http')) return null;
+  try {
+    const r = await fetch(url, { method: 'HEAD', signal: AbortSignal.timeout(2000) });
+    if (!r.ok) return null;
+    const ct = r.headers.get('content-type') || '';
+    if (ct && !ct.startsWith('image/')) return null;
+    return url;
+  } catch { return null; }
+}
+
+// Build the Proof slide content from the richest available source.
+// Priority: webinar_titles.variants[0].proof_story → extracted.angle.proof + verbatim.result_quote.
+// Returns { show, heading, quote, attribution, methodology }. show=false → skip the slide.
+function deriveProof(proofStory, angle, verbatim) {
+  const methodology = (angle && angle.methodology) || '';
+  const firstSentence = (s) => {
+    if (!s) return '';
+    const m = String(s).match(/^[^.!?\n]+[.!?]?/);
+    return (m ? m[0] : String(s)).trim();
+  };
+  // Attribution regex: capture "Name → numbers" first occurrence in proof_story
+  const attribFromStory = (s) => {
+    if (!s) return '';
+    const m = String(s).match(/([A-Z][\w'.-]+(?:\s+[A-Z][\w'.-]+){0,3})\s*[→\-–—]\s*([^.→\n]+?(?:\d[^.→\n]*))/);
+    if (!m) return '';
+    return `${m[1].trim()} — ${m[2].trim().replace(/\s+/g, ' ')}`.slice(0, 120);
+  };
+
+  if (proofStory && String(proofStory).trim().length >= 20) {
+    const heading = firstSentence(proofStory) || 'Recent client outcome';
+    const attribution = attribFromStory(proofStory);
+    // Quote: full proof_story minus the attribution lead, truncated. Strip the leading "Name →" segment so it doesn't repeat.
+    let quote = String(proofStory).replace(/^[A-Z][\w'.-]+(?:\s+[A-Z][\w'.-]+){0,3}\s*[→\-–—]\s*/, '').trim();
+    if (quote.length > 220) quote = quote.slice(0, 217).replace(/\s+\S*$/, '') + '…';
+    return { show: true, heading, quote, attribution, methodology };
+  }
+
+  // Fallback: synthesize from angle.proof + verbatim.result_quote
+  const proof = (angle && angle.proof) || '';
+  const resultQuote = (verbatim && verbatim.result_quote) || '';
+  if (!proof && !resultQuote) return { show: false, heading: '', quote: '', attribution: '', methodology: '' };
+
+  const heading = firstSentence(proof || (angle && angle.result) || 'A recent client outcome');
+  const quote = (resultQuote && resultQuote.length >= 12)
+    ? `"${resultQuote.replace(/^["']|["']$/g, '').trim()}"`
+    : (proof ? proof.split(/(?<=[.!?])\s+/).slice(1, 3).join(' ').slice(0, 220) : '');
+  const attribution = attribFromStory(proof);
+  return { show: !!(heading && (quote || attribution)), heading, quote, attribution, methodology };
+}
+
+async function handleWebinarMock(task, job, customInstructions = '') {
   // Fetch dependencies
   const webinarTitlesTask = await getTaskOutput(job.id, 'webinar_titles');
   if (!webinarTitlesTask || webinarTitlesTask.status !== 'completed') {
@@ -2417,22 +2515,38 @@ async function handleWebinarMock(task, job) {
   const brandData  = job.brand_data   || {};
   const research   = job.research_data?.host || {};
 
+  const esc = (s) => String(s || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
   const primaryColor   = brandData.primary_color   || '#0D9488';
   const secondaryColor = brandData.secondary_color  || '#1F2937';
+  const accentColor    = brandData.accent_color    || brandData.primary_color || '#0D9488';
+  const brandFont      = brandData.font_family     || `-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif`;
   const logoUrl        = brandData.logo_url         || '';
+  const tagline        = brandData.tagline          || '';
   const companyName    = brandData.company_name     || extracted.prospect?.company || job.prospect_company || 'Your Company';
   const hostName       = research.name              || extracted.prospect?.name    || companyName;
+  const hostTitle      = research.title             || 'Webinar Host';
+  const hostBio        = (research.bio || '').slice(0, 140);
+  const hostHeadshot   = await checkHeadshot(research.headshot_url);
+  const forLine        = variant.for_line           || '';
 
   // Find best hero image from brand scrape
   const heroImage = (brandData.images || []).find(i => i.type === 'hero') || (brandData.images || [])[0];
   const heroImageUrl = heroImage?.url || '';
+
+  // Proof slide derivation — uses already-extracted data only.
+  const proof = deriveProof(variant.proof_story, extracted.angle, extracted.verbatim);
 
   // Generate chat messages via AI prompt
   const chatResult = await generateChatMessages(
     variant.title, extracted.icp,
     extracted.customer_pain   || extracted.angle?.pain,
     extracted.result_delivered || extracted.angle?.result,
-    hostName
+    hostName,
+    extracted.icp?.geography || (extracted.icp?.apollo_geography || [])[0] || '',
+    extracted.situation?.current_lead_gen || '',
+    variant.proof_story || '',
+    customInstructions || ''
   ).catch(e => { console.warn('[webinar_mock] chat gen failed:', e.message); return null; });
   const messages = chatResult?.messages || [];
 
@@ -2453,44 +2567,84 @@ async function handleWebinarMock(task, job) {
   if (!WEBINAR_MOCK_TEMPLATE) throw new Error('webinar_mock.html template not loaded');
 
   const slide1Title    = variant.title || '';
-  const slide1Subtitle = `How ${companyName} Grows Your Business`;
+  const slide1Subtitle = tagline || `How ${companyName} Grows Your Business`;
   const slide2Title    = 'What You\'ll Learn Today';
   const bulletsList    = (variant.bullets || ['Proven system for getting clients', 'Step-by-step framework', 'How to scale predictably']).slice(0, 4);
 
+  // Slide order: Hero (1) → Proof (2, conditional) → Agenda (3 or 2)
+  const maxSlides = proof.show ? 3 : 2;
+  const agendaSlideId = proof.show ? 3 : 2;
+
+  const apiBaseUrl = (process.env.APP_URL || 'https://deal-forge-production.up.railway.app').replace(/\/$/, '');
+
   let htmlContent = interpolate(WEBINAR_MOCK_TEMPLATE, {
-    EVENT_TITLE:      slide1Title.replace(/</g, '&lt;').replace(/>/g, '&gt;'),
-    SLIDE1_TITLE:     slide1Title.replace(/</g, '&lt;').replace(/>/g, '&gt;'),
-    SLIDE1_SUBTITLE:  slide1Subtitle.replace(/</g, '&lt;').replace(/>/g, '&gt;'),
-    SLIDE2_TITLE:     slide2Title,
-    BULLETS_JSON:     JSON.stringify(bulletsList),
-    COMPANY_NAME:     companyName.replace(/</g, '&lt;').replace(/>/g, '&gt;'),
-    HOST_NAME:        hostName.replace(/</g, '&lt;').replace(/>/g, '&gt;'),
-    PRIMARY_COLOR:    primaryColor,
-    SECONDARY_COLOR:  secondaryColor,
-    LOGO_URL:         logoUrl,
-    HERO_IMAGE_URL:   heroImageUrl,
-    ATTENDEE_COUNT:   attendeeCount,
-    MESSAGES_JSON:    JSON.stringify(timedMessages)
+    EVENT_TITLE:        esc(slide1Title),
+    SLIDE1_TITLE:       esc(slide1Title),
+    SLIDE1_SUBTITLE:    esc(slide1Subtitle),
+    SLIDE2_TITLE:       slide2Title,
+    BULLETS_JSON:       JSON.stringify(bulletsList),
+    COMPANY_NAME:       esc(companyName),
+    HOST_NAME:          esc(hostName),
+    HOST_TITLE:         esc(hostTitle),
+    HOST_BIO:           esc(hostBio),
+    HOST_HEADSHOT_URL:  hostHeadshot || '',
+    FOR_LINE:           esc(forLine),
+    TAGLINE:            esc(tagline),
+    PRIMARY_COLOR:      primaryColor,
+    SECONDARY_COLOR:    secondaryColor,
+    ACCENT_COLOR:       accentColor,
+    BRAND_FONT:         brandFont,
+    LOGO_URL:           logoUrl,
+    HERO_IMAGE_URL:     heroImageUrl,
+    ATTENDEE_COUNT:     attendeeCount,
+    MESSAGES_JSON:      JSON.stringify(timedMessages),
+    QS_STAT_1_VALUE:    '$500M+',
+    QS_STAT_1_LABEL:    'Client Revenue',
+    QS_STAT_2_VALUE:    '1,400+',
+    QS_STAT_2_LABEL:    'Clients Served',
+    QS_STAT_3_VALUE:    '150K+',
+    QS_STAT_3_LABEL:    'Webinar Registrations',
+    PROOF_HEADING:      esc(proof.heading),
+    PROOF_QUOTE:        esc(proof.quote),
+    PROOF_ATTRIBUTION:  esc(proof.attribution),
+    METHODOLOGY:        esc(proof.methodology),
+    MAX_SLIDES:         maxSlides,
+    AGENDA_SLIDE_ID:    agendaSlideId,
+    JOB_ID:             job.id,
+    API_BASE_URL:       apiBaseUrl,
+    LAST_INSTRUCTIONS:  esc(customInstructions || '')
   });
 
-  if (logoUrl) {
-    htmlContent = htmlContent.replace(/\{\{#LOGO_URL\}\}([\s\S]*?)\{\{\/LOGO_URL\}\}/g, '$1');
-    htmlContent = htmlContent.replace(/\{\{\^LOGO_URL\}\}[\s\S]*?\{\{\/LOGO_URL\}\}/g, '');
-  } else {
-    htmlContent = htmlContent.replace(/\{\{#LOGO_URL\}\}[\s\S]*?\{\{\/LOGO_URL\}\}/g, '');
-    htmlContent = htmlContent.replace(/\{\{\^LOGO_URL\}\}([\s\S]*?)\{\{\/LOGO_URL\}\}/g, '$1');
-  }
+  // Resolve Mustache-style conditional blocks (logo, headshot, for-line, tagline, proof slide, methodology).
+  const applyBlock = (key, present) => {
+    const truthy = new RegExp(`\\{\\{#${key}\\}\\}([\\s\\S]*?)\\{\\{/${key}\\}\\}`, 'g');
+    const falsy  = new RegExp(`\\{\\{\\^${key}\\}\\}([\\s\\S]*?)\\{\\{/${key}\\}\\}`, 'g');
+    if (present) {
+      htmlContent = htmlContent.replace(truthy, '$1').replace(falsy, '');
+    } else {
+      htmlContent = htmlContent.replace(truthy, '').replace(falsy, '$1');
+    }
+  };
+  applyBlock('LOGO_URL',          !!logoUrl);
+  applyBlock('HOST_HEADSHOT_URL', !!hostHeadshot);
+  applyBlock('FOR_LINE',          !!forLine);
+  applyBlock('TAGLINE',           !!tagline);
+  applyBlock('SHOW_PROOF',        proof.show);
+  applyBlock('METHODOLOGY',       !!proof.methodology);
 
   const storagePath = `${job.id}/webinar_mock.html`;
   const publicUrl   = await storageUpload(storagePath, htmlContent);
-  console.log(`[webinar_mock] Uploaded: ${publicUrl}`);
+  console.log(`[webinar_mock] Uploaded: ${publicUrl} (font=${brandData.font_family||'fallback'}, headshot=${!!hostHeadshot}, proof=${proof.show})`);
   // Store full generated data in output_data so portal can read it directly
   return {
-    url:            publicUrl,
-    title:          variant.title,
-    host_name:      hostName,
-    attendee_count: attendeeCount,
-    messages:       timedMessages   // ← portal reads this for live chat
+    url:                  publicUrl,
+    title:                variant.title,
+    host_name:            hostName,
+    host_headshot_used:   !!hostHeadshot,
+    proof_slide_shown:    proof.show,
+    attendee_count:       attendeeCount,
+    custom_instructions:  customInstructions || '',
+    messages:             timedMessages   // ← portal reads this for live chat
   };
 }
 
@@ -3119,6 +3273,61 @@ const server = http.createServer(async (req, res) => {
       }));
     } catch(e) {
       console.error('[GET /api/jobs/:id]', e.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  // ── POST /api/webinar_mock/regenerate — re-run webinar_mock with custom prompt ───
+  // Called from the rep-mode toolbar in templates/webinar_mock.html. Re-uses the
+  // existing dependencies (brand_scrape / webinar_titles / prospect_research) — no
+  // upstream re-run. Overwrites the same Storage object so the URL stays stable.
+  if (req.method === 'POST' && urlPath === '/api/webinar_mock/regenerate') {
+    setCors(res);
+    try {
+      const body = await parseBody(req);
+      const jobId = body.job_id;
+      const customInstructions = (body.instructions || '').toString().slice(0, 600).trim();
+      if (!jobId) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'job_id is required' }));
+        return;
+      }
+      const job = await getJob(jobId);
+      if (!job) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Job not found' }));
+        return;
+      }
+      const tasks = await getTasksByJobId(jobId);
+      const task = tasks.find(t => t.task_type === 'webinar_mock');
+      if (!task) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'webinar_mock task not found for this job' }));
+        return;
+      }
+      console.log(`[POST /api/webinar_mock/regenerate] job=${jobId} instr=${customInstructions ? `"${customInstructions.slice(0,80)}"` : '(none)'}`);
+      const output = await handleWebinarMock(task, job, customInstructions);
+      await supabaseRequest('PATCH', `/rest/v1/tasks?id=eq.${task.id}`, {
+        output_data: output,
+        asset_url:   output.url,
+        status:      'completed',
+        error_message: null,
+        completed_at:  new Date().toISOString(),
+        updated_at:    new Date().toISOString()
+      });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        url:                  output.url,
+        host_headshot_used:   output.host_headshot_used,
+        proof_slide_shown:    output.proof_slide_shown,
+        attendee_count:       output.attendee_count,
+        custom_instructions:  output.custom_instructions,
+        regenerated_at:       new Date().toISOString()
+      }));
+    } catch(e) {
+      console.error('[POST /api/webinar_mock/regenerate]', e.message);
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: e.message }));
     }

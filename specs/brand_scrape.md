@@ -83,9 +83,17 @@ Written to: `jobs.brand_data` (new JSONB column on jobs table — migration requ
   "logo_url": "string | null — absolute URL to logo image",
   "primary_color": "string | null — hex code e.g. #2D6BE4",
   "secondary_color": "string | null — hex code",
+  "accent_color": "string | null — hex code (CSS --accent / --cta / button colors)",
+  "all_colors": "string[] — up to 6 validated hex colors",
   "tagline": "string | null — meta description or first heading",
   "company_name": "string | null — display name as it appears on site",
-  "scraped": "boolean — true if Apify returned usable content"
+  "website_summary": "string | null — first 600 chars of body text",
+  "font_family": "string | null — comma-separated font-family value safe to drop into a CSS declaration (e.g. \"'Inter', sans-serif\"). Captured via 3-path waterfall: CSS variables (--font-primary, --font-heading, --brand-font, --font-sans, --font-display, --font-base) → body/html/:root { font-family: ... } declaration → Google Fonts <link> URL family parameter. null when none of these are present.",
+  "images": "Array<{ url, alt, type: 'hero'|'team'|'general' }> — up to 8",
+  "favicon_url": "string — Google Favicon CDN fallback URL",
+  "domain": "string — raw domain scraped",
+  "source": "'html' | 'none'",
+  "scraped": "boolean — true if scrape returned usable content"
 }
 ```
 
