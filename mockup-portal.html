@@ -699,6 +699,7 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
           <span id="si-transcript-badge" class="source-badge missing">No transcript</span>
         </div>
         <div id="si-call-rows">
+          <div class="source-row"><span class="source-row-label">Source</span><span class="source-row-value" id="si-call-source">—</span></div>
           <div class="source-row"><span class="source-row-label">Company</span><span class="source-row-value" id="si-call-company">—</span></div>
           <div class="source-row"><span class="source-row-label">Contact</span><span class="source-row-value" id="si-call-contact">—</span></div>
           <div class="source-row"><span class="source-row-label">LTV</span><span class="source-row-value" id="si-call-ltv">—</span></div>
@@ -2638,6 +2639,28 @@ function populateSourceIntelligence(session) {
     const el = document.getElementById(id);
     if (el) el.textContent = val || '—';
   };
+
+  // Source: link(s) to the Fireflies transcript(s) that fed this brief.
+  // Newer jobs persist a `transcripts` array under _meta.transcript; older jobs
+  // only have a single `id` + `title` — handle both.
+  const sourceEl = document.getElementById('si-call-source');
+  if (sourceEl) {
+    const meta = (ext._meta && ext._meta.transcript) || {};
+    const list = Array.isArray(meta.transcripts) && meta.transcripts.length
+      ? meta.transcripts
+      : (meta.id ? [{ id: meta.id, title: meta.title, date: meta.date }] : []);
+    if (list.length) {
+      sourceEl.innerHTML = list.map(t => {
+        const url = 'https://app.fireflies.ai/view/' + encodeURIComponent(t.id);
+        const label = (t.title || 'Fireflies transcript') + (t.date ? ' · ' + t.date : '');
+        const safe = label.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        return `<a href="${url}" target="_blank" rel="noopener" style="color:#93c5fd;text-decoration:none;border-bottom:1px dashed #475569;">↗ ${safe}</a>`;
+      }).join('<br>');
+    } else {
+      sourceEl.textContent = meta.source === 'none' ? 'No transcript matched' : '—';
+    }
+  }
+
   set('si-call-company',        prospect.company);
   set('si-call-contact',        [prospect.name, prospect.title].filter(Boolean).join(', '));
   set('si-call-ltv',            business.ltv || business.deal_size);

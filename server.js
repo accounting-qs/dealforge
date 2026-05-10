@@ -1930,7 +1930,22 @@ async function handleExtract(task, job) {
   const firstT = transcripts[0] || null;
   extracted._meta = {
     transcript: firstT
-      ? { id: firstT.id, title: firstT.title, date: firstT.dateString, found: true, source: transcriptSource, count: transcripts.length }
+      ? {
+          id:          firstT.id,
+          title:       firstT.title,
+          date:        firstT.dateString,
+          found:       true,
+          source:      transcriptSource,
+          count:       transcripts.length,
+          // Full list of transcripts that fed this brief — surfaced in the Source
+          // Intelligence panel so the rep can click through to Fireflies and verify.
+          transcripts: transcripts.map(t => ({
+            id:       t.id,
+            title:    t.title || '(untitled)',
+            date:     t.dateString || null,
+            duration: t.duration || 0
+          }))
+        }
       : { found: false, source: 'none' },
     website: { domain: defaultDomain, title: website.title, scraped: !!(website.bodyText) }
   };
