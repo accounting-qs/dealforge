@@ -1671,8 +1671,11 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
       </div>
 
       <div style="margin-top:6px;padding:12px 14px;background:rgba(0,0,0,0.3);border:1px solid #27272a;border-radius:6px;font-size:12px;color:#71717a;line-height:1.5;">
-        <strong style="color:#a1a1aa;">Pipeline status</strong>
-        <div id="pi-task-status" style="margin-top:6px;font-family:ui-monospace,'SF Mono',monospace;font-size:11px;color:#52525b;">(loading…)</div>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+          <strong style="color:#a1a1aa;">Tab readiness</strong>
+          <span style="font-size:10px;color:#52525b;">What each menu tab will look like to the prospect</span>
+        </div>
+        <div id="pi-tab-status" style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:#52525b;">(loading…)</div>
       </div>
     </form>
   </div>
@@ -3969,19 +3972,81 @@ function _initProspectInfoTab(session) {
     el.value = v;
   });
 
-  // Render pipeline-status snapshot for the personalization tasks
-  const statusEl = document.getElementById('pi-task-status');
-  if (statusEl) {
-    const tasksObj = (window._latestJobTasks || {});
-    const lines = ['brand_scrape','prospect_research','webinar_titles','calendar_visual','webinar_mock']
-      .map(k => {
-        const t = tasksObj[k] || {};
-        const s = t.status || '—';
-        const colour = s === 'completed' ? '#4ade80' : s === 'failed' ? '#f87171' : s === 'pending' ? '#fbbf24' : '#94a3b8';
-        return `<span style="color:${colour}">${k}: ${s}</span>`;
-      });
-    statusEl.innerHTML = lines.join(' &nbsp;·&nbsp; ');
-  }
+  _renderTabReadinessPanel();
+}
+
+// Aggregate task statuses → human-friendly "tab readiness" rows. One row per
+// menu tab in the rep portal, color-coded by aggregate state of its backing
+// tasks. Static tabs (Onboarding, Case Studies) report Ready as long as the
+// brief is in place.
+function _renderTabReadinessPanel() {
+  const el = document.getElementById('pi-tab-status');
+  if (!el) return;
+  const tasks = window._latestJobTasks || {};
+
+  // Map each menu tab to the underlying pipeline tasks it depends on.
+  // Empty array = static UX (no AI task). Order matches the visible tab order.
+  const TAB_MAP = [
+    { name: 'How It Works',       tasks: ['extract'],                          static: false },
+    { name: 'Lead List',          tasks: ['lead_list'],                        static: false },
+    { name: 'Calendar Invite',    tasks: ['calendar_visual'],                  static: false },
+    { name: 'Webinar Experience', tasks: ['webinar_titles', 'webinar_mock'],   static: false },
+    { name: 'Onboarding',         tasks: [],                                   static: true  },
+    { name: 'ROI Model',          tasks: ['roi_model'],                        static: false },
+    { name: 'Case Studies',       tasks: [],                                   static: true  }
+  ];
+
+  // Aggregate worst status across a tab's backing tasks. Severity ordering
+  // controls which status "wins" when tasks disagree (e.g. one completed, one
+  // failed → tab is failed). 'needs_input' is amber, not red — rep action,
+  // not a system bug.
+  const SEVERITY = { failed: 0, pending: 1, processing: 2, needs_input: 3, completed: 4, ready: 5, unknown: 6 };
+  const STYLE = {
+    completed:    { icon: '✓', color: '#4ade80', label: 'Ready' },
+    ready:        { icon: '✓', color: '#4ade80', label: 'Ready (static)' },
+    needs_input:  { icon: '⚠', color: '#fbbf24', label: 'Needs input'    },
+    processing:   { icon: '⋯', color: '#93c5fd', label: 'Running'        },
+    pending:      { icon: '⋯', color: '#94a3b8', label: 'Queued'         },
+    failed:       { icon: '✗', color: '#f87171', label: 'Failed'         },
+    unknown:      { icon: '—', color: '#52525b', label: 'No data yet'    }
+  };
+
+  const rows = TAB_MAP.map(tab => {
+    if (tab.static) return { tab, status: 'ready', detail: '' };
+    if (!tab.tasks.length) return { tab, status: 'unknown', detail: '' };
+    let worst = 'unknown';
+    let firstError = '';
+    let problemTask = '';
+    for (const taskName of tab.tasks) {
+      const t = tasks[taskName] || {};
+      const s = t.status || 'unknown';
+      if (s === 'failed' && !firstError) {
+        firstError = String(t.error || '').slice(0, 140);
+        problemTask = taskName;
+      }
+      if (SEVERITY[s] < SEVERITY[worst]) worst = s;
+    }
+    let detail = '';
+    if (worst === 'failed' && firstError) detail = `${problemTask} — ${firstError}`;
+    else if (worst === 'needs_input') {
+      // Try to surface the underlying error for the rep to fix
+      for (const taskName of tab.tasks) {
+        const t = tasks[taskName] || {};
+        if (t.status === 'needs_input' && t.error) { detail = String(t.error).slice(0, 140); break; }
+      }
+    }
+    return { tab, status: worst, detail };
+  });
+
+  el.innerHTML = rows.map(r => {
+    const s = STYLE[r.status] || STYLE.unknown;
+    return `<div style="display:flex;align-items:baseline;gap:8px;line-height:1.5;">
+      <span style="display:inline-block;width:14px;color:${s.color};font-weight:700;text-align:center;">${s.icon}</span>
+      <span style="flex:1;color:#a1a1aa;">${r.tab.name}</span>
+      <span style="color:${s.color};font-size:11px;font-weight:600;">${s.label}</span>
+      ${r.detail ? `<span style="color:#71717a;font-size:11px;font-style:italic;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${r.detail.replace(/"/g,'&quot;')}">— ${r.detail}</span>` : ''}
+    </div>`;
+  }).join('');
 }
 
 function _piCollectFields() {

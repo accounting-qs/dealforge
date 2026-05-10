@@ -38,6 +38,46 @@ function interpolate(template, vars) {
   return template.replace(/\{\{(\w+)\}\}/g, (_, k) => (vars[k] !== undefined && vars[k] !== null) ? vars[k] : '');
 }
 
+// Robustly extract a JSON object from an LLM response. Handles three failure
+// modes we've seen in prod: (1) Claude wraps the JSON in a markdown code fence,
+// (2) Claude appends a sentence with curly braces after the JSON (breaks the
+// greedy /\{[\s\S]*\}/ regex), (3) Claude prefixes a "Here is the JSON:" line.
+//
+// Returns the parsed object or null. Never throws.
+function extractJsonObject(raw) {
+  if (!raw || typeof raw !== 'string') return null;
+  let s = raw.trim();
+  // Strip ```json ... ``` or ``` ... ``` fences
+  const fenced = s.match(/^```(?:json)?\s*\n?([\s\S]*?)\n?```\s*$/i);
+  if (fenced) s = fenced[1].trim();
+  // Direct parse
+  try { return JSON.parse(s); } catch (_) { /* fall through */ }
+  // Brace-balanced extraction: find first `{`, walk forward respecting strings
+  // and escapes, return when we hit the matching `}` at depth 0.
+  const start = s.indexOf('{');
+  if (start === -1) return null;
+  let depth = 0, inString = false, escape = false;
+  for (let i = start; i < s.length; i++) {
+    const ch = s[i];
+    if (escape) { escape = false; continue; }
+    if (inString) {
+      if (ch === '\\') escape = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') inString = true;
+    else if (ch === '{') depth++;
+    else if (ch === '}') {
+      depth--;
+      if (depth === 0) {
+        const block = s.slice(start, i + 1);
+        try { return JSON.parse(block); } catch (_) { return null; }
+      }
+    }
+  }
+  return null;
+}
+
 // ── Supabase REST helper ───────────────────────────────────────────────────────
 const SUPABASE_URL        = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
@@ -919,12 +959,7 @@ Return this exact JSON (null for anything not found):
   });
 
   const raw = message.content[0].text;
-  try { return JSON.parse(raw); }
-  catch(e) {
-    const m = raw.match(/\{[\s\S]*\}/);
-    if (m) return JSON.parse(m[0]);
-    return null; // Graceful: modal opens blank for manual entry
-  }
+  return extractJsonObject(raw); // null → modal opens blank for manual entry
 }
 
 function emptyBrief(contactInfo) {
@@ -1657,8 +1692,8 @@ async function generateWebinarTitles(extracted, companyName, job = null) {
   });
   const raw = message.content[0].text;
   let parsed;
-  try { parsed = JSON.parse(raw); }
-  catch(e) { const m = raw.match(/\{[\s\S]*\}/); if (m) parsed = JSON.parse(m[0]); else throw new Error('webinar_titles: unparseable JSON'); }
+  parsed = extractJsonObject(raw);
+  if (!parsed) throw new Error('webinar_titles: unparseable JSON');
   // Attach brain meta + generation timestamp so the portal can show
   // "Brain v25 principles · generated [time]" under the variant tag.
   parsed._meta = {
@@ -1771,8 +1806,7 @@ Return this exact JSON:
     messages: [{ role: 'user', content: userContent }]
   });
   const raw = msg.content[0].text;
-  try { return JSON.parse(raw); }
-  catch(e) { const m = raw.match(/\{[\s\S]*\}/); if (m) return JSON.parse(m[0]); return null; }
+  return extractJsonObject(raw);
 }
 
 // ── Webinar mock: live chat messages ─────────────────────────────────────────
@@ -1824,8 +1858,7 @@ Return:
     messages: [{ role: 'user', content: userContent }]
   });
   const raw = msg.content[0].text;
-  try { return JSON.parse(raw); }
-  catch(e) { const m = raw.match(/\{[\s\S]*\}/); if (m) return JSON.parse(m[0]); return null; }
+  return extractJsonObject(raw);
 }
 
 // ── TASK HANDLERS ─────────────────────────────────────────────────────────────
