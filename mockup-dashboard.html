@@ -72,6 +72,19 @@
   .nj-section { margin-bottom: 20px; }
   .nj-label { font-size: 11px; font-weight: 600; letter-spacing: 0.07em; text-transform: uppercase; color: #52525b; margin-bottom: 6px; }
 
+  /* Source badge — small chip next to a brief field showing where its prefilled value came from. */
+  .src-badge {
+    display: inline-block; margin-left: 8px; padding: 1px 6px; border-radius: 999px;
+    font-size: 9px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
+    line-height: 1.4; vertical-align: middle;
+  }
+  .src-badge.src-transcript { background: rgba(96,165,250,0.14);  color: #93c5fd; }
+  .src-badge.src-rep_input  { background: rgba(167,139,250,0.14); color: #c4b5fd; }
+  .src-badge.src-ghl        { background: rgba(245,158,11,0.14);  color: #fcd34d; }
+  .src-badge.src-history    { background: rgba(244,114,182,0.14); color: #f9a8d4; }
+  .src-badge.src-apollo     { background: rgba(52,211,153,0.14);  color: #6ee7b7; }
+  .src-badge.src-email_domain { background: rgba(148,163,184,0.14); color: #cbd5e1; }
+
   .nj-input {
     width: 100%; background: rgba(10,10,15,0.7); border: 1px solid rgba(113,113,122,0.4);
     border-radius: 8px; padding: 9px 12px; font-size: 13px; color: #e4e4e7;
@@ -932,6 +945,35 @@ function njShowBrief() {
   setVal('bf-pain-quote',   verbatim.pain_quote);
   setVal('bf-result-quote', verbatim.result_quote);
   setVal('bf-goal-quote',   verbatim.goal_quote);
+
+  // Source badges — tag each pre-filled contact field with where its value came from
+  // so reps can spot stale CRM values before confirming the brief.
+  var sources = (_njPrefetchResult && _njPrefetchResult.contact_sources) || {};
+  var srcLabel = {
+    transcript:   'from Fireflies',
+    rep_input:    'from rep input',
+    ghl:          'from GHL',
+    history:      'from previous job',
+    apollo:       'from Apollo',
+    email_domain: 'from email domain'
+  };
+  function tagSource(inputId, source) {
+    var input = document.getElementById(inputId);
+    if (!input) return;
+    var labelEl = input.parentNode && input.parentNode.querySelector('.nj-label');
+    if (!labelEl) return;
+    var existing = labelEl.querySelector('.src-badge');
+    if (existing) existing.remove();
+    if (!source || !srcLabel[source]) return;
+    var span = document.createElement('span');
+    span.className = 'src-badge src-' + source;
+    span.textContent = srcLabel[source];
+    labelEl.appendChild(span);
+  }
+  tagSource('bf-company',       sources.company);
+  tagSource('bf-contact-name',  sources.name);
+  tagSource('bf-contact-title', sources.title);
+  // Website + LinkedIn live on Step 1, not Step 2 — but the contact-card label could be tagged later if useful.
 
   // Transition to Step 2
   document.getElementById('nj-results').style.display = 'none';

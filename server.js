@@ -841,7 +841,7 @@ ${websiteContent ? `\nWEBSITE CONTENT:\n---\n${websiteContent.slice(0, 2000)}\n-
 Return this exact JSON (null for anything not found):
 {
   "prospect": {
-    "company":       "string — company name. Use known value if transcript confirms or is silent",
+    "company":       "string — company name. Resolution rules: (1) If the transcript clearly mentions a different company name for the person on the call, PREFER the transcript value over the known value — the known value may be stale CRM data. (2) If the transcript confirms the known value, use it. (3) If the transcript is silent on company, fall back to the known value as the best available signal. (4) Never invent a company name that appears in neither the transcript nor the known value.",
     "contact_name":  "string | null — full name of person on the call",
     "contact_title": "string | null — their job title"
   },
@@ -3188,24 +3188,64 @@ const server = http.createServer(async (req, res) => {
 
       const emailDomain = email.split('@')[1] || '';
       const websiteFallback = isFreeMailDomain(emailDomain) ? '' : emailDomain;
-      const contactInfo = {
-        name:    body.name    || ghlContact?.name    || historicalContext?.name || null,
-        company: body.company || ghlContact?.company || historicalContext?.company || null,
-        title:   ghlContact?.title || null,
-        website: (body.website || ghlContact?.website || historicalContext?.website || websiteFallback || '').replace(/^https?:\/\//, '').split('/')[0],
-        linkedin_url: body.linkedin_url || ghlContact?.linkedin_url || historicalContext?.linkedin_url || null
+
+      // Resolve each contact field by waterfall AND record where it came from,
+      // so the brief UI can show "from GHL" / "from previous job" / "from rep input"
+      // badges and reps can spot stale CRM values at a glance.
+      const contactSources = {};
+      const pick = (field, ...candidates) => {
+        for (const [src, val] of candidates) {
+          if (val != null && val !== '') {
+            contactSources[field] = src;
+            return val;
+          }
+        }
+        contactSources[field] = null;
+        return null;
       };
+      const contactInfo = {
+        name:         pick('name',
+                          ['rep_input', body.name],
+                          ['ghl',       ghlContact?.name],
+                          ['history',   historicalContext?.name]),
+        company:      pick('company',
+                          ['rep_input', body.company],
+                          ['ghl',       ghlContact?.company],
+                          ['history',   historicalContext?.company]),
+        title:        pick('title',
+                          ['ghl',       ghlContact?.title]),
+        website:      pick('website',
+                          ['rep_input', body.website],
+                          ['ghl',       ghlContact?.website],
+                          ['history',   historicalContext?.website],
+                          ['email_domain', websiteFallback]),
+        linkedin_url: pick('linkedin_url',
+                          ['rep_input', body.linkedin_url],
+                          ['ghl',       ghlContact?.linkedin_url],
+                          ['history',   historicalContext?.linkedin_url])
+      };
+      // Normalize website (strip protocol, take host segment only)
+      if (contactInfo.website) {
+        contactInfo.website = String(contactInfo.website).replace(/^https?:\/\//, '').split('/')[0];
+      }
 
       // If GHL didn't have a LinkedIn URL on the contact, try Apollo people/match
       // by email as a fallback (1 credit). Best-effort; failure is non-fatal.
-      if (!contactInfo.linkedin_url) {
+      // Skip for free-mail addresses — Apollo can't reliably identify a person from
+      // a gmail/yahoo/etc. address and routinely returns a totally unrelated match.
+      if (!contactInfo.linkedin_url && !isFreeMailDomain(emailDomain)) {
         const apolloMatch = await apolloMatchByEmail(email);
         if (apolloMatch?.linkedin_url) {
           contactInfo.linkedin_url = apolloMatch.linkedin_url;
-          if (!contactInfo.title && apolloMatch.title) contactInfo.title = apolloMatch.title;
+          contactSources.linkedin_url = 'apollo';
+          if (!contactInfo.title && apolloMatch.title) {
+            contactInfo.title = apolloMatch.title;
+            contactSources.title = 'apollo';
+          }
           console.log(`[prefetch] Apollo people/match resolved LinkedIn for ${email}`);
         }
       }
+      console.log(`[prefetch] contactInfo sources for ${email}:`, JSON.stringify(contactSources));
 
       // Phase 3: also check DB for approved calls — used for count badge in UI
       const dbApproved = await findApprovedCallsFromDB(email);
@@ -3245,9 +3285,21 @@ const server = http.createServer(async (req, res) => {
         const webContent = website?.bodyText || '';
         console.log(`[prefetch] Transcript context: ${txContent.length} chars (${rawSentences.length} verbatim + summaries)`);
         brief = await extractBriefFromTranscript(txContent, webContent, contactInfo);
-        // Promote extracted contact info back to contactInfo
-        if (brief?.prospect?.company      && !body.company) contactInfo.company = brief.prospect.company;
-        if (brief?.prospect?.contact_name && !body.name)    contactInfo.name    = brief.prospect.contact_name;
+        // Promote extracted contact info back to contactInfo and update its source
+        // to 'transcript' so the brief UI shows the rep that the call (not stale GHL)
+        // is what populated this field.
+        if (brief?.prospect?.company && !body.company) {
+          contactInfo.company = brief.prospect.company;
+          contactSources.company = 'transcript';
+        }
+        if (brief?.prospect?.contact_name && !body.name) {
+          contactInfo.name = brief.prospect.contact_name;
+          contactSources.name = 'transcript';
+        }
+        if (brief?.prospect?.contact_title) {
+          contactInfo.title = brief.prospect.contact_title;
+          contactSources.title = 'transcript';
+        }
       } else if (historicalContext?.brief) {
         brief = historicalContext.brief;
         console.log(`[prefetch] Reusing historical brief from job ${historicalContext.jobId || 'unknown'} for ${email}`);
@@ -3255,11 +3307,12 @@ const server = http.createServer(async (req, res) => {
 
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
-        transcript_found:   transcriptFound,
-        transcript_title:   transcriptTitle,
+        transcript_found:    transcriptFound,
+        transcript_title:    transcriptTitle,
         approved_call_count: approvedCallCount,
-        contact: contactInfo,
-        brief:   brief || emptyBrief(contactInfo)
+        contact:             contactInfo,
+        contact_sources:     contactSources,
+        brief:               brief || emptyBrief(contactInfo)
       }));
     } catch(e) {
       console.error('[POST /api/prefetch]', e.message);
