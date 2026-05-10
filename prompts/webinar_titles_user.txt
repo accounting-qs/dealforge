@@ -1,4 +1,4 @@
-Generate calendar blocker copy for this prospect's webinar.
+Generate 3 webinar invite variants for this prospect's webinar. Return them under a top-level JSON key called "variants" (an array of 3 objects).
 
 **Prospect company:** {{prospect_company_name}}
 **Target segment:** {{icp_role}}s at {{icp_company_size}} {{icp_industry}} companies{{icp_geography_line}}

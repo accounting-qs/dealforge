@@ -1694,6 +1694,26 @@ async function generateWebinarTitles(extracted, companyName, job = null) {
   let parsed;
   parsed = extractJsonObject(raw);
   if (!parsed) throw new Error('webinar_titles: unparseable JSON');
+  // Defensive alias normalization — Claude sometimes uses the wrong top-level key
+  // (calendar_blockers / invites / titles / options) because the prompt narrative
+  // historically referred to "calendar blocker copy". If `variants` is missing
+  // but a same-shape array exists under a known alias, lift it into `variants`
+  // and log so we can track frequency. The prompt has been tightened too — this
+  // is a belt-and-suspenders guard for residual model variability.
+  if (!Array.isArray(parsed.variants) || parsed.variants.length === 0) {
+    const aliases = ['calendar_blockers', 'invites', 'titles', 'options', 'webinar_invites'];
+    for (const alias of aliases) {
+      if (Array.isArray(parsed[alias]) && parsed[alias].length > 0) {
+        console.warn(`[webinar_titles] Aliased "${alias}" → "variants" (model returned wrong top-level key)`);
+        parsed.variants = parsed[alias];
+        delete parsed[alias];
+        break;
+      }
+    }
+    if (!Array.isArray(parsed.variants) || parsed.variants.length === 0) {
+      throw new Error('webinar_titles: response missing required "variants" array (got keys: ' + Object.keys(parsed).slice(0, 6).join(', ') + ')');
+    }
+  }
   // Attach brain meta + generation timestamp so the portal can show
   // "Brain v25 principles · generated [time]" under the variant tag.
   parsed._meta = {
