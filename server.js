@@ -2568,7 +2568,13 @@ async function handleCalendarVisual(task, job) {
   if (!webinarTitlesTask || webinarTitlesTask.status !== 'completed') {
     throw new Error('DEPS_PENDING: calendar_visual waiting for webinar_titles');
   }
-  const titles = webinarTitlesTask.output_data?.variants || webinarTitlesTask.output_data?.titles || [];
+  // calendar_blockers is the most common drift wrapper-key the model returned before
+  // the generator-side normalizer landed. Old jobs still have output_data shaped that
+  // way; accept it here so they recover on next worker tick without a full rerun.
+  const titles = webinarTitlesTask.output_data?.variants
+              || webinarTitlesTask.output_data?.calendar_blockers
+              || webinarTitlesTask.output_data?.titles
+              || [];
   const variant = titles[0];
   if (!variant) throw new Error('calendar_visual: no title variant found');
 
@@ -2685,7 +2691,11 @@ async function handleWebinarMock(task, job, customInstructions = '') {
   if (!webinarTitlesTask || webinarTitlesTask.status !== 'completed') {
     throw new Error('DEPS_PENDING: webinar_mock waiting for webinar_titles');
   }
-  const titles = webinarTitlesTask.output_data?.variants || webinarTitlesTask.output_data?.titles || [];
+  // calendar_blockers fallback — see handleCalendarVisual comment for rationale.
+  const titles = webinarTitlesTask.output_data?.variants
+              || webinarTitlesTask.output_data?.calendar_blockers
+              || webinarTitlesTask.output_data?.titles
+              || [];
   const variant = titles[0];
   if (!variant) throw new Error('webinar_mock: no title variant found');
 
@@ -4398,7 +4408,31 @@ const server = http.createServer(async (req, res) => {
           } else {
             console.warn(`[regen-webinar-titles] No webinar_titles task row found for job ${jobId} — only the mirror was updated`);
           }
-          // 2) Mirror to _generated for redundancy + final progress flag
+          // 2) Cascade — reset downstream tasks that depend on webinar_titles so they
+          // re-run with the fresh variants. Without this the rendered calendar HTML
+          // asset and the webinar mock stay frozen on the previous run's output, even
+          // though the variant text in the modal updates from the mirror. The worker
+          // picks up the reset rows within 3s because their dependency
+          // (webinar_titles) is now completed with new output.
+          await writeRerun({ status: 'running', progress: 92, message: 'Re-running calendar visual + webinar mock…' });
+          const downstreamTypes = ['calendar_visual', 'webinar_mock'];
+          for (const t of downstreamTypes) {
+            try {
+              const r = await supabaseRequest(
+                'PATCH',
+                `/rest/v1/tasks?job_id=eq.${jobId}&task_type=eq.${t}`,
+                { status: 'pending', error_message: null, output_data: null, asset_url: null, attempts: 0, updated_at: new Date().toISOString() },
+                { 'Prefer': 'return=minimal' }
+              );
+              if (r.status >= 400) {
+                console.warn(`[regen-webinar-titles] Cascade reset failed for ${t}: status=${r.status} body=${JSON.stringify(r.body).slice(0,200)}`);
+              }
+            } catch (e) {
+              console.warn(`[regen-webinar-titles] Cascade reset error for ${t}: ${e.message}`);
+            }
+          }
+
+          // 3) Mirror to _generated for redundancy + final progress flag
           const fresh = await getJob(jobId);
           const ext   = fresh?.extracted_data || {};
           const updated = {
@@ -4408,7 +4442,7 @@ const server = http.createServer(async (req, res) => {
               webinarTitles: result,
               webinar_rerun: {
                 status: 'completed', progress: 100,
-                message: 'Variants regenerated',
+                message: 'Variants regenerated · downstream re-running',
                 finished_at: new Date().toISOString()
               }
             }
@@ -4416,7 +4450,7 @@ const server = http.createServer(async (req, res) => {
           await supabaseRequest('PATCH', `/rest/v1/jobs?id=eq.${jobId}`,
             { extracted_data: updated, updated_at: new Date().toISOString() },
             { 'Prefer': 'return=minimal' });
-          console.log(`[regen-webinar-titles] Job ${jobId}: variants regenerated`);
+          console.log(`[regen-webinar-titles] Job ${jobId}: variants regenerated + downstream queued`);
         } catch (e) {
           console.error(`[regen-webinar-titles] Job ${jobId} error:`, e.message);
           await writeRerun({ status: 'failed', progress: 100, message: 'Regeneration failed: ' + e.message });
