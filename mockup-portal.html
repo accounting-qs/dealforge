@@ -2831,9 +2831,22 @@ function selectFeaturedImage(url) {
 
 window._reRunPersonalization = runPersonalization;
 function runPersonalization(session) {
+  // Section-level error containment: a throw inside one render block (e.g. a
+  // weird LLM output for webinar titles, a null ICP field in the diagnostics
+  // panel) used to bubble up to the outer try/catch and silently kill every
+  // later section — most visibly the lead table stayed on its loading row.
+  // _safe runs each block in its own try/catch so siblings still render.
+  function _safe(label, fn) {
+    try { fn(); }
+    catch (e) {
+      console.warn('[Deal Forge:' + label + '] block failed (other sections will still render):', e && e.message || e);
+    }
+  }
   try {
     // Wire up rep-edit panels (no-op when not in edit mode)
-    if (typeof _initProspectInfoTab === 'function') _initProspectInfoTab(session);
+    _safe('prospect-info-tab', function() {
+      if (typeof _initProspectInfoTab === 'function') _initProspectInfoTab(session);
+    });
     const ext = session.extracted || {};
     const overrides = ext._overrides || {};
     const prospect = ext.prospect || {};
@@ -3258,6 +3271,7 @@ function runPersonalization(session) {
     }
 
     // ── Live chat personalization — use AI-generated messages from webinar_mock task ─────────────
+    _safe('chat-panel', function() {
     const chatPanel = document.querySelector('.chat-messages');
     if (chatPanel) {
       const aiMessages = gen.chatMessages; // array of {sender, text, is_team, timestamp} from handleWebinarMock
@@ -3305,6 +3319,7 @@ function runPersonalization(session) {
         }).join('');
       }
     }
+    }); // ← end _safe('chat-panel')
 
     // ── Reminder emails — use AI-generated copy from calendar_visual task ────────
     // Fall back to generic copy only when the task hasn't run yet for this job.
@@ -3312,6 +3327,7 @@ function runPersonalization(session) {
     const prospectFirst = (prospectContactName || '').split(' ')[0] ||
                           (session.email || '').split('@')[0] || '';
     const repName = ext.rep_name || ext.host_name || prospect.company || 'Your Host';
+    _safe('email-subjects', function() {
 
     const e1preview = document.getElementById('email-1-preview');
     if (e1preview) {
@@ -3362,9 +3378,12 @@ function runPersonalization(session) {
       }
     }
 
+    }); // ← end _safe('email-subjects')
+
     // ── Override variants with generated webinar titles ──────────────────────
     const generated = ext._generated || {};
 
+    _safe('webinar-variants', function() {
     if (generated.webinarTitles?.variants?.length === 3) {
       const gtv = generated.webinarTitles.variants;
       const hostLabel = prospect.company || companyName;
@@ -3483,8 +3502,10 @@ function runPersonalization(session) {
 
       console.log('[Deal Forge] Webinar titles applied — Variant A:', gtv[0].title);
     }
+    }); // ← end _safe('webinar-variants')
 
     // ── Replace lead table with Apollo leads ─────────────────────────────────
+    _safe('lead-table', function() {
     if (Array.isArray(gen.leads)) {
       var tbody = document.querySelector('.lead-table tbody');
       if (tbody) {
@@ -3587,6 +3608,7 @@ function runPersonalization(session) {
       console.log('[Deal Forge] Lead list completed with 0 leads — empty state shown');
     }
     // else: still pending — spinner row stays visible naturally
+    }); // ← end _safe('lead-table')
 
     // ── Market-too-small banner ───────────────────────────────────────────────
     // Shown when Apollo returned fewer than 25 leads AND the underlying market
@@ -3617,6 +3639,7 @@ function runPersonalization(session) {
     // The diagnostics panel summarizes what the search engine had to do to find
     // leads. Plain English for sales reps; raw log hidden behind a toggle. Only
     // shown in edit mode — prospects never see it.
+    _safe('diagnostics', function() {
     const diagPanel = document.getElementById('lead-diagnostics-panel');
     if (diagPanel) {
       if (IS_EDIT_MODE && gen.apollo_diagnostics && gen.apollo_diagnostics.wasRelaxed) {
@@ -3782,6 +3805,7 @@ function runPersonalization(session) {
         diagPanel.style.display = 'none';
       }
     }
+    }); // ← end _safe('diagnostics')
 
     console.log('[Deal Forge] Portal personalized for:', PROSPECT.name, '| Industry:', industry,
       '| Title:', ext.personalized_title?.slice(0,50), '| LTV:', ltv,

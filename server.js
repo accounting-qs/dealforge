@@ -1178,6 +1178,26 @@ function sanitizeApolloPayload(payload) {
   const sanitized = { ...payload };
   const warnings = [];
 
+  // Strip empty-array filter keys. Apollo accepts missing keys as "no filter",
+  // but empty arrays can leak through translator output or stale ICP edits.
+  // The result: a missing apollo_employee_ranges / apollo_geography no longer
+  // searches against [] (which silently zeros out the pool on some endpoints)
+  // — it just removes the filter and lets the broader pool through.
+  const FILTER_ARRAY_KEYS = [
+    'person_titles', 'person_seniorities', 'person_locations',
+    'organization_locations', 'organization_num_employees_ranges',
+    'q_organization_keyword_tags', 'person_department_or_subdepartments',
+    'currently_using_any_of_technology_uids'
+  ];
+  for (const key of FILTER_ARRAY_KEYS) {
+    if (Array.isArray(sanitized[key]) && sanitized[key].length === 0) {
+      delete sanitized[key];
+    }
+  }
+  if (typeof sanitized.q_keywords === 'string' && !sanitized.q_keywords.trim()) {
+    delete sanitized.q_keywords;
+  }
+
   // Validate seniorities
   if (sanitized.person_seniorities) {
     const before = sanitized.person_seniorities.length;
@@ -1539,7 +1559,13 @@ async function fetchLeadsFromApollo(icp, progressCb) {
   const APOLLO_KEY = process.env.APOLLO_API_KEY;
   if (!APOLLO_KEY) { console.log('[Apollo] No API key — skipping'); return null; }
 
-  // Fallback for Phase 2: map legacy ICP to Apollo Payload
+  // Build the Apollo search payload from explicit Apollo-native ICP fields only.
+  // If a field is missing or empty (e.g. apollo_geography, apollo_employee_ranges,
+  // apollo_keyword) we do NOT include it — we'd rather return a larger,
+  // less-filtered pool than guess what the rep meant. The free-text company_size
+  // string is for the UI; we no longer derive employee ranges from it because the
+  // mapping is fragile (e.g. "Independent practitioners to small RIA firms" used
+  // to map to "1,10" which is much tighter than the ICP actually implied).
   const rawGeo = Array.isArray(icp?.apollo_geography) && icp.apollo_geography.length ? icp.apollo_geography : null;
   const apolloGeo = rawGeo
     ? rawGeo.flatMap(g => (/^european union$/i.test(g) || /^europe$/i.test(g)) ? EU_COUNTRIES : [g]).filter((g, i, a) => a.indexOf(g) === i)
@@ -1547,24 +1573,29 @@ async function fetchLeadsFromApollo(icp, progressCb) {
 
   const sizeRanges = (Array.isArray(icp?.apollo_employee_ranges) && icp.apollo_employee_ranges.length)
     ? icp.apollo_employee_ranges
-    : (icp?.company_size ? mapCompanySize(icp.company_size) : []);
+    : [];
 
   // apollo_keyword (single free-text phrase, e.g. "property management") is the
-  // new industry signal. Falls back to first value of legacy apollo_industries
-  // for jobs created before the cutover.
+  // industry signal. Falls back to legacy apollo_industries[0] for old jobs.
+  // If neither is present we send no industry filter at all.
   const keywordPhrase = (typeof icp?.apollo_keyword === 'string' && icp.apollo_keyword.trim())
     ? icp.apollo_keyword.trim()
     : (Array.isArray(icp?.apollo_industries) && icp.apollo_industries.length
         ? String(icp.apollo_industries[0] || '').trim()
         : '');
 
-  const legacyPayload = {
-    person_titles: Array.isArray(icp?.apollo_titles) && icp.apollo_titles.length ? icp.apollo_titles : [],
-    organization_locations: apolloGeo,
-    organization_num_employees_ranges: sizeRanges,
-    person_seniorities: Array.isArray(icp?.person_seniorities) && icp.person_seniorities.length ? icp.person_seniorities : [],
-    per_page: 50
-  };
+  // Only include filter keys that have actual values. Empty arrays are stripped
+  // by sanitizeApolloPayload anyway, but it's clearer to omit them up front so
+  // the legacyPayload reads as "the set of filters we're actually using".
+  const legacyPayload = { per_page: 50 };
+  if (Array.isArray(icp?.apollo_titles) && icp.apollo_titles.length) {
+    legacyPayload.person_titles = icp.apollo_titles;
+  }
+  if (apolloGeo.length)  legacyPayload.organization_locations = apolloGeo;
+  if (sizeRanges.length) legacyPayload.organization_num_employees_ranges = sizeRanges;
+  if (Array.isArray(icp?.person_seniorities) && icp.person_seniorities.length) {
+    legacyPayload.person_seniorities = icp.person_seniorities;
+  }
   // Pass the keyword as q_keywords (string). sanitizeApolloPayload normalizes
   // this to a SINGLE-TAG q_organization_keyword_tags, avoiding Apollo's AND-trap.
   if (keywordPhrase) legacyPayload.q_keywords = keywordPhrase;
