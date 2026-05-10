@@ -1534,42 +1534,130 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
 <!-- ═══════════════════════════════ -->
 <!-- TAB 7: PROSPECT INFOS (rep-only) -->
 <!-- ═══════════════════════════════ -->
+<style>
+  .pi-wrap { max-width: 880px; margin: 0 auto; padding: 24px; }
+  .pi-section { background:rgba(255,255,255,0.02); border:1px solid #27272a; border-radius:10px; padding:18px 20px; margin-bottom:14px; }
+  .pi-section-title { font-size:12px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; color:#86efac; margin-bottom:4px; }
+  .pi-section-sub { font-size:12px; color:#71717a; margin-bottom:14px; line-height:1.5; }
+  .pi-grid { display:grid; grid-template-columns: 1fr 1fr; gap:12px; }
+  .pi-grid.cols-1 { grid-template-columns: 1fr; }
+  .pi-grid.cols-3 { grid-template-columns: repeat(3, 1fr); }
+  .pi-label { display:flex; flex-direction:column; gap:6px; font-size:11px; color:#a1a1aa; }
+  .pi-label > span { letter-spacing:.02em; }
+  .pi-label code { color:#71717a; background:rgba(255,255,255,0.04); padding:1px 5px; border-radius:3px; font-size:10px; }
+  .pi-input, .pi-textarea {
+    background:#111; border:1px solid #27272a; border-radius:6px; padding:9px 12px;
+    font-size:13px; color:#e4e4e7; outline:none; font-family:inherit; width:100%;
+  }
+  .pi-input:focus, .pi-textarea:focus { border-color:#3f3f46; }
+  .pi-textarea { min-height:64px; resize:vertical; line-height:1.5; }
+</style>
 <div class="tab-content" id="tab-prospect-info">
-  <div style="max-width:760px;margin:0 auto;padding:24px;">
+  <div class="pi-wrap">
     <div style="background:rgba(34,197,94,0.06);border:1px solid rgba(34,197,94,0.18);border-radius:10px;padding:18px 20px;margin-bottom:16px;">
       <div style="font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#86efac;">Rep only · Edit mode</div>
       <h2 style="font-size:20px;font-weight:600;color:#e4e4e7;margin:6px 0 6px;">Prospect Information</h2>
-      <p style="font-size:13px;color:#94a3b8;margin:0;line-height:1.5;">Edit the inputs that drive personalization (website → brand scrape, LinkedIn URL → host research). Click <strong style="color:#e4e4e7">Regenerate Job</strong> to re-run the brand_scrape, prospect_research, webinar_titles, calendar_visual, and webinar_mock tasks with the updated info.</p>
+      <p style="font-size:13px;color:#94a3b8;margin:0;line-height:1.5;">All fields from the job-creation brief, editable. <strong style="color:#e4e4e7">Save</strong> persists changes without re-running anything. <strong style="color:#e4e4e7">Save &amp; Regenerate Job</strong> re-runs <code style="color:#a1a1aa;background:rgba(0,0,0,0.3);padding:1px 5px;border-radius:3px;">brand_scrape</code>, <code style="color:#a1a1aa;background:rgba(0,0,0,0.3);padding:1px 5px;border-radius:3px;">prospect_research</code>, <code style="color:#a1a1aa;background:rgba(0,0,0,0.3);padding:1px 5px;border-radius:3px;">webinar_titles</code>, <code style="color:#a1a1aa;background:rgba(0,0,0,0.3);padding:1px 5px;border-radius:3px;">calendar_visual</code>, <code style="color:#a1a1aa;background:rgba(0,0,0,0.3);padding:1px 5px;border-radius:3px;">webinar_mock</code>.</p>
     </div>
 
-    <div id="prospect-info-form" style="display:flex;flex-direction:column;gap:14px;">
-      <label style="display:flex;flex-direction:column;gap:6px;font-size:12px;color:#a1a1aa;">
-        <span>Email</span>
-        <input id="pi-email" type="email" data-field="prospect_email" placeholder="jake@4fp.co"
-          style="background:#111;border:1px solid #27272a;border-radius:6px;padding:9px 12px;font-size:13px;color:#e4e4e7;outline:none;font-family:inherit;">
-      </label>
-      <label style="display:flex;flex-direction:column;gap:6px;font-size:12px;color:#a1a1aa;">
-        <span>Contact name</span>
-        <input id="pi-name" type="text" data-field="prospect_name" placeholder="Jake Wagner"
-          style="background:#111;border:1px solid #27272a;border-radius:6px;padding:9px 12px;font-size:13px;color:#e4e4e7;outline:none;font-family:inherit;">
-      </label>
-      <label style="display:flex;flex-direction:column;gap:6px;font-size:12px;color:#a1a1aa;">
-        <span>Company</span>
-        <input id="pi-company" type="text" data-field="prospect_company" placeholder="Laraby"
-          style="background:#111;border:1px solid #27272a;border-radius:6px;padding:9px 12px;font-size:13px;color:#e4e4e7;outline:none;font-family:inherit;">
-      </label>
-      <label style="display:flex;flex-direction:column;gap:6px;font-size:12px;color:#a1a1aa;">
-        <span>Website (no protocol — e.g. <code style="color:#71717a">4fp.co</code>) — feeds <code style="color:#71717a">brand_scrape</code></span>
-        <input id="pi-website" type="text" data-field="prospect_website" placeholder="4fp.co"
-          style="background:#111;border:1px solid #27272a;border-radius:6px;padding:9px 12px;font-size:13px;color:#e4e4e7;outline:none;font-family:inherit;">
-      </label>
-      <label style="display:flex;flex-direction:column;gap:6px;font-size:12px;color:#a1a1aa;">
-        <span>LinkedIn URL — feeds <code style="color:#71717a">prospect_research</code> (host name, title, headshot)</span>
-        <input id="pi-linkedin" type="url" data-field="prospect_linkedin_url" placeholder="https://www.linkedin.com/in/jake-wagner"
-          style="background:#111;border:1px solid #27272a;border-radius:6px;padding:9px 12px;font-size:13px;color:#e4e4e7;outline:none;font-family:inherit;">
-      </label>
+    <form id="prospect-info-form" onsubmit="event.preventDefault();return false;">
 
-      <div style="display:flex;align-items:center;gap:12px;margin-top:8px;">
+      <!-- ── Prospect (top-level columns + brief.prospect) ── -->
+      <div class="pi-section">
+        <div class="pi-section-title">Prospect</div>
+        <div class="pi-section-sub">Identity. Website feeds <code>brand_scrape</code>. LinkedIn URL feeds <code>prospect_research</code> (host name, title, headshot).</div>
+        <div class="pi-grid">
+          <label class="pi-label"><span>Email</span><input id="pi-email" class="pi-input" type="email" data-col="prospect_email" placeholder="jake@4fp.co"></label>
+          <label class="pi-label"><span>Contact name</span><input id="pi-name" class="pi-input" type="text" data-col="prospect_name" data-brief="prospect.contact_name" placeholder="Jake Wagner"></label>
+          <label class="pi-label"><span>Contact title</span><input id="pi-contact-title" class="pi-input" type="text" data-brief="prospect.contact_title" placeholder="Founder / CEO"></label>
+          <label class="pi-label"><span>Company</span><input id="pi-company" class="pi-input" type="text" data-col="prospect_company" data-brief="prospect.company" placeholder="Laraby"></label>
+          <label class="pi-label"><span>Website (no protocol)</span><input id="pi-website" class="pi-input" type="text" data-col="prospect_website" placeholder="4fp.co"></label>
+          <label class="pi-label"><span>LinkedIn URL</span><input id="pi-linkedin" class="pi-input" type="url" data-col="prospect_linkedin_url" placeholder="https://www.linkedin.com/in/jake-wagner"></label>
+        </div>
+      </div>
+
+      <!-- ── ICP ── -->
+      <div class="pi-section">
+        <div class="pi-section-title">ICP</div>
+        <div class="pi-section-sub">Who Jake's company sells to. Drives <code>lead_list</code>, <code>webinar_titles</code>, and chat tone.</div>
+        <div class="pi-grid cols-1">
+          <label class="pi-label"><span>Apollo titles (comma-separated)</span><input id="pi-apollo-titles" class="pi-input" type="text" data-brief="icp.apollo_titles" data-csv="1" placeholder="Founder, CEO, Managing Partner"></label>
+        </div>
+        <div class="pi-grid" style="margin-top:12px;">
+          <label class="pi-label"><span>Industry / apollo_keyword</span><input id="pi-industry" class="pi-input" type="text" data-brief="icp.apollo_keyword" data-mirror="icp.industry" placeholder="financial services"></label>
+          <label class="pi-label"><span>Company size (target client)</span><input id="pi-company-size" class="pi-input" type="text" data-brief="icp.company_size" placeholder="$50M–$500M AUM / 10–100 employees"></label>
+          <label class="pi-label" style="grid-column:1/-1;"><span>Geography (comma-separated countries)</span><input id="pi-geography" class="pi-input" type="text" data-brief="icp.apollo_geography" data-csv="1" data-mirror="icp.geography" data-mirror-join="1" placeholder="United States, Canada"></label>
+        </div>
+      </div>
+
+      <!-- ── Metrics ── -->
+      <div class="pi-section">
+        <div class="pi-section-title">Metrics</div>
+        <div class="pi-section-sub">Verbatim from the call. Pre-fills the ROI model.</div>
+        <div class="pi-grid cols-3">
+          <label class="pi-label"><span>LTV</span><input id="pi-ltv" class="pi-input" type="text" data-brief="metrics.ltv" placeholder="$48,000"></label>
+          <label class="pi-label"><span>Close rate</span><input id="pi-close-rate" class="pi-input" type="text" data-brief="metrics.close_rate" placeholder="20%"></label>
+          <label class="pi-label"><span>Show rate</span><input id="pi-show-rate" class="pi-input" type="text" data-brief="metrics.show_rate" placeholder="70%"></label>
+        </div>
+      </div>
+
+      <!-- ── Angle ── -->
+      <div class="pi-section">
+        <div class="pi-section-title">Angle</div>
+        <div class="pi-section-sub">The pain → result narrative. Drives <code>webinar_titles</code> and webinar mock proof slide.</div>
+        <div class="pi-grid cols-1">
+          <label class="pi-label"><span>Customer pain (4–6 sentences)</span><textarea id="pi-pain" class="pi-textarea" data-brief="angle.pain" rows="3" placeholder="The deep emotional frustration their clients experience…"></textarea></label>
+          <label class="pi-label"><span>Result delivered (3–5 sentences)</span><textarea id="pi-result" class="pi-textarea" data-brief="angle.result" rows="3" placeholder="The concrete before/after transformation…"></textarea></label>
+          <label class="pi-label"><span>Methodology (named framework)</span><input id="pi-methodology" class="pi-input" type="text" data-brief="angle.methodology" placeholder="Solution Centric Funnel"></label>
+          <label class="pi-label"><span>Proof (single best client outcome with verbatim numbers)</span><textarea id="pi-proof" class="pi-textarea" data-brief="angle.proof" rows="2" placeholder="Brooks Golden — $500K → $2M ARR in 12 months"></textarea></label>
+        </div>
+      </div>
+
+      <!-- ── Context ── -->
+      <div class="pi-section">
+        <div class="pi-section-title">Context</div>
+        <div class="pi-section-sub">What the prospect wants and why.</div>
+        <div class="pi-grid cols-1">
+          <label class="pi-label"><span>Goals (next 6–12 months)</span><textarea id="pi-goals" class="pi-textarea" data-brief="context.goals" rows="2"></textarea></label>
+          <label class="pi-label"><span>Why webinar / why exploring this</span><textarea id="pi-why" class="pi-textarea" data-brief="context.why_webinar" rows="2"></textarea></label>
+        </div>
+      </div>
+
+      <!-- ── Situation ── -->
+      <div class="pi-section">
+        <div class="pi-section-title">Situation</div>
+        <div class="pi-section-sub">Where the prospect's business stands today.</div>
+        <div class="pi-grid">
+          <label class="pi-label"><span>Current lead-gen approach</span><input id="pi-lead-gen" class="pi-input" type="text" data-brief="situation.current_lead_gen" placeholder="100% referrals / cold email + LinkedIn"></label>
+          <label class="pi-label"><span>Revenue range</span><input id="pi-revenue" class="pi-input" type="text" data-brief="situation.revenue_range" placeholder="$2M ARR"></label>
+          <label class="pi-label"><span>Team size</span><input id="pi-team-size" class="pi-input" type="text" data-brief="situation.team_size" placeholder="6 people"></label>
+          <label class="pi-label"><span>Biggest challenge</span><input id="pi-challenge" class="pi-input" type="text" data-brief="situation.biggest_challenge" placeholder="Single most important challenge…"></label>
+        </div>
+      </div>
+
+      <!-- ── Verbatim quotes ── -->
+      <div class="pi-section">
+        <div class="pi-section-title">Verbatim quotes</div>
+        <div class="pi-section-sub">Exact words from the transcript. Used in webinar copy + the proof slide.</div>
+        <div class="pi-grid cols-1">
+          <label class="pi-label"><span>Pain quote (≤40 words)</span><textarea id="pi-pain-quote" class="pi-textarea" data-brief="verbatim.pain_quote" rows="2"></textarea></label>
+          <label class="pi-label"><span>Result quote (≤30 words)</span><textarea id="pi-result-quote" class="pi-textarea" data-brief="verbatim.result_quote" rows="2"></textarea></label>
+          <label class="pi-label"><span>Goal quote (≤30 words)</span><textarea id="pi-goal-quote" class="pi-textarea" data-brief="verbatim.goal_quote" rows="2"></textarea></label>
+        </div>
+      </div>
+
+      <!-- ── Webinar title seeds ── -->
+      <div class="pi-section">
+        <div class="pi-section-title">Webinar title seeds</div>
+        <div class="pi-section-sub">Optional starting points for <code>webinar_titles</code>. Leave blank to let the AI generate from scratch.</div>
+        <div class="pi-grid">
+          <label class="pi-label"><span>Variant A seed</span><input id="pi-title-a" class="pi-input" type="text" data-brief="titles.a" placeholder="(optional)"></label>
+          <label class="pi-label"><span>Variant B seed</span><input id="pi-title-b" class="pi-input" type="text" data-brief="titles.b" placeholder="(optional)"></label>
+        </div>
+      </div>
+
+      <!-- ── Action bar ── -->
+      <div style="display:flex;align-items:center;gap:12px;margin-top:6px;padding:14px 0;">
         <button id="pi-save-btn" type="button" onclick="saveProspectInfo()"
           style="background:#27272a;border:1px solid #3f3f46;border-radius:6px;color:#e4e4e7;font-size:13px;font-weight:500;padding:9px 18px;cursor:pointer;font-family:inherit;">
           Save changes
@@ -1581,11 +1669,11 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
         <span id="pi-status" style="font-size:12px;color:#71717a;"></span>
       </div>
 
-      <div style="margin-top:18px;padding:12px 14px;background:rgba(0,0,0,0.3);border:1px solid #27272a;border-radius:6px;font-size:12px;color:#71717a;line-height:1.5;">
+      <div style="margin-top:6px;padding:12px 14px;background:rgba(0,0,0,0.3);border:1px solid #27272a;border-radius:6px;font-size:12px;color:#71717a;line-height:1.5;">
         <strong style="color:#a1a1aa;">Pipeline status</strong>
         <div id="pi-task-status" style="margin-top:6px;font-family:ui-monospace,'SF Mono',monospace;font-size:11px;color:#52525b;">(loading…)</div>
       </div>
-    </div>
+    </form>
   </div>
 </div>
 
@@ -3789,20 +3877,47 @@ function _initWebinarRegenRow() {
 }
 
 // ── Prospect Infos tab — rep-only ─────────────────────────────────────────────
-// Reveals the tab button when in edit mode, prefills the inputs from
-// session.prospectInfo (set by buildCompatSession), and renders a small
+// Reveals the tab button when in edit mode, prefills inputs from the live job
+// data (top-level columns + extracted_data brief), and renders a small
 // pipeline-status panel. Tab content is hidden by default in non-edit mode.
+function _piGetByPath(obj, path) {
+  if (!obj || !path) return null;
+  return path.split('.').reduce((acc, key) => (acc == null ? acc : acc[key]), obj);
+}
+function _piSetByPath(obj, path, value) {
+  if (!obj || !path) return;
+  const parts = path.split('.');
+  let cur = obj;
+  for (let i = 0; i < parts.length - 1; i++) {
+    const k = parts[i];
+    if (cur[k] == null || typeof cur[k] !== 'object') cur[k] = {};
+    cur = cur[k];
+  }
+  cur[parts[parts.length - 1]] = value;
+}
+
 function _initProspectInfoTab(session) {
   if (typeof IS_EDIT_MODE === 'undefined' || !IS_EDIT_MODE) return;
   const tabBtn = document.getElementById('tab-btn-prospect-info');
   if (tabBtn) tabBtn.style.display = '';
-  const info = (session && session.prospectInfo) || {};
-  const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v || ''; };
-  set('pi-email',    info.email);
-  set('pi-name',     info.name);
-  set('pi-company',  info.company);
-  set('pi-website',  info.website);
-  set('pi-linkedin', info.linkedin_url);
+  const info  = (session && session.prospectInfo) || {};
+  const brief = (session && session.extracted)    || {};
+
+  document.querySelectorAll('#prospect-info-form [data-col],#prospect-info-form [data-brief]').forEach(el => {
+    let v = '';
+    const colName = el.dataset.col;
+    const briefPath = el.dataset.brief;
+    if (colName) {
+      const map = { prospect_email:'email', prospect_name:'name', prospect_company:'company', prospect_website:'website', prospect_linkedin_url:'linkedin_url' };
+      v = info[map[colName]] || '';
+    }
+    if (!v && briefPath) {
+      const raw = _piGetByPath(brief, briefPath);
+      if (Array.isArray(raw)) v = raw.join(', ');
+      else if (raw != null) v = String(raw);
+    }
+    el.value = v;
+  });
 
   // Render pipeline-status snapshot for the personalization tasks
   const statusEl = document.getElementById('pi-task-status');
@@ -3820,9 +3935,32 @@ function _initProspectInfoTab(session) {
 }
 
 function _piCollectFields() {
-  const out = {};
-  document.querySelectorAll('#prospect-info-form [data-field]').forEach(el => {
-    out[el.dataset.field] = (el.value || '').trim();
+  const out = { brief: {} };
+  document.querySelectorAll('#prospect-info-form [data-col],#prospect-info-form [data-brief]').forEach(el => {
+    let raw = (el.value || '').trim();
+    if (el.dataset.csv === '1') {
+      const arr = raw ? raw.split(',').map(s => s.trim()).filter(Boolean) : [];
+      if (el.dataset.col) out[el.dataset.col] = arr;
+      if (el.dataset.brief) _piSetByPath(out.brief, el.dataset.brief, arr.length ? arr : null);
+      // Mirror to a sibling field if requested (e.g. icp.geography mirrors apollo_geography)
+      if (el.dataset.mirror) {
+        const mirrorVal = el.dataset.mirrorJoin === '1' ? (arr.length ? arr.join(', ') : null) : (arr.length ? arr : null);
+        _piSetByPath(out.brief, el.dataset.mirror, mirrorVal);
+      }
+    } else {
+      const v = raw || null;
+      if (el.dataset.col) out[el.dataset.col] = v;
+      if (el.dataset.brief) _piSetByPath(out.brief, el.dataset.brief, v);
+      if (el.dataset.mirror) _piSetByPath(out.brief, el.dataset.mirror, v);
+    }
+  });
+  // Drop empty top-level brief sections so we don't blow away preserved fields
+  Object.keys(out.brief).forEach(k => {
+    const v = out.brief[k];
+    if (v && typeof v === 'object' && !Array.isArray(v)) {
+      const hasAny = Object.values(v).some(x => x != null && x !== '');
+      if (!hasAny) delete out.brief[k];
+    }
   });
   return out;
 }

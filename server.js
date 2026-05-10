@@ -3411,10 +3411,12 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // ── PATCH /api/jobs/:id/prospect-info — rep edits prospect basics ────────
-  // Updates prospect_email / prospect_name / prospect_company / prospect_website /
-  // prospect_linkedin_url. Does NOT trigger any pipeline re-runs on its own — call
-  // /regenerate after if you want the personalization tasks to refresh.
+  // ── PATCH /api/jobs/:id/prospect-info — rep edits prospect basics + full brief ──
+  // Updates the top-level prospect columns AND optionally replaces the brief
+  // (extracted_data) when `brief` is supplied. _meta and _overrides on the
+  // existing extracted_data are preserved — only the rep-editable sections
+  // (prospect/icp/metrics/angle/context/situation/verbatim/titles) are overwritten.
+  // Does NOT trigger any pipeline re-runs on its own — call /regenerate after.
   if (req.method === 'PATCH' && urlPath.match(/^\/api\/jobs\/[^/]+\/prospect-info$/)) {
     setCors(res);
     const jobId = urlPath.split('/')[3];
@@ -3431,6 +3433,23 @@ const server = http.createServer(async (req, res) => {
           }
           patch[f] = v || null;
         }
+      }
+      // Merge `brief` into existing extracted_data, preserving _meta and _overrides
+      if (body.brief && typeof body.brief === 'object') {
+        const existing = await getJob(jobId);
+        const existingBrief = (existing && existing.extracted_data) || {};
+        const newBrief = body.brief;
+        patch.extracted_data = {
+          ...existingBrief,                 // start from existing (preserves _meta, _overrides, _generated)
+          prospect:  newBrief.prospect  ?? existingBrief.prospect,
+          icp:       newBrief.icp       ?? existingBrief.icp,
+          metrics:   newBrief.metrics   ?? existingBrief.metrics,
+          angle:     newBrief.angle     ?? existingBrief.angle,
+          context:   newBrief.context   ?? existingBrief.context,
+          situation: newBrief.situation ?? existingBrief.situation,
+          verbatim:  newBrief.verbatim  ?? existingBrief.verbatim,
+          titles:    newBrief.titles    ?? existingBrief.titles
+        };
       }
       const r = await supabaseRequest('PATCH', `/rest/v1/jobs?id=eq.${jobId}`, patch, { 'Prefer': 'return=representation' });
       if (r.status >= 400) throw new Error(`Supabase ${r.status}: ${JSON.stringify(r.body)}`);
