@@ -856,9 +856,10 @@ ${websiteContent ? `\nWEBSITE CONTENT:\n---\n${websiteContent.slice(0, 2000)}\n-
 Return this exact JSON (null for anything not found):
 {
   "prospect": {
-    "company":       "string — company name. Resolution rules: (1) If the transcript clearly mentions a different company name for the person on the call, PREFER the transcript value over the known value — the known value may be stale CRM data. (2) If the transcript confirms the known value, use it. (3) If the transcript is silent on company, fall back to the known value as the best available signal. (4) Never invent a company name that appears in neither the transcript nor the known value.",
+    "company":       "string — the prospect's LEGAL EMPLOYER / business entity. NOT their product, methodology, framework, or offering. CRITICAL DISTINCTION: a company is who they work for (the entity on their LinkedIn 'Experience' section, the entity that owns their website). An offering/product is what they sell ('our system X', 'we built X', 'X helps clients'). Examples — if the prospect says 'I'm Jake, founder of 4FP Agency, and we built Fiddle Link AI for RIAs': company='4FP Agency', NOT 'Fiddle Link AI'. If they say 'I run Acme Consulting and we use the Devoted Client Method': company='Acme Consulting', NOT 'Devoted Client Method'. Resolution rules: (1) Strongest signal is the verified known value (from CRM / website). Trust it unless the transcript provides clear evidence the person works at a different entity. (2) Override the known value only when the transcript explicitly states a different employer ('I'm the CEO of X', 'I founded X', 'I work at X'). Phrases like 'we built X', 'our X', 'X is our system' point to an offering and DO NOT override company. (3) When the transcript is silent on employer name, use the known value. (4) Never invent a name that appears in neither source. (5) If the call mentions BOTH a company AND an offering, put the legal entity here and the product/methodology in 'offering_name'.",
     "contact_name":  "string | null — full name of person on the call",
-    "contact_title": "string | null — their job title"
+    "contact_title": "string | null — their job title",
+    "offering_name": "string | null — the name of the product, service, app, framework, or methodology the prospect is building/selling, IF separate from the company name. NOT the company itself. Examples: 'Fiddle Link AI', 'The Revenue Engine', 'Devoted Client Attraction Method'. Extract verbatim from the call. Null if (a) no specific named offering is mentioned, or (b) the offering and the company share the same name."
   },
   "icp": {
     "role":          "string | null — human-readable description of their target buyers (used for display only)",
@@ -925,7 +926,7 @@ Return this exact JSON (null for anything not found):
 
 function emptyBrief(contactInfo) {
   return {
-    prospect:  { company: contactInfo.company || null, contact_name: contactInfo.name || null, contact_title: null },
+    prospect:  { company: contactInfo.company || null, contact_name: contactInfo.name || null, contact_title: null, offering_name: null },
     icp:       { role: null, target_audience_type: 'b2b', apollo_titles: null, apollo_keyword: null, industry: null, company_size: null, apollo_employee_ranges: null, geography: null, apollo_geography: null, person_seniorities: null, company_revenue: null, kpis: null },
     metrics:   { ltv: null, close_rate: null, show_rate: null },
     angle:     { pain: null, result: null, methodology: null, proof: null },
