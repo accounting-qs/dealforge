@@ -2939,13 +2939,23 @@ function runPersonalization(session) {
     }
 
     // ── Host elements (calendar event + webinar slide) ────────────────────────
-    // Prefer LinkedIn-scraped host info from prospect_research over the prospect company name fallback.
+    // Personalization fallback chain — picked so the slide never shows generic
+    // "Your Host" / "Webinar Host" placeholders when we have ANY data:
+    //
+    //   Host name:     LinkedIn → contact_name (Jake) → company → 'Your Host'
+    //   Host title:    LinkedIn → contact_title       → company → 'Webinar Host'
+    //   Host avatar:   LinkedIn headshot → company logo (favicon) → initials
     const researchHost = (session.research && session.research.host) || {};
-    const prospectContactName = prospect.contact_name || prospect.name || '';
-    const hostName  = researchHost.name || prospect.company || prospectContactName || 'Your Host';
-    const hostTitle = researchHost.title || prospect.company || '';
+    const brandData    = session.brand || {};
+    const companyDisplay = brandData.company_name || prospect.company || '';
+    const contactName  = prospect.contact_name || prospect.name || '';
+    const contactTitle = prospect.contact_title || '';
+
+    const hostName     = researchHost.name  || contactName  || companyDisplay || 'Your Host';
+    const hostTitle    = researchHost.title || contactTitle || companyDisplay || 'Webinar Host';
     const hostHeadshot = researchHost.headshot_url || null;
-    const hostCompany = prospect.company || '';
+    const hostLogo     = brandData.logo_url || brandData.favicon_url || null;
+    const hostCompany  = companyDisplay;
 
     const calHostName = document.getElementById('cal-host-name');
     const calHostSub  = document.getElementById('cal-host-sub');
@@ -2960,21 +2970,38 @@ function runPersonalization(session) {
     if (hostTitleEl)  hostTitleEl.textContent  = hostTitle;
     if (hostInitials) hostInitials.textContent = hostName.split(/\s+/).map(function(w){ return w[0]; }).slice(0,2).join('').toUpperCase();
 
-    // Swap initials → image when a LinkedIn headshot is available. Falls back
-    // to the initials if the image fails to load (CORS / 403 / dead URL).
-    if (hostAvatarWrap && hostHeadshot) {
-      // Avoid duplicate <img> on re-runs
-      const existingImg = hostAvatarWrap.querySelector('img.host-headshot-img');
-      if (!existingImg) {
+    // Avatar swap: LinkedIn headshot first, then company logo, then keep initials.
+    // Each layer fails open — onerror removes the failed <img> and the next layer
+    // (or the initials) becomes visible.
+    if (hostAvatarWrap) {
+      // Clear any prior images so re-runs reflect the latest data
+      hostAvatarWrap.querySelectorAll('img.host-headshot-img,img.host-logo-img').forEach(el => el.remove());
+      if (hostInitials) hostInitials.style.display = '';
+      const tryHeadshot = () => {
+        if (!hostHeadshot) return tryLogo();
         const img = document.createElement('img');
         img.className = 'host-headshot-img';
         img.src = hostHeadshot;
         img.alt = hostName;
         img.style.cssText = 'width:100%;height:100%;object-fit:cover;border-radius:inherit;display:block;';
-        img.onload = function(){ if (hostInitials) hostInitials.style.display = 'none'; };
-        img.onerror = function(){ this.remove(); if (hostInitials) hostInitials.style.display = ''; };
+        img.onload  = () => { if (hostInitials) hostInitials.style.display = 'none'; };
+        img.onerror = () => { img.remove(); tryLogo(); };
         hostAvatarWrap.appendChild(img);
-      }
+      };
+      const tryLogo = () => {
+        if (!hostLogo) return; // initials stay
+        const img = document.createElement('img');
+        img.className = 'host-logo-img';
+        img.src = hostLogo;
+        img.alt = hostCompany || hostName;
+        // Logos are usually rectangular; contain + small padding looks better
+        // than a cropped cover render.
+        img.style.cssText = 'width:100%;height:100%;object-fit:contain;background:#fff;padding:4px;border-radius:inherit;display:block;';
+        img.onload  = () => { if (hostInitials) hostInitials.style.display = 'none'; };
+        img.onerror = () => { img.remove(); if (hostInitials) hostInitials.style.display = ''; };
+        hostAvatarWrap.appendChild(img);
+      };
+      tryHeadshot();
     }
 
     // ── "View personalized webinar" button — links to the standalone HTML asset ──
