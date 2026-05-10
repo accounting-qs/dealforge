@@ -511,9 +511,9 @@ async function lookupGHLContact(email) {
   }
 }
 
-// Apollo people/match by email — used as a fallback when GHL has no LinkedIn URL.
-// Returns { linkedin_url, headshot_url, title, name } or null. Best-effort, 1 Apollo
-// credit per call. Times out at 8s so the prefetch flow never hangs on this lookup.
+// Apollo people/match by email — used as a fallback when GHL has no contact data.
+// Returns { linkedin_url, headshot_url, title, name, company } or null. Best-effort,
+// 1 Apollo credit per call. Times out at 8s so the prefetch flow never hangs.
 async function apolloMatchByEmail(email) {
   const apolloKey = process.env.APOLLO_API_KEY;
   if (!apolloKey || !email) return null;
@@ -528,16 +528,31 @@ async function apolloMatchByEmail(email) {
     const data = await r.json();
     const p = data.person || {};
     const name = (p.first_name && p.last_name) ? `${p.first_name} ${p.last_name}`.trim() : (p.name || null);
+    const company = (p.organization && p.organization.name) || p.organization_name || null;
     return {
       linkedin_url: p.linkedin_url || null,
       headshot_url: p.photo_url || null,
       title:        p.title || null,
-      name:         name
+      name:         name,
+      company:      company
     };
   } catch(e) {
     console.warn('[Apollo match] error:', e.message);
     return null;
   }
+}
+
+// Extract a clean company name from a scraped <title> tag.
+// Strips common suffix separators ('|', '–', '—', '-', ':') so
+// "The 4FP Agency | Financial Planners" → "The 4FP Agency".
+function companyFromWebsiteTitle(title) {
+  if (!title || typeof title !== 'string') return null;
+  const segments = title.split(/\s*[|–—\-:]\s*/);
+  const first = segments[0]?.trim();
+  if (!first || first.length < 2 || first.length > 60) return null;
+  // Filter obvious non-companies (homepage labels, etc.)
+  if (/^(home|welcome|index|untitled|page not found)$/i.test(first)) return null;
+  return first;
 }
 
 // Free-mail providers — when an email lives on one of these, the email domain is
@@ -3229,23 +3244,22 @@ const server = http.createServer(async (req, res) => {
         contactInfo.website = String(contactInfo.website).replace(/^https?:\/\//, '').split('/')[0];
       }
 
-      // If GHL didn't have a LinkedIn URL on the contact, try Apollo people/match
-      // by email as a fallback (1 credit). Best-effort; failure is non-fatal.
-      // Skip for free-mail addresses — Apollo can't reliably identify a person from
-      // a gmail/yahoo/etc. address and routinely returns a totally unrelated match.
-      if (!contactInfo.linkedin_url && !isFreeMailDomain(emailDomain)) {
+      // Apollo people/match by email — used as a fallback when GHL has no data on
+      // this contact. Fills LinkedIn URL, title, name, AND company (organization.name).
+      // Best-effort; failure is non-fatal. Skip for free-mail addresses since Apollo
+      // can't reliably identify a person from a gmail/yahoo address.
+      const needsApollo = !contactInfo.linkedin_url || !contactInfo.name || !contactInfo.company || !contactInfo.title;
+      if (needsApollo && !isFreeMailDomain(emailDomain)) {
         const apolloMatch = await apolloMatchByEmail(email);
-        if (apolloMatch?.linkedin_url) {
-          contactInfo.linkedin_url = apolloMatch.linkedin_url;
-          contactSources.linkedin_url = 'apollo';
-          if (!contactInfo.title && apolloMatch.title) {
-            contactInfo.title = apolloMatch.title;
-            contactSources.title = 'apollo';
-          }
-          console.log(`[prefetch] Apollo people/match resolved LinkedIn for ${email}`);
+        if (apolloMatch) {
+          if (!contactInfo.linkedin_url && apolloMatch.linkedin_url) { contactInfo.linkedin_url = apolloMatch.linkedin_url; contactSources.linkedin_url = 'apollo'; }
+          if (!contactInfo.name         && apolloMatch.name)         { contactInfo.name         = apolloMatch.name;         contactSources.name         = 'apollo'; }
+          if (!contactInfo.company      && apolloMatch.company)      { contactInfo.company      = apolloMatch.company;      contactSources.company      = 'apollo'; }
+          if (!contactInfo.title        && apolloMatch.title)        { contactInfo.title        = apolloMatch.title;        contactSources.title        = 'apollo'; }
+          console.log(`[prefetch] Apollo people/match for ${email}: linkedin=${!!apolloMatch.linkedin_url}, name=${!!apolloMatch.name}, company=${!!apolloMatch.company}, title=${!!apolloMatch.title}`);
         }
       }
-      console.log(`[prefetch] contactInfo sources for ${email}:`, JSON.stringify(contactSources));
+      console.log(`[prefetch] contactInfo sources for ${email} (pre-scrape):`, JSON.stringify(contactSources));
 
       // Phase 3: also check DB for approved calls — used for count badge in UI
       const dbApproved = await findApprovedCallsFromDB(email);
@@ -3256,6 +3270,18 @@ const server = http.createServer(async (req, res) => {
         findFirefliesTranscript(email, contactInfo),
         contactInfo.website ? scrapeWebsite(contactInfo.website) : Promise.resolve(null)
       ]);
+
+      // Last-resort fallback for company: scrape <title> tag. Strips trailing
+      // ' | ...' / ' — ...' / ' - ...' segments so "The 4FP Agency | Financial Planners"
+      // becomes just "The 4FP Agency". Only fires when no other source produced a value.
+      if (!contactInfo.company && website?.title) {
+        const fromTitle = companyFromWebsiteTitle(website.title);
+        if (fromTitle) {
+          contactInfo.company = fromTitle;
+          contactSources.company = 'website_title';
+          console.log(`[prefetch] Fell back to website title for company: "${fromTitle}"`);
+        }
+      }
 
       let brief           = null;
       let transcriptFound = false;

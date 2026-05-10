@@ -83,7 +83,8 @@
   .src-badge.src-ghl        { background: rgba(245,158,11,0.14);  color: #fcd34d; }
   .src-badge.src-history    { background: rgba(244,114,182,0.14); color: #f9a8d4; }
   .src-badge.src-apollo     { background: rgba(52,211,153,0.14);  color: #6ee7b7; }
-  .src-badge.src-email_domain { background: rgba(148,163,184,0.14); color: #cbd5e1; }
+  .src-badge.src-email_domain  { background: rgba(148,163,184,0.14); color: #cbd5e1; }
+  .src-badge.src-website_title { background: rgba(34,211,238,0.14);  color: #67e8f9; }
 
   .nj-input {
     width: 100%; background: rgba(10,10,15,0.7); border: 1px solid rgba(113,113,122,0.4);
@@ -950,12 +951,13 @@ function njShowBrief() {
   // so reps can spot stale CRM values before confirming the brief.
   var sources = (_njPrefetchResult && _njPrefetchResult.contact_sources) || {};
   var srcLabel = {
-    transcript:   'from Fireflies',
-    rep_input:    'from rep input',
-    ghl:          'from GHL',
-    history:      'from previous job',
-    apollo:       'from Apollo',
-    email_domain: 'from email domain'
+    transcript:    'from Fireflies',
+    rep_input:     'from rep input',
+    ghl:           'from GHL',
+    history:       'from previous job',
+    apollo:        'from Apollo',
+    email_domain:  'from email domain',
+    website_title: 'from website title'
   };
   function tagSource(inputId, source) {
     var input = document.getElementById(inputId);
