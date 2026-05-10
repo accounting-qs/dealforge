@@ -2915,6 +2915,13 @@ function runPersonalization(session) {
 
     // ── Personalized headline on slide 1 ──────────────────────────────────────
     // Priority: webinar_titles.variants[0].title (Stage 2 generation) → ext.personalized_title (legacy) → leave default
+    // `gen` (the _generated overlay containing webinarTitles, leads, etc.) is
+    // declared HERE so every block below can read it. Previously declared deep
+    // inside the TAM-stats section ~line 3037 — the slide-title block at this
+    // point referenced it before its const initializer ran, triggering a TDZ
+    // ReferenceError that silently killed the rest of runPersonalization
+    // (including the lead-table render).
+    const gen = (session.extracted || {})._generated || {};
     const slideTitleEl = document.getElementById('slide-title');
     const slideTagEl = document.getElementById('slide-tag');
     const generatedVariant = (gen.webinarTitles && Array.isArray(gen.webinarTitles.variants) && gen.webinarTitles.variants[0]) || null;
@@ -3034,7 +3041,7 @@ function runPersonalization(session) {
     if (calHostMeta) calHostMeta.textContent = hostName + (hostCompany ? ' · ' + hostCompany : '');
 
     // ── TAM stats from Apollo total ───────────────────────────────────────────
-    const gen = (session.extracted || {})._generated || {};
+    // (`gen` hoisted to the slide-title block above)
     // parseKM is module-level — safely converts "75K", "75000", "$75,000" or bad strings like "75K80K"
     const tamTotal = parseKM(gen.tamTotal) || parseKM(gen.apolloTotal) || null;
     // monthlyRaw hoisted so calendar + ROI model can reference it
