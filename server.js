@@ -215,18 +215,24 @@ async function storageUpload(storagePath, content, contentType = 'text/html') {
 }
 
 // ── DB helpers — jobs & tasks ─────────────────────────────────────────────────
-async function createJob(email, websiteUrl, brief, repName = null) {
-  const domain          = websiteUrl || email.split('@')[1];
+async function createJob(email, websiteUrl, brief, repName = null, linkedinUrl = null) {
+  // Website precedence: rep-entered → email domain (only if not free-mail).
+  // Free-mail domains (gmail.com, yahoo.com, etc.) are explicitly excluded because
+  // they tell us nothing about the prospect's company website.
+  const emailDomain = (email || '').split('@')[1] || '';
+  const fallbackDomain = isFreeMailDomain(emailDomain) ? null : emailDomain;
+  const domain = websiteUrl || fallbackDomain;
   const prospectCompany = brief?.prospect?.company || null;
   const prospectName    = brief?.prospect?.contact_name || null;
   const r = await supabaseRequest('POST', '/rest/v1/jobs', {
-    prospect_email:   email,
-    prospect_website: domain || null,
-    prospect_company: prospectCompany,
-    prospect_name:    prospectName,
-    rep_name:         repName || null,      // B5 fix: persist rep at job creation
-    extracted_data:   brief || null,
-    status:           'processing'
+    prospect_email:        email,
+    prospect_website:      domain || null,
+    prospect_company:      prospectCompany,
+    prospect_name:         prospectName,
+    prospect_linkedin_url: linkedinUrl || null,
+    rep_name:              repName || null,      // B5 fix: persist rep at job creation
+    extracted_data:        brief || null,
+    status:                'processing'
   }, { 'Prefer': 'return=representation' });
   if (r.status >= 400) throw new Error(`createJob failed: ${r.status} ${JSON.stringify(r.body)}`);
   return Array.isArray(r.body) ? r.body[0] : r.body;
@@ -483,12 +489,66 @@ async function lookupGHLContact(email) {
     const name = [contact.firstName, contact.lastName].filter(Boolean).join(' ').trim() || null;
     const company = contact.companyName || contact.company || null;
     const website = contact.website || null;
-    console.log(`[GHL] Found contact: ${name} @ ${company}`);
-    return { name, company, website, title: contact.customField?.find(f => f.name === 'Title')?.value || null };
+    const customFields = contact.customField || contact.customFields || [];
+    const findCustom = (...needles) => {
+      const lower = needles.map(n => String(n).toLowerCase());
+      for (const f of customFields) {
+        const fname = String(f.name || f.fieldName || f.key || '').toLowerCase();
+        if (lower.some(n => fname.includes(n))) {
+          const v = f.value || f.fieldValue || f.fieldValueString || null;
+          if (v) return String(v).trim();
+        }
+      }
+      return null;
+    };
+    const title = findCustom('title', 'job title', 'role');
+    const linkedinUrl = findCustom('linkedin');
+    console.log(`[GHL] Found contact: ${name} @ ${company}${linkedinUrl ? ' (LinkedIn ✓)' : ''}`);
+    return { name, company, website, title, linkedin_url: linkedinUrl };
   } catch(e) {
     console.warn('[GHL] Lookup error:', e.message);
     return null;
   }
+}
+
+// Apollo people/match by email — used as a fallback when GHL has no LinkedIn URL.
+// Returns { linkedin_url, headshot_url, title, name } or null. Best-effort, 1 Apollo
+// credit per call. Times out at 8s so the prefetch flow never hangs on this lookup.
+async function apolloMatchByEmail(email) {
+  const apolloKey = process.env.APOLLO_API_KEY;
+  if (!apolloKey || !email) return null;
+  try {
+    const r = await fetch('https://api.apollo.io/api/v1/people/match', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': apolloKey },
+      body: JSON.stringify({ email }),
+      signal: AbortSignal.timeout(8000)
+    });
+    if (!r.ok) { console.warn('[Apollo match] HTTP', r.status); return null; }
+    const data = await r.json();
+    const p = data.person || {};
+    const name = (p.first_name && p.last_name) ? `${p.first_name} ${p.last_name}`.trim() : (p.name || null);
+    return {
+      linkedin_url: p.linkedin_url || null,
+      headshot_url: p.photo_url || null,
+      title:        p.title || null,
+      name:         name
+    };
+  } catch(e) {
+    console.warn('[Apollo match] error:', e.message);
+    return null;
+  }
+}
+
+// Free-mail providers — when an email lives on one of these, the email domain is
+// not a reliable signal for the prospect's company website.
+const FREE_MAIL_DOMAINS = new Set([
+  'gmail.com','yahoo.com','outlook.com','hotmail.com','icloud.com','aol.com',
+  'me.com','live.com','msn.com','protonmail.com','proton.me','gmx.com',
+  'yandex.com','mail.com','zoho.com','fastmail.com','pm.me'
+]);
+function isFreeMailDomain(domain) {
+  return FREE_MAIL_DOMAINS.has(String(domain || '').toLowerCase().trim());
 }
 
 function normalizeToken(str) {
@@ -3111,12 +3171,26 @@ const server = http.createServer(async (req, res) => {
         getHistoricalContextByEmail(email)
       ]);
 
+      const emailDomain = email.split('@')[1] || '';
+      const websiteFallback = isFreeMailDomain(emailDomain) ? '' : emailDomain;
       const contactInfo = {
         name:    body.name    || ghlContact?.name    || historicalContext?.name || null,
         company: body.company || ghlContact?.company || historicalContext?.company || null,
         title:   ghlContact?.title || null,
-        website: (body.website || ghlContact?.website || historicalContext?.website || email.split('@')[1] || '').replace(/^https?:\/\//, '').split('/')[0]
+        website: (body.website || ghlContact?.website || historicalContext?.website || websiteFallback || '').replace(/^https?:\/\//, '').split('/')[0],
+        linkedin_url: body.linkedin_url || ghlContact?.linkedin_url || historicalContext?.linkedin_url || null
       };
+
+      // If GHL didn't have a LinkedIn URL on the contact, try Apollo people/match
+      // by email as a fallback (1 credit). Best-effort; failure is non-fatal.
+      if (!contactInfo.linkedin_url) {
+        const apolloMatch = await apolloMatchByEmail(email);
+        if (apolloMatch?.linkedin_url) {
+          contactInfo.linkedin_url = apolloMatch.linkedin_url;
+          if (!contactInfo.title && apolloMatch.title) contactInfo.title = apolloMatch.title;
+          console.log(`[prefetch] Apollo people/match resolved LinkedIn for ${email}`);
+        }
+      }
 
       // Phase 3: also check DB for approved calls — used for count badge in UI
       const dbApproved = await findApprovedCallsFromDB(email);
@@ -3187,6 +3261,7 @@ const server = http.createServer(async (req, res) => {
       const body       = await parseBody(req);
       const email      = (body.email || '').trim().toLowerCase();
       const websiteUrl = (body.websiteUrl || '').trim().replace(/^https?:\/\//, '').split('/')[0].toLowerCase();
+      const linkedinUrl = (body.linkedin_url || body.linkedinUrl || '').trim() || null;
       const brief      = body.brief || null;
       const repName    = (body.repName || body.rep_name || '').trim() || null; // B5 fix
 
@@ -3196,7 +3271,7 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
-      const job = await createJob(email, websiteUrl || null, brief, repName);
+      const job = await createJob(email, websiteUrl || null, brief, repName, linkedinUrl);
       // Spawn the full pipeline immediately:
       // - extract + prospect_research run now (re-extract with fresh transcript + LinkedIn)
       // - lead_list runs now (uses brief ICP which is already confirmed by rep)
@@ -3259,17 +3334,19 @@ const server = http.createServer(async (req, res) => {
 
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
-        job_id:          job.id,
-        status:          job.status,
-        prospect_email:  job.prospect_email,
-        prospect_company: job.prospect_company,
-        prospect_name:   job.prospect_name,
-        extracted_data:  job.extracted_data,
-        brand_data:      job.brand_data,
-        research_data:   job.research_data,
-        tasks:           taskMap,
-        created_at:      job.created_at,
-        updated_at:      job.updated_at
+        job_id:                job.id,
+        status:                job.status,
+        prospect_email:        job.prospect_email,
+        prospect_company:      job.prospect_company,
+        prospect_name:         job.prospect_name,
+        prospect_website:      job.prospect_website,
+        prospect_linkedin_url: job.prospect_linkedin_url,
+        extracted_data:        job.extracted_data,
+        brand_data:            job.brand_data,
+        research_data:         job.research_data,
+        tasks:                 taskMap,
+        created_at:            job.created_at,
+        updated_at:            job.updated_at
       }));
     } catch(e) {
       console.error('[GET /api/jobs/:id]', e.message);
@@ -3328,6 +3405,90 @@ const server = http.createServer(async (req, res) => {
       }));
     } catch(e) {
       console.error('[POST /api/webinar_mock/regenerate]', e.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  // ── PATCH /api/jobs/:id/prospect-info — rep edits prospect basics ────────
+  // Updates prospect_email / prospect_name / prospect_company / prospect_website /
+  // prospect_linkedin_url. Does NOT trigger any pipeline re-runs on its own — call
+  // /regenerate after if you want the personalization tasks to refresh.
+  if (req.method === 'PATCH' && urlPath.match(/^\/api\/jobs\/[^/]+\/prospect-info$/)) {
+    setCors(res);
+    const jobId = urlPath.split('/')[3];
+    try {
+      const body = await parseBody(req);
+      const patch = { updated_at: new Date().toISOString() };
+      const allowed = ['prospect_email','prospect_name','prospect_company','prospect_website','prospect_linkedin_url'];
+      for (const f of allowed) {
+        if (body[f] !== undefined) {
+          let v = body[f];
+          if (typeof v === 'string') v = v.trim();
+          if (f === 'prospect_website' && typeof v === 'string') {
+            v = v.replace(/^https?:\/\//, '').split('/')[0].toLowerCase();
+          }
+          patch[f] = v || null;
+        }
+      }
+      const r = await supabaseRequest('PATCH', `/rest/v1/jobs?id=eq.${jobId}`, patch, { 'Prefer': 'return=representation' });
+      if (r.status >= 400) throw new Error(`Supabase ${r.status}: ${JSON.stringify(r.body)}`);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, job: Array.isArray(r.body) ? r.body[0] : r.body }));
+    } catch(e) {
+      console.error('[PATCH /api/jobs/:id/prospect-info]', e.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  // ── POST /api/jobs/:id/regenerate — re-run brand_scrape + prospect_research
+  // and the personalization tasks downstream. Used after a rep edits prospect
+  // info (website / LinkedIn URL) and wants the visual outputs refreshed. Resets
+  // the relevant tasks to 'pending', clears their cached output, and lets the
+  // worker pick them up. Upstream `extract` and `lead_list` are NOT touched —
+  // they read the transcript and are independent of the prospect edits.
+  if (req.method === 'POST' && urlPath.match(/^\/api\/jobs\/[^/]+\/regenerate$/)) {
+    setCors(res);
+    const jobId = urlPath.split('/')[3];
+    try {
+      const job = await getJob(jobId);
+      if (!job) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Job not found' })); return;
+      }
+      // Clear cached personalization data on the job record
+      await supabaseRequest('PATCH', `/rest/v1/jobs?id=eq.${jobId}`, {
+        brand_data:    null,
+        research_data: null,
+        status:        'processing',
+        updated_at:    new Date().toISOString()
+      });
+      // Reset downstream tasks. Order doesn't matter — orchestrator handles deps.
+      const tasks = await getTasksByJobId(jobId);
+      const toReset = ['brand_scrape','prospect_research','webinar_titles','calendar_visual','webinar_mock'];
+      const resetIds = [];
+      for (const t of tasks) {
+        if (toReset.includes(t.task_type)) {
+          await supabaseRequest('PATCH', `/rest/v1/tasks?id=eq.${t.id}`, {
+            status:        'pending',
+            output_data:   null,
+            asset_url:     null,
+            error_message: null,
+            started_at:    null,
+            completed_at:  null,
+            updated_at:    new Date().toISOString()
+          });
+          resetIds.push(t.task_type);
+        }
+      }
+      console.log(`[POST /api/jobs/${jobId}/regenerate] Reset tasks: ${resetIds.join(', ')}`);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, reset: resetIds }));
+    } catch(e) {
+      console.error('[POST /api/jobs/:id/regenerate]', e.message);
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: e.message }));
     }
