@@ -473,7 +473,10 @@ async function lookupGHLContact(email) {
     return null;
   }
   try {
-    const url = `https://services.leadconnectorhq.com/contacts/?email=${encodeURIComponent(email)}&locationId=${GHL_LOCATION_ID}`;
+    // GHL v2 — /contacts/search/duplicate is the canonical "find one contact by
+    // email" endpoint. The older /contacts/?email=… returns 422 ("property email
+    // should not exist") on the v2 API as of 2026-05.
+    const url = `https://services.leadconnectorhq.com/contacts/search/duplicate?locationId=${GHL_LOCATION_ID}&email=${encodeURIComponent(email)}`;
     const res = await fetch(url, {
       headers: {
         'Authorization': `Bearer ${GHL_API_KEY}`,
@@ -484,27 +487,27 @@ async function lookupGHLContact(email) {
     });
     if (!res.ok) { console.warn('[GHL] Lookup failed:', res.status); return null; }
     const data = await res.json();
-    const contact = (data.contacts || [])[0];
+    const contact = data.contact;
     if (!contact) return null;
-    const name = [contact.firstName, contact.lastName].filter(Boolean).join(' ').trim() || null;
-    const company = contact.companyName || contact.company || null;
-    const website = contact.website || null;
+    const trim = (s) => typeof s === 'string' ? s.trim() : s;
+    const name = [trim(contact.firstName), trim(contact.lastName)].filter(Boolean).join(' ').trim() || null;
+    const company = trim(contact.companyName) || trim(contact.company) || null;
+    const website = trim(contact.website) || null;
+    // Custom fields on the v2 duplicate endpoint don't carry the field NAME (only
+    // the location-specific field ID). Resolving IDs → names requires a separate
+    // call to /locations/{id}/customFields. Cheap pattern-match works for the
+    // one field we actually need here: a LinkedIn URL is recognisable by value.
     const customFields = contact.customField || contact.customFields || [];
-    const findCustom = (...needles) => {
-      const lower = needles.map(n => String(n).toLowerCase());
-      for (const f of customFields) {
-        const fname = String(f.name || f.fieldName || f.key || '').toLowerCase();
-        if (lower.some(n => fname.includes(n))) {
-          const v = f.value || f.fieldValue || f.fieldValueString || null;
-          if (v) return String(v).trim();
-        }
+    let linkedinUrl = null;
+    for (const f of customFields) {
+      const v = f.value || f.fieldValue || f.fieldValueString || '';
+      if (typeof v === 'string' && /linkedin\.com\/(in|company)\//i.test(v)) {
+        linkedinUrl = v.trim();
+        break;
       }
-      return null;
-    };
-    const title = findCustom('title', 'job title', 'role');
-    const linkedinUrl = findCustom('linkedin');
+    }
     console.log(`[GHL] Found contact: ${name} @ ${company}${linkedinUrl ? ' (LinkedIn ✓)' : ''}`);
-    return { name, company, website, title, linkedin_url: linkedinUrl };
+    return { name, company, website, title: null, linkedin_url: linkedinUrl };
   } catch(e) {
     console.warn('[GHL] Lookup error:', e.message);
     return null;
