@@ -1077,6 +1077,59 @@ function formatEmployeeRangeBand(ranges) {
   return lo === hi ? `${lo} emp` : `${lo}–${hi} emp`;
 }
 
+// Bulk people-match for an array of deduped leads. Costs 1 Apollo enrichment
+// credit per lead with an apollo_id (so ~25 credits per fresh lead_list / rerun).
+// Why every lead, every time:
+//   - Search responses strip last_name (obfuscated as "Mo***e"), email, and
+//     employee count on this Apollo plan. Match unlocks all three.
+//   - Pre-matching at lead_list time means the rep sees real names + emails
+//     immediately in the table; no per-lead Reveal click required for the
+//     baseline view. (Reveal button is still wired for old jobs that don't
+//     have apollo_id, and as a manual refresh if anything ever needs it.)
+// The website column intentionally stays on the free proxy-scrape value; this
+// helper only overrides name / email / company_size when match returns them.
+async function peopleMatchAllLeads(leads) {
+  const APOLLO_KEY = process.env.APOLLO_API_KEY;
+  if (!APOLLO_KEY || !Array.isArray(leads) || !leads.length) return leads;
+  const targets = leads.filter(l => l && l.apollo_id && !l.revealed);
+  if (!targets.length) return leads;
+
+  const CONCURRENCY = 5;
+  let matched = 0;
+
+  for (let i = 0; i < targets.length; i += CONCURRENCY) {
+    const batch = targets.slice(i, i + CONCURRENCY);
+    await Promise.all(batch.map(async (lead) => {
+      try {
+        const r = await fetch('https://api.apollo.io/api/v1/people/match', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-api-key': APOLLO_KEY },
+          body: JSON.stringify({ id: lead.apollo_id }), // NO reveal_personal_emails, NO reveal_phone_number
+          signal: AbortSignal.timeout(10000)
+        });
+        if (!r.ok) return;
+        const d = await r.json();
+        const p = d.person || {};
+        if (p.first_name && p.last_name) {
+          lead.name = `${p.first_name} ${p.last_name}`.trim();
+        } else if (p.name) {
+          lead.name = p.name;
+        }
+        if (p.email) lead.email = p.email;
+        const emp = p.organization?.estimated_num_employees;
+        if (Number.isFinite(emp) && emp > 0) lead.company_size = fmtEmp(emp);
+        lead.revealed = true;
+        matched++;
+      } catch (e) {
+        // Match failure is non-fatal — lead still renders with obfuscated name,
+        // and the rep can manually click Reveal to retry the single lead.
+      }
+    }));
+  }
+  console.log(`[lead_list] People-match: ${matched}/${targets.length} leads matched (${matched} enrichment credits)`);
+  return leads;
+}
+
 // Shared finalizer for the lead list. Used by handleLeadList (worker path) AND
 // the POST /api/jobs/:id/rerun-apollo handler — both used to have their own
 // dedup logic. Without this, rerun-apollo persisted the raw 50-lead Apollo
@@ -1090,7 +1143,10 @@ function formatEmployeeRangeBand(ranges) {
 //   3. Apply the ICP's employee-range band as a Size fallback whenever the lead
 //      itself has no company_size (which is every lead on this Apollo plan tier,
 //      since people search responses strip estimated_num_employees).
-function finalizeLeadList(rawLeads, icp) {
+//   4. People-match all 25 to unlock full name + work email + real employee count
+//      (25 enrichment credits per finalize call). Step (3) still applies as a
+//      fallback whenever match doesn't return an employee count.
+async function finalizeLeadList(rawLeads, icp) {
   const seen = new Set();
   const deduped = [];
   for (const l of (rawLeads || [])) {
@@ -1104,6 +1160,7 @@ function finalizeLeadList(rawLeads, icp) {
   if (sizeFallback) {
     deduped.forEach(l => { if (!l.company_size) l.company_size = sizeFallback; });
   }
+  await peopleMatchAllLeads(deduped);
   return { leads: deduped, sizeFallback };
 }
 const PARKING_SIGNALS = ['domain for sale','this domain is for sale','buy this domain','coming soon','under construction','parked by','domain parking'];
@@ -2682,10 +2739,11 @@ async function handleLeadList(task, job) {
   const result = await fetchLeadsFromApollo(icp);
   const rawLeads = result?.leads || [];
 
-  // Dedup + size fallback — shared helper so the rerun-apollo path produces the
-  // same shape as this worker-driven path (previously they diverged: rerun
-  // persisted raw 50-lead output with empty Size cells).
-  const { leads, sizeFallback } = finalizeLeadList(rawLeads, icp);
+  // Dedup + size fallback + people-match — shared finalizer so handleLeadList
+  // (worker) and rerun-apollo produce identical output. People-match runs for
+  // every lead with an apollo_id at this step, so reps see real names + emails
+  // immediately instead of obfuscated stubs (~25 enrichment credits per job).
+  const { leads, sizeFallback } = await finalizeLeadList(rawLeads, icp);
   console.log(`[lead_list] Dedup: ${rawLeads.length} → ${leads.length} unique-company leads (size fallback: ${sizeFallback || 'none'})`);
 
   // fetchLeadsFromApollo returns { total }; legacy callers used { totalAvailable }
@@ -4163,10 +4221,11 @@ const server = http.createServer(async (req, res) => {
               ? 100000
               : tam > 0 ? Math.max(1000, Math.round(tam / 3 / 1000) * 1000) : 30000;
 
-            // Dedup + size fallback — same shared helper handleLeadList uses, so
-            // a rerun produces an identically-shaped list (25 unique-company leads,
-            // each with a Size band when the ICP has apollo_employee_ranges).
-            const { leads: finalizedLeads } = finalizeLeadList(result.leads, icp);
+            // Dedup + size fallback + people-match — same shared helper
+            // handleLeadList uses, so a rerun produces an identically-shaped list
+            // (25 unique-company leads, real names + emails baked in from the match
+            // call). ~25 enrichment credits per rerun.
+            const { leads: finalizedLeads } = await finalizeLeadList(result.leads, icp);
             console.log(`[rerun-apollo] Dedup: ${result.leads.length} → ${finalizedLeads.length} unique-company leads`);
 
             // Re-read latest extracted_data so we don't clobber progress writes that
