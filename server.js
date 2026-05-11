@@ -4605,26 +4605,26 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // ── LinkedIn avatar proxy ─────────────────────────────────────────────────
+  // ── Lloyd avatar ──────────────────────────────────────────────────────────
+  // Serves assets/lloyd-yip.jpg (or .png) directly. The previous LinkedIn-CDN
+  // proxy stopped working because LinkedIn rotates signed image URLs and
+  // blocks server-to-server fetches without proper session cookies. Local file
+  // is the only stable option. Falls back to 404 if the file is missing so the
+  // <img onerror> handler on the page degrades gracefully to the initials chip.
   if (urlPath === '/lloyd-avatar') {
-    const linkedinUrl = 'https://media.licdn.com/dms/image/v2/C4E03AQEtIxMkjlDmyA/profile-displayphoto-shrink_200_200/0/1638042721905';
-    let headersSent = false;
-    https.get(linkedinUrl, {
-      headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://www.linkedin.com/', 'Accept': 'image/*' }
-    }, (upstream) => {
-      if (upstream.statusCode === 200) {
-        headersSent = true;
-        res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Cache-Control': 'public, max-age=86400' });
-        upstream.pipe(res);
-        upstream.on('error', () => res.destroy());
-      } else {
-        headersSent = true;
-        res.writeHead(404); res.end();
+    const candidates = ['lloyd-yip.jpg', 'lloyd-yip.jpeg', 'lloyd-yip.png'];
+    for (const filename of candidates) {
+      const filePath = path.join(__dirname, 'assets', filename);
+      if (fs.existsSync(filePath)) {
+        const ext = path.extname(filename);
+        const mime = ext === '.png' ? 'image/png' : 'image/jpeg';
+        res.writeHead(200, { 'Content-Type': mime, 'Cache-Control': 'public, max-age=86400' });
+        fs.createReadStream(filePath).pipe(res);
+        return;
       }
-    }).on('error', () => {
-      if (!headersSent) { headersSent = true; res.writeHead(404); res.end(); }
-      else { res.destroy(); }
-    });
+    }
+    console.warn('[lloyd-avatar] No file found at assets/lloyd-yip.{jpg,png}');
+    res.writeHead(404); res.end();
     return;
   }
 
