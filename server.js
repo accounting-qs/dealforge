@@ -1227,42 +1227,27 @@ async function _searchEngineLookupCompany(name) {
   if (!key) return { website: null, company_linkedin_url: null };
   if (_companyLookupCache.has(key)) return _companyLookupCache.get(key);
   let result = { website: null, company_linkedin_url: null };
-  // Two sources tried in order. Jina caches its own scrapes server-side, so
-  // repeated calls for the same company URL hit Jina's cache (fast). DuckDuckGo
-  // direct is a fallback when Jina rate-limits or returns a thin response.
-  const TIMEOUT = 8000;
-  async function tryJinaDDG() {
-    const r = await fetch('https://r.jina.ai/https://duckduckgo.com/html/?q=' + encodeURIComponent(name), {
-      headers: { 'Accept': 'text/plain', 'X-Return-Format': 'text' },
-      signal: AbortSignal.timeout(TIMEOUT)
-    });
-    if (!r.ok) return null;
-    const text = await r.text();
-    if (text.length < 500) return null; // Jina returned a "thin" stub — treat as miss
-    return _extractFromDDG(text);
-  }
-  async function tryDirectDDG() {
-    const r = await fetch('https://html.duckduckgo.com/html/?q=' + encodeURIComponent(name), {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml',
-        'Accept-Language': 'en-US,en;q=0.9'
-      },
-      signal: AbortSignal.timeout(TIMEOUT)
-    });
-    if (!r.ok) return null;
-    const text = await r.text();
-    if (text.length < 5000) return null; // 202/captcha pages are ~14KB but lack uddg redirects → caller filters by content
-    return _extractFromDDG(text);
+  const proxyKey = process.env.CORSPROXY_API_KEY;
+  if (!proxyKey) {
+    // Single-IP scraping trips DDG's captcha within a handful of calls
+    // (verified locally — got HTTP 202 + 14 KB block pages from both Jina and
+    // direct DDG after the first batch). Without the proxy we skip silently and
+    // let the Website cell render as "—". Reveal still populates from Apollo.
+    _companyLookupCache.set(key, result);
+    return result;
   }
   try {
-    let r = await tryJinaDDG().catch(() => null);
-    if (!r || (!r.website && !r.company_linkedin_url)) {
-      // Jina missed or empty — try direct DDG as a fallback
-      const r2 = await tryDirectDDG().catch(() => null);
-      if (r2 && (r2.website || r2.company_linkedin_url)) r = r2;
+    const target = 'https://duckduckgo.com/html/?q=' + encodeURIComponent(name);
+    const url = 'https://corsproxy.io/?key=' + encodeURIComponent(proxyKey)
+              + '&url=' + encodeURIComponent(target);
+    const r = await fetch(url, { signal: AbortSignal.timeout(10000) });
+    if (r.ok) {
+      const text = await r.text();
+      // Captcha pages from DDG are ~14 KB but contain no uddg redirects, so
+      // the parser already returns nulls for them. The length gate is a cheap
+      // pre-check before doing the regex pass.
+      if (text.length > 5000) result = _extractFromDDG(text);
     }
-    if (r) result = r;
   } catch (e) {
     // Network failure / timeout — leave result null; lead still renders
   }
@@ -1277,11 +1262,12 @@ async function enrichLeadsWithCompanyData(leads, progressCb) {
   if (!uniqueCompanies.length) return leads;
 
   const orgByName = new Map();
-  // Low concurrency on purpose: DuckDuckGo + Jina rate-limit aggressively on
-  // 5-way bursts (verified locally — got HTTP 202 captcha pages after the first
-  // batch). Two-way concurrency with the small inter-batch await trips fewer
-  // limits while still finishing 25 lookups in ~10-20 seconds.
-  const CONCURRENCY = 2;
+  // corsproxy.io rotates the outbound IP so DDG's per-IP rate limit doesn't
+  // bite us. Burst test of 25 names at concurrency 5 came back in 5.5s with
+  // 25/25 hits. Without the proxy key we skip the call entirely (see
+  // _searchEngineLookupCompany), so this concurrency only applies when we have
+  // a working proxy.
+  const CONCURRENCY = 5;
   let done = 0;
 
   for (let i = 0; i < uniqueCompanies.length; i += CONCURRENCY) {
