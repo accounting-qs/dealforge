@@ -1843,24 +1843,50 @@ async function generateWebinarTitles(extracted, companyName, job = null) {
   const hostBio  = research.bio  || null;
   const tagline  = brand.tagline || null;
   const summary  = brand.website_summary ? brand.website_summary.slice(0, 400) : null;
-  const outputSchema = `\nRuntime rules: write as ${companyName} hosting — NEVER as Quantum Scaling • titles HARD LIMIT 60 chars, NO emojis in titles • bullets = specific transformations, not topics • ${cs?.numbers ? 'proof numbers verbatim: ' + cs.numbers : 'no fabricated proof numbers — set proof_story to null if no numbers in brief'} • return ALL 12 fields per variant\nReturn valid JSON only matching the Output Format schema above.`;
+  // Pull richer brief fields for the accuracy-first generation prompt. These
+  // drive the specificity hierarchy (Step 5 of webinar_titles_system.txt) so
+  // verbatim language wins over generic industry assumptions.
+  const verbatim    = extracted.verbatim  || {};
+  const situation   = extracted.situation || {};
+  const briefContext = extracted.context  || {};
+  const apolloTitles = Array.isArray(icp.apollo_titles) ? icp.apollo_titles.filter(Boolean) : [];
+  // Classify geography for the compliance-language rules (Step 2). Best-effort
+  // hint — the model does the final classification, but a deterministic split
+  // for common cases reduces drift. 'other' is the safe default.
+  function classifyGeo(g) {
+    if (!g) return 'other';
+    const s = String(g).toLowerCase();
+    if (/\b(usa|united states|us\b|u\.s\.|america)\b/.test(s)) return 'us';
+    if (/\b(canada|canadian|qu[eé]bec|ontario|alberta|british columbia)\b/.test(s)) return 'ca';
+    return 'other';
+  }
+  const geoClassHint = classifyGeo(geo);
+  const outputSchema = `\nRuntime rules: write as ${companyName} hosting — NEVER as Quantum Scaling • titles HARD LIMIT 60 chars, NO emojis in titles • bullets = specific transformations, not topics • ${cs?.numbers ? 'proof numbers verbatim: ' + cs.numbers : 'no fabricated proof numbers — set proof_story to null if no numbers in brief'} • return ALL 12 fields per variant + _score per variant + top-level _analysis and _recommended_index\nReturn valid JSON only matching the Output Format schema above.`;
   let systemPrompt, userPrompt;
   let brainMeta = null;
   if (WEBINAR_SYSTEM_TEMPLATE) {
-    // Per-job context (always derived from extracted_data + brand_data + research_data) —
-    // appended above the global Copy Brain so prospect-specific details override the
-    // universal brain when both are relevant.
+    // Per-job context (extracted_data + brand_data + research_data + verbatim
+    // quotes + situation + context). The 8-section accuracy framework in
+    // webinar_titles_system.txt reads these lines to do audience separation,
+    // geography classification, and claim anchoring.
     const jobContext = [
-      `- Company: ${companyName}`,
+      `- Host (company sending the invite): ${companyName}`,
       tagline    ? `- Host tagline: ${tagline}` : null,
-      hostName   ? `- Host: ${hostName}${hostBio ? ' — ' + hostBio : ''}` : null,
-      `- Their clients are: ${role}s at ${size ? size + ' ' : ''}companies in ${industry}`,
-      geo ? `- Geography: ${geo}` : null,
-      `- Core pain they solve: ${pain}`,
-      `- Result they deliver: ${result}`,
-      cs?.numbers ? `- Client proof (use VERBATIM): ${cs.client_description || 'A client'} — ${cs.result || ''} (${cs.numbers})` : null,
-      (extracted.webinar_angle || extracted.context?.why_webinar) ? `- Webinar angle: ${extracted.webinar_angle || extracted.context?.why_webinar}` : null,
-      summary ? `- Website summary (positioning context, not for verbatim quoting): ${summary}` : null
+      hostName   ? `- Host founder: ${hostName}${hostBio ? ' — ' + hostBio : ''}` : null,
+      `- Attendee (host's ICP — the reader): ${role}${size ? ' at ' + size + ' companies' : ''}${industry ? ' in ' + industry : ''}`,
+      apolloTitles.length ? `- Attendee titles (verbatim): ${apolloTitles.slice(0, 8).join(', ')}` : null,
+      geo ? `- Geography: ${geo} → geography_class hint: ${geoClassHint}` : `- Geography: not specified → geography_class hint: other`,
+      `- Attendee's core pain: ${pain}`,
+      `- Attendee's desired outcome: ${result}`,
+      verbatim.pain_quote   ? `- VERBATIM PAIN QUOTE (use exact words where possible): "${verbatim.pain_quote}"` : null,
+      verbatim.result_quote ? `- VERBATIM RESULT QUOTE: "${verbatim.result_quote}"` : null,
+      verbatim.goal_quote   ? `- VERBATIM GOAL QUOTE (aspiration — NOT current state): "${verbatim.goal_quote}"` : null,
+      situation.current_lead_gen ? `- Attendee's current acquisition channels: ${situation.current_lead_gen}` : null,
+      situation.revenue_range    ? `- Attendee's CURRENT revenue (state — NOT goal): ${situation.revenue_range}` : null,
+      briefContext.goals         ? `- Attendee's stated goals (aspiration): ${briefContext.goals}` : null,
+      cs?.numbers ? `- Client proof (use VERBATIM): ${cs.client_description || 'A client'} — ${cs.result || ''} (${cs.numbers})` : '- Client proof: none in brief → proof_story MUST be null in all variants',
+      (extracted.webinar_angle || briefContext.why_webinar) ? `- Webinar angle / why this webinar: ${extracted.webinar_angle || briefContext.why_webinar}` : null,
+      summary ? `- Host website summary (positioning context, not for verbatim quoting): ${summary}` : null
     ].filter(Boolean).join('\n');
     var brain = await loadCopyBrain();
     brainMeta = brain._meta;
@@ -1884,8 +1910,12 @@ async function generateWebinarTitles(extracted, companyName, job = null) {
     userPrompt   = `Generate 3 calendar blocker variants for ${companyName}'s webinar targeting ${role}s in ${industry}${size ? ' (' + size + ' companies)' : ''}.\nPain: ${pain}\nResult: ${result}`;
   }
   console.log('[webinar_titles] Calling Claude Sonnet...');
+  // max_tokens raised from 3000 → 4000 to accommodate the new top-level
+  // _analysis block + per-variant _score object on top of the 12-field schema.
+  // Empirically the analysis adds ~350 tokens and per-variant scores ~150 more,
+  // and we don't want truncation cutting off the last variant or the closing brace.
   const message = await anthropic.messages.create({
-    model: 'claude-sonnet-4-6', max_tokens: 3000, temperature: 0.7,
+    model: 'claude-sonnet-4-6', max_tokens: 4000, temperature: 0.7,
     system: systemPrompt, messages: [{ role: 'user', content: userPrompt }]
   });
   const raw = message.content[0].text;
@@ -1912,8 +1942,28 @@ async function generateWebinarTitles(extracted, companyName, job = null) {
       throw new Error('webinar_titles: response missing required "variants" array (got keys: ' + Object.keys(parsed).slice(0, 6).join(', ') + ')');
     }
   }
-  // Attach brain meta + generation timestamp so the portal can show
-  // "Brain v25 principles · generated [time]" under the variant tag.
+  // Validate _recommended_index. The prompt asks Claude to compute it from the
+  // highest _score.total. If it's missing or out of range we fall back: pick
+  // the variant with the highest score.total ourselves, defaulting to 0.
+  function deriveRecommendedIndex() {
+    const variants = parsed.variants || [];
+    let bestIdx = 0, bestTotal = -1;
+    variants.forEach((v, i) => {
+      const total = (v && v._score && typeof v._score.total === 'number') ? v._score.total : -1;
+      if (total > bestTotal) { bestTotal = total; bestIdx = i; }
+    });
+    return bestIdx;
+  }
+  if (typeof parsed._recommended_index !== 'number' || parsed._recommended_index < 0 || parsed._recommended_index > 2) {
+    const derived = deriveRecommendedIndex();
+    console.log(`[webinar_titles] _recommended_index missing/invalid (was ${JSON.stringify(parsed._recommended_index)}) — derived ${derived} from variant scores`);
+    parsed._recommended_index = derived;
+  }
+  // Attach brain meta + generation timestamp + the new accuracy fields so the
+  // portal can render "Brain · N principles · K examples · confidence X/10"
+  // and a risk-flag warning row in edit mode. _analysis is also preserved at
+  // the top level for any downstream consumer that wants it raw.
+  const analysis = parsed._analysis || {};
   parsed._meta = {
     ...(parsed._meta || {}),
     brain: brainMeta || { principles_count: 0, fallback: true },
@@ -1923,7 +1973,13 @@ async function generateWebinarTitles(extracted, companyName, job = null) {
       has_host_bio:   !!hostBio,
       has_brand_tagline: !!tagline,
       has_website_summary: !!summary,
+      has_pain_quote: !!verbatim.pain_quote,
+      has_goal_quote: !!verbatim.goal_quote,
     },
+    analysis,
+    recommended_index: parsed._recommended_index,
+    confidence: typeof analysis.confidence === 'number' ? analysis.confidence : null,
+    risk_flags: Array.isArray(analysis.risk_flags) ? analysis.risk_flags : [],
   };
   return parsed;
 }

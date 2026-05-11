@@ -3590,9 +3590,16 @@ function runPersonalization(session) {
       if (phBadge) phBadge.style.display = 'none';
 
       // Surface brain version + generation timestamp under the variant tag.
+      // Confidence + risk flags are accuracy-framework outputs (see
+      // prompts/webinar_titles_system.txt step 8) — only shown in edit mode
+      // so prospect view stays clean.
       const meta = generated.webinarTitles._meta || {};
       const brainCount = meta.brain?.principles_count;
       const generatedAt = meta.generated_at;
+      const confidence = (typeof meta.confidence === 'number') ? meta.confidence : null;
+      const riskFlags  = Array.isArray(meta.risk_flags) ? meta.risk_flags : [];
+      const recIdx     = (typeof meta.recommended_index === 'number' && meta.recommended_index >= 0 && meta.recommended_index <= 2)
+        ? meta.recommended_index : null;
       const stampEl = document.getElementById('cal-brain-stamp');
       if (stampEl) {
         const parts = [];
@@ -3610,8 +3617,52 @@ function runPersonalization(session) {
           ].filter(Boolean);
           if (flags.length) parts.push('inputs: ' + flags.join(' · '));
         }
+        // Edit-mode-only accuracy signals
+        if (IS_EDIT_MODE && confidence != null) parts.push('confidence ' + confidence + '/10');
         stampEl.textContent = parts.join(' · ');
         stampEl.style.display = parts.length ? 'inline' : 'none';
+      }
+
+      // Risk-flag chips — edit mode only. Cleared on every fresh render so
+      // the chip row doesn't stack up across regenerations.
+      const riskRowId = 'cal-risk-flags-row';
+      var existingRiskRow = document.getElementById(riskRowId);
+      if (existingRiskRow) existingRiskRow.remove();
+      if (IS_EDIT_MODE && riskFlags.length && stampEl && stampEl.parentNode) {
+        const riskRow = document.createElement('div');
+        riskRow.id = riskRowId;
+        riskRow.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px;margin-top:6px;';
+        riskFlags.forEach(function(flag) {
+          const chip = document.createElement('span');
+          chip.style.cssText = 'font-size:10px;font-weight:600;color:#d93025;background:rgba(217,48,37,0.08);border:1px solid rgba(217,48,37,0.25);padding:2px 8px;border-radius:10px;';
+          chip.textContent = '⚠ ' + flag;
+          riskRow.appendChild(chip);
+        });
+        // Insert the chip row right after the brain stamp's parent row so it sits
+        // visually under the variant pills.
+        stampEl.parentNode.parentNode.insertBefore(riskRow, stampEl.parentNode.nextSibling);
+      }
+
+      // ★ recommended badge on the model's pick — edit mode only.
+      // Clear any prior badges so a fresh regen replaces the indicator.
+      [0,1,2].forEach(function(j) {
+        const btn = document.getElementById('var-btn-' + j);
+        if (btn) btn.removeAttribute('data-recommended');
+        const oldBadge = document.getElementById('var-rec-badge-' + j);
+        if (oldBadge) oldBadge.remove();
+      });
+      if (IS_EDIT_MODE && recIdx != null) {
+        const recBtn = document.getElementById('var-btn-' + recIdx);
+        if (recBtn) {
+          recBtn.setAttribute('data-recommended', '1');
+          // Append a tiny star badge next to the recommended button
+          const recBadge = document.createElement('span');
+          recBadge.id = 'var-rec-badge-' + recIdx;
+          recBadge.style.cssText = 'font-size:10px;color:#f59e0b;font-weight:700;margin-left:4px;vertical-align:middle;';
+          recBadge.title = 'Model recommended this variant based on ICP accuracy, pain relevance, outcome clarity, compliance safety, and curiosity appeal';
+          recBadge.textContent = '★';
+          recBtn.parentNode.insertBefore(recBadge, recBtn.nextSibling);
+        }
       }
 
       // Re-apply with generated data
