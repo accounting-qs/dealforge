@@ -693,8 +693,10 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
     </div>
   </div>
 
-  <!-- ── Source Intelligence Panel — rep-facing only ──────────────────── -->
-  <div id="source-intelligence-panel" class="source-intel-panel" style="max-width:960px;margin:0 auto 40px;">
+  <!-- ── Source Intelligence Panel — rep-facing only ────────────────────
+       Hidden by default; JS reveals it only when IS_EDIT_MODE is true
+       (URL has ?edit=true). Prospect view never sees this section. -->
+  <div id="source-intelligence-panel" class="source-intel-panel" style="display:none;max-width:960px;margin:0 auto 40px;">
     <div class="source-intel-header">
       <span>🔍 Source Intelligence — Where each piece of intel came from</span>
       <span id="si-overall-status" style="font-size:11px;font-weight:500;color:#52525b;">Loading…</span>
@@ -2491,6 +2493,9 @@ function wireROIEditMode() {
     banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:9999;background:#166534;color:#dcfce7;font-size:13px;padding:8px 20px;text-align:center;font-weight:500;box-shadow:0 2px 8px rgba(0,0,0,0.3);';
     document.body.prepend(banner);
     document.body.style.paddingTop = '40px';
+    // Reveal the Source Intelligence panel (rep-only — hidden by default in HTML)
+    const sip = document.getElementById('source-intelligence-panel');
+    if (sip) sip.style.display = '';
     const style = document.createElement('style');
     style.textContent = `
       .override-edit-btn { display:inline-flex !important; }
