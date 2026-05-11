@@ -3636,7 +3636,9 @@ const server = http.createServer(async (req, res) => {
   }
 
   // ── GET /api/jobs/:id — poll job status + task outputs ───────────────────
-  if (req.method === 'GET' && urlPath.startsWith('/api/jobs/')) {
+  // Tightened to match only `/api/jobs/{uuid}` exactly so later sub-routes like
+  // `/api/jobs/{id}/assets/:asset` aren't shadowed by this broad startsWith.
+  if (req.method === 'GET' && /^\/api\/jobs\/[^/]+$/.test(urlPath)) {
     setCors(res);
     const jobId = urlPath.slice('/api/jobs/'.length);
     try {
@@ -3828,6 +3830,47 @@ const server = http.createServer(async (req, res) => {
       console.error('[POST /api/jobs/:id/regenerate]', e.message);
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  // ── GET /api/jobs/:id/assets/:asset — proxy the stored HTML with correct MIME
+  // type. Supabase Storage forces Content-Type: text/plain + X-Content-Type-Options:
+  // nosniff on every file in this public bucket (stored-XSS prevention), which makes
+  // browsers render our generated webinar/calendar/ROI HTML as source code instead
+  // of as a page. We re-serve the same body with Content-Type: text/html. Allowed
+  // assets are gated to avoid this becoming an arbitrary-fetch endpoint.
+  if (req.method === 'GET' && urlPath.match(/^\/api\/jobs\/[^/]+\/assets\/[a-z_]+$/)) {
+    setCors(res);
+    const parts = urlPath.split('/');
+    const jobId = parts[3];
+    const asset = parts[5];
+    const allowed = { webinar_mock: 'webinar_mock.html', calendar_visual: 'calendar_visual.html', roi_model: 'roi_model.html' };
+    const filename = allowed[asset];
+    if (!filename) {
+      res.writeHead(404, { 'Content-Type': 'text/plain' });
+      res.end(`Unknown asset: ${asset}. Allowed: ${Object.keys(allowed).join(', ')}`);
+      return;
+    }
+    try {
+      const storageUrl = `${SUPABASE_URL}/storage/v1/object/public/sales-assets/${encodeURIComponent(jobId)}/${filename}`;
+      const upstream = await fetch(storageUrl, { signal: AbortSignal.timeout(10000) });
+      if (!upstream.ok) {
+        res.writeHead(upstream.status, { 'Content-Type': 'text/plain' });
+        res.end(`Asset fetch failed (storage HTTP ${upstream.status}). The task may not have completed yet.`);
+        return;
+      }
+      const body = await upstream.text();
+      res.writeHead(200, {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Cache-Control': 'no-cache',
+        'Content-Length': Buffer.byteLength(body, 'utf8')
+      });
+      res.end(body);
+    } catch(e) {
+      console.error(`[asset proxy] ${asset}/${jobId} error:`, e.message);
+      res.writeHead(502, { 'Content-Type': 'text/plain' });
+      res.end('Asset proxy error: ' + e.message);
     }
     return;
   }

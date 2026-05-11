@@ -2324,7 +2324,14 @@ function buildCompatSession(job) {
     transcript: meta.transcript || { found: false },
     website:    meta.website    || { domain: job.prospect_website, scraped: false },
     extracted:  ext,
-    webinarMockUrl:    (tasks.webinar_mock && (tasks.webinar_mock.asset_url || (tasks.webinar_mock.output && tasks.webinar_mock.output.url))) || null,
+    // webinarMockUrl points at our backend proxy, NOT the raw Supabase Storage
+    // URL — Supabase forces text/plain on public-bucket files (stored-XSS guard)
+    // with X-Content-Type-Options: nosniff, so opening the storage URL directly
+    // shows source code instead of a rendered page. The proxy re-serves with
+    // text/html. Null when the task hasn't completed or job id is missing.
+    webinarMockUrl:    (job.job_id && tasks.webinar_mock && tasks.webinar_mock.status === 'completed')
+                        ? `/api/jobs/${encodeURIComponent(job.job_id)}/assets/webinar_mock`
+                        : null,
     prospectInfo: {
       email:        job.prospect_email || '',
       name:         job.prospect_name || '',
