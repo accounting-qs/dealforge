@@ -625,6 +625,33 @@ function isFreeMailDomain(domain) {
   return FREE_MAIL_DOMAINS.has(String(domain || '').toLowerCase().trim());
 }
 
+// "Does this work-email domain match this company name?" — used to validate or
+// fill the Website column from a contact's email when the proxy scrape didn't
+// find a good URL (or returned something off-target like fca.org.uk for
+// "Millennium Financial Group"). Loose substring match in both directions,
+// after stripping common business-suffix tokens. Free-mail domains short-
+// circuit to false — gmail tells us nothing about the company.
+const _COMPANY_NAME_STOPWORDS = new Set([
+  'the','and','of','llc','inc','ltd','corp','corporation','company','co',
+  'group','holdings','holding','partners','partner','services','service',
+  'associates','enterprises','agency','solutions','consulting','financial'
+]);
+function emailDomainMatchesCompany(emailDomain, companyName) {
+  if (!emailDomain || !companyName) return false;
+  emailDomain = String(emailDomain).toLowerCase().trim();
+  if (isFreeMailDomain(emailDomain)) return false;
+  // Domain core = registrable label (microsoft.com → "microsoft",
+  // arrowrootfamilyoffice.com → "arrowrootfamilyoffice"). Subdomains stripped
+  // by taking the first label before the dot.
+  const domainCore = emailDomain.split('.')[0].replace(/[^a-z0-9]/g, '');
+  if (domainCore.length < 3) return false;
+  // Significant company tokens: ≥4 chars, not a generic business suffix.
+  const tokens = normalizeToken(companyName).split(/\s+/)
+    .filter(t => t.length >= 4 && !_COMPANY_NAME_STOPWORDS.has(t));
+  if (!tokens.length) return false;
+  return tokens.some(t => domainCore.includes(t) || t.includes(domainCore));
+}
+
 function normalizeToken(str) {
   return String(str || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 }
@@ -1096,6 +1123,7 @@ async function peopleMatchAllLeads(leads) {
 
   const CONCURRENCY = 5;
   let matched = 0;
+  let websiteFromEmail = 0;
 
   for (let i = 0; i < targets.length; i += CONCURRENCY) {
     const batch = targets.slice(i, i + CONCURRENCY);
@@ -1118,6 +1146,21 @@ async function peopleMatchAllLeads(leads) {
         if (p.email) lead.email = p.email;
         const emp = p.organization?.estimated_num_employees;
         if (Number.isFinite(emp) && emp > 0) lead.company_size = fmtEmp(emp);
+        // Validate / fill Website from the work-email domain when it's
+        // non-free-mail and roughly matches the company name. The email domain
+        // is the most authoritative source for "where does this person work"
+        // — overrides any prior value from the DDG proxy scrape, which can land
+        // on adjacent pages (regulator websites, news, directory listings).
+        if (lead.email) {
+          const emailDomain = (lead.email.split('@')[1] || '').toLowerCase().trim();
+          if (emailDomain && !isFreeMailDomain(emailDomain) && emailDomainMatchesCompany(emailDomain, lead.company)) {
+            const newSite = 'https://' + emailDomain;
+            if (lead.website !== newSite) {
+              lead.website = newSite;
+              websiteFromEmail++;
+            }
+          }
+        }
         lead.revealed = true;
         matched++;
       } catch (e) {
@@ -1126,7 +1169,7 @@ async function peopleMatchAllLeads(leads) {
       }
     }));
   }
-  console.log(`[lead_list] People-match: ${matched}/${targets.length} leads matched (${matched} enrichment credits)`);
+  console.log(`[lead_list] People-match: ${matched}/${targets.length} leads matched (${matched} enrichment credits) | website set from email domain: ${websiteFromEmail}`);
   return leads;
 }
 
@@ -4351,6 +4394,15 @@ const server = http.createServer(async (req, res) => {
       };
       if (Number.isFinite(employeeCount) && employeeCount > 0) {
         updatedLead.company_size = fmtEmp(employeeCount);
+      }
+      // Same email-domain → website override as the bulk peopleMatchAllLeads
+      // path — when the work email is non-free-mail and matches the company
+      // name, prefer it over the DDG proxy result.
+      if (updatedLead.email) {
+        const emailDomain = (updatedLead.email.split('@')[1] || '').toLowerCase().trim();
+        if (emailDomain && !isFreeMailDomain(emailDomain) && emailDomainMatchesCompany(emailDomain, updatedLead.company)) {
+          updatedLead.website = 'https://' + emailDomain;
+        }
       }
       leads[idx] = updatedLead;
       // Persist the mutated leads array back into _generated.
