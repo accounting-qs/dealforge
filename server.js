@@ -2805,6 +2805,10 @@ async function handleWebinarMock(task, job, customInstructions = '') {
   const extracted = job.extracted_data || {};
   const brandData  = job.brand_data   || {};
   const research   = job.research_data?.host || {};
+  // Rep overrides — set per-job via the Asset Picker on the Webinar Experience
+  // tab. Each override (when non-empty) wins over the auto-selected default
+  // for its slot. Empty string / null means "fall back to default".
+  const overrides = extracted._overrides || {};
 
   const esc = (s) => String(s || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
@@ -2812,18 +2816,20 @@ async function handleWebinarMock(task, job, customInstructions = '') {
   const secondaryColor = brandData.secondary_color  || '#1F2937';
   const accentColor    = brandData.accent_color    || brandData.primary_color || '#0D9488';
   const brandFont      = brandData.font_family     || `-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif`;
-  const logoUrl        = brandData.logo_url         || '';
+  const logoUrl        = overrides.webinar_logo_url    || brandData.logo_url    || '';
   const tagline        = brandData.tagline          || '';
   const companyName    = brandData.company_name     || extracted.prospect?.company || job.prospect_company || 'Your Company';
   const hostName       = research.name              || extracted.prospect?.name    || companyName;
   const hostTitle      = research.title             || 'Webinar Host';
   const hostBio        = (research.bio || '').slice(0, 140);
-  const hostHeadshot   = await checkHeadshot(research.headshot_url);
+  // Headshot precedence: rep override → LinkedIn-scraped headshot (with HEAD-check).
+  // The override is trusted as-is (rep picked it from the gallery, no need to re-verify).
+  const hostHeadshot   = overrides.webinar_headshot_url || await checkHeadshot(research.headshot_url);
   const forLine        = variant.for_line           || '';
 
-  // Find best hero image from brand scrape
+  // Hero image: rep override → first image typed 'hero' → first image in array.
   const heroImage = (brandData.images || []).find(i => i.type === 'hero') || (brandData.images || [])[0];
-  const heroImageUrl = heroImage?.url || '';
+  const heroImageUrl = overrides.webinar_hero_image_url || heroImage?.url || '';
 
   // Proof slide derivation — uses already-extracted data only.
   const proof = deriveProof(variant.proof_story, extracted.angle, extracted.verbatim);
@@ -3897,13 +3903,16 @@ const server = http.createServer(async (req, res) => {
   // ── PATCH /api/jobs/:id/overrides — rep field override system ──────────────────
   // Stores rep manual edits in extracted_data._overrides (separate from AI-generated data).
   // Overrides persist across pipeline re-runs. Portal reads _overrides first, then _generated.
-  // Allowed fields: tam_total, recommended_outreach, webinar_title, roi_ltv, roi_show_rate, roi_close_rate
+  // Allowed fields: tam_total, recommended_outreach, webinar_title, roi_ltv, roi_show_rate,
+  //   roi_close_rate, webinar_logo_url, webinar_hero_image_url, webinar_headshot_url
+  //   (the three webinar_* fields let the rep cherry-pick which scraped image goes
+  //    in each visual slot of the webinar slide / mock).
   if (req.method === 'PATCH' && urlPath.startsWith('/api/jobs/') && urlPath.endsWith('/overrides')) {
     setCors(res);
     const jobId = urlPath.slice('/api/jobs/'.length, -'/overrides'.length);
     try {
       const body = await parseBody(req);
-      const ALLOWED = ['tam_total','recommended_outreach','webinar_title','roi_ltv','roi_show_rate','roi_close_rate'];
+      const ALLOWED = ['tam_total','recommended_outreach','webinar_title','roi_ltv','roi_show_rate','roi_close_rate','webinar_logo_url','webinar_hero_image_url','webinar_headshot_url'];
       const safeOverrides = {};
       for (const k of ALLOWED) {
         if (body[k] !== undefined) safeOverrides[k] = body[k];

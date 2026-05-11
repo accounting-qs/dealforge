@@ -976,6 +976,67 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
     <button id="webinar-regen-btn" onclick="regenerateWebinarMock()" style="background:#22c55e;border:none;border-radius:6px;color:#052e16;font-size:13px;font-weight:600;padding:8px 16px;cursor:pointer;flex-shrink:0;">↻ Regenerate</button>
     <span id="webinar-regen-status" style="font-size:11px;color:#94a3b8;min-width:120px;text-align:right;"></span>
   </div>
+
+  <!-- Asset Picker — rep-only. Lets the rep pick which scraped image goes
+       into each visual slot of the webinar slide (logo / hero / headshot).
+       Auto-saves as an override on the job and re-renders the slide live.
+       Click "Regenerate" above to push the new picks into the standalone HTML asset. -->
+  <div id="webinar-asset-picker" style="display:none;max-width:1280px;margin:0 auto 14px;padding:14px 16px;background:rgba(167,139,250,0.05);border:1px solid rgba(167,139,250,0.18);border-radius:8px;">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+      <div>
+        <span style="font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#c4b5fd;">Rep only · Asset picker</span>
+        <span style="font-size:11px;color:#71717a;margin-left:10px;">Pick which scraped image goes in each slot. Saves on click.</span>
+      </div>
+      <span id="wap-status" style="font-size:11px;color:#71717a;"></span>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;">
+      <div data-wap-slot="webinar_logo_url" style="background:rgba(0,0,0,0.3);border:1px solid #27272a;border-radius:6px;padding:10px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+          <span style="font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#a1a1aa;">Logo</span>
+          <button type="button" class="wap-reset" data-slot="webinar_logo_url" style="background:none;border:none;color:#52525b;font-size:10px;cursor:pointer;text-decoration:underline;">Reset</button>
+        </div>
+        <div class="wap-current" style="height:60px;background:#0a0a0a;border:1px dashed #27272a;border-radius:4px;display:flex;align-items:center;justify-content:center;overflow:hidden;margin-bottom:8px;">
+          <span style="font-size:10px;color:#52525b;">— default —</span>
+        </div>
+        <button type="button" class="wap-change" data-slot="webinar_logo_url" data-label="Logo"
+          style="width:100%;background:rgba(255,255,255,0.04);border:1px solid #3f3f46;border-radius:5px;color:#e2e8f0;font-size:11px;font-weight:500;padding:6px;cursor:pointer;">Pick image →</button>
+      </div>
+      <div data-wap-slot="webinar_hero_image_url" style="background:rgba(0,0,0,0.3);border:1px solid #27272a;border-radius:6px;padding:10px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+          <span style="font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#a1a1aa;">Background (hero)</span>
+          <button type="button" class="wap-reset" data-slot="webinar_hero_image_url" style="background:none;border:none;color:#52525b;font-size:10px;cursor:pointer;text-decoration:underline;">Reset</button>
+        </div>
+        <div class="wap-current" style="height:60px;background:#0a0a0a;border:1px dashed #27272a;border-radius:4px;display:flex;align-items:center;justify-content:center;overflow:hidden;margin-bottom:8px;">
+          <span style="font-size:10px;color:#52525b;">— default —</span>
+        </div>
+        <button type="button" class="wap-change" data-slot="webinar_hero_image_url" data-label="Background"
+          style="width:100%;background:rgba(255,255,255,0.04);border:1px solid #3f3f46;border-radius:5px;color:#e2e8f0;font-size:11px;font-weight:500;padding:6px;cursor:pointer;">Pick image →</button>
+      </div>
+      <div data-wap-slot="webinar_headshot_url" style="background:rgba(0,0,0,0.3);border:1px solid #27272a;border-radius:6px;padding:10px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+          <span style="font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#a1a1aa;">Host headshot</span>
+          <button type="button" class="wap-reset" data-slot="webinar_headshot_url" style="background:none;border:none;color:#52525b;font-size:10px;cursor:pointer;text-decoration:underline;">Reset</button>
+        </div>
+        <div class="wap-current" style="height:60px;background:#0a0a0a;border:1px dashed #27272a;border-radius:4px;display:flex;align-items:center;justify-content:center;overflow:hidden;margin-bottom:8px;">
+          <span style="font-size:10px;color:#52525b;">— default —</span>
+        </div>
+        <button type="button" class="wap-change" data-slot="webinar_headshot_url" data-label="Headshot"
+          style="width:100%;background:rgba(255,255,255,0.04);border:1px solid #3f3f46;border-radius:5px;color:#e2e8f0;font-size:11px;font-weight:500;padding:6px;cursor:pointer;">Pick image →</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal — image grid picker, opens when rep clicks "Pick image →" -->
+  <div id="wap-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.8);z-index:9998;align-items:center;justify-content:center;padding:20px;" onclick="if(event.target===this)wapCloseModal()">
+    <div style="background:#111;border:1px solid #27272a;border-radius:10px;max-width:760px;width:100%;max-height:80vh;overflow-y:auto;padding:18px 20px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
+        <h3 style="font-size:14px;font-weight:600;color:#e4e4e7;margin:0;">Pick image for <span id="wap-modal-slot-label" style="color:#c4b5fd;">slot</span></h3>
+        <button type="button" onclick="wapCloseModal()" style="background:none;border:none;color:#71717a;font-size:20px;cursor:pointer;line-height:1;">×</button>
+      </div>
+      <div id="wap-modal-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:10px;"></div>
+    </div>
+  </div>
+
   <div class="webinar-wrap">
     <div class="webinar-top-bar">
       <div style="display:flex;align-items:center;gap:16px;">
@@ -2217,12 +2278,18 @@ function applyProspectBranding(brandData) {
     console.log('[Deal Forge] Brand colors applied: primary=' + effectivePrimary + ' secondary=' + (effectiveSecondary||'same'));
   }
 
-  // 4. Hero image — set as slide 1 background
-  const heroImg = brandData?.images?.find(img => img.type === 'hero') || brandData?.images?.[0];
+  // Rep overrides from the Asset Picker — let the rep cherry-pick which scraped
+  // image goes in each visual slot. Picked here at render time so changing one
+  // override re-renders without a full pipeline run.
+  const _ov = (typeof SESSION !== 'undefined' && SESSION?.extracted?._overrides) || {};
+
+  // 4. Hero image — rep override → first images[type=hero] → first image
+  const autoHero = brandData?.images?.find(img => img.type === 'hero') || brandData?.images?.[0];
+  const heroUrl  = _ov.webinar_hero_image_url || autoHero?.url || '';
   const slideEl = document.getElementById('slide-1-el');
   const overlayEl = document.getElementById('slide-1-overlay');
-  if (heroImg?.url && slideEl) {
-    slideEl.style.backgroundImage = `url('${heroImg.url}')`;
+  if (heroUrl && slideEl) {
+    slideEl.style.backgroundImage = `url('${heroUrl}')`;
     slideEl.style.backgroundSize = 'cover';
     slideEl.style.backgroundPosition = 'center';
     if (overlayEl) {
@@ -2234,13 +2301,14 @@ function applyProspectBranding(brandData) {
       }
       overlayEl.style.display = 'block';
     }
-    console.log('[Deal Forge] Hero image applied to webinar slide:', heroImg.url);
+    console.log('[Deal Forge] Hero image applied to webinar slide:', heroUrl, _ov.webinar_hero_image_url ? '(rep override)' : '');
   }
 
-  // 5. Logo on slide 1 — brand's real logo
+  // 5. Logo on slide 1 — rep override → brand_data.logo_url
   const slideLogo = document.getElementById('slide-brand-logo');
-  if (slideLogo && brandData?.logo_url) {
-    slideLogo.src = brandData.logo_url;
+  const chosenLogo = _ov.webinar_logo_url || brandData?.logo_url || null;
+  if (slideLogo && chosenLogo) {
+    slideLogo.src = chosenLogo;
     slideLogo.style.display = 'block';
     slideLogo.onerror = () => { slideLogo.style.display = 'none'; };
   }
@@ -2529,6 +2597,7 @@ function wireROIEditMode() {
     `;
     document.head.appendChild(style);
     if (typeof _initWebinarRegenRow === 'function') _initWebinarRegenRow();
+    if (typeof _initWebinarAssetPicker === 'function') _initWebinarAssetPicker();
   }
 
   // ── saveOverride and addEditIcon are now module-level (defined above IIFE)
@@ -3018,12 +3087,14 @@ function runPersonalization(session) {
 
     const hostName     = researchHost.name  || contactName  || companyDisplay || 'Your Host';
     const hostTitle    = researchHost.title || contactTitle || companyDisplay || 'Webinar Host';
-    const hostHeadshot = researchHost.headshot_url || null;
+    // Rep overrides from the Asset Picker.
+    const _wov         = (ext._overrides) || {};
+    const hostHeadshot = _wov.webinar_headshot_url || researchHost.headshot_url || null;
     // Avatar fallback prefers `favicon_url` over `logo_url` — favicons are
     // square by definition (good for circular avatars), while logo_url is often
     // a wide og:image banner that crops badly. Google Favicon CDN is the floor
-    // (always returns a 256×256 square).
-    const hostLogo     = brandData.favicon_url || brandData.logo_url || null;
+    // (always returns a 256×256 square). Rep override (webinar_headshot_url) wins.
+    const hostLogo     = _wov.webinar_logo_url || brandData.favicon_url || brandData.logo_url || null;
     const hostCompany  = companyDisplay;
 
     const calHostName = document.getElementById('cal-host-name');
@@ -4008,6 +4079,142 @@ function _initWebinarRegenRow() {
   if (typeof IS_EDIT_MODE === 'undefined' || !IS_EDIT_MODE) return;
   const row = document.getElementById('webinar-regen-row');
   if (row) row.style.display = 'flex';
+}
+
+// ── Asset Picker (Webinar Experience tab) ─────────────────────────────────────
+// Lets the rep pick which scraped image goes in each visual slot of the webinar
+// slide (logo / hero / headshot). Saves the choice as an override on the job
+// (PATCH /api/jobs/:id/overrides) and re-renders the slide live via the
+// existing _reRunPersonalization hook. Click "Regenerate" above to push the
+// new picks into the standalone HTML asset.
+function _wapGetOverrides() {
+  try { return (window.SESSION?.extracted?._overrides) || {}; } catch(_) { return {}; }
+}
+function _wapGetCandidateImages() {
+  // Pool of images the rep can choose from. Order: brand_data.images[],
+  // brand favicon, brand logo, LinkedIn headshot (when available).
+  const out = [];
+  const seen = new Set();
+  const push = (url, label, kind) => {
+    if (!url || seen.has(url)) return;
+    seen.add(url);
+    out.push({ url, label, kind });
+  };
+  const brand = window.SESSION?.brand || {};
+  const research = window.SESSION?.research?.host || {};
+  (brand.images || []).forEach((img, i) => push(img.url, img.alt || `Image ${i+1}`, img.type || 'general'));
+  push(brand.logo_url, 'Logo (auto-detected)', 'logo');
+  push(brand.favicon_url, 'Favicon (256px)', 'favicon');
+  push(research.headshot_url, `LinkedIn headshot — ${research.name || ''}`.trim(), 'linkedin');
+  return out;
+}
+function _initWebinarAssetPicker() {
+  if (typeof IS_EDIT_MODE === 'undefined' || !IS_EDIT_MODE) return;
+  const panel = document.getElementById('webinar-asset-picker');
+  if (!panel) return;
+  panel.style.display = 'block';
+  _wapRenderSlots();
+  // One-time event wiring
+  if (!panel.dataset.wired) {
+    panel.dataset.wired = '1';
+    panel.addEventListener('click', (e) => {
+      const changeBtn = e.target.closest('.wap-change');
+      const resetBtn  = e.target.closest('.wap-reset');
+      if (changeBtn) wapOpenModal(changeBtn.dataset.slot, changeBtn.dataset.label);
+      else if (resetBtn) wapSetOverride(resetBtn.dataset.slot, null);
+    });
+  }
+}
+function _wapRenderSlots() {
+  const overrides = _wapGetOverrides();
+  document.querySelectorAll('#webinar-asset-picker [data-wap-slot]').forEach(slotEl => {
+    const slotKey = slotEl.dataset.wapSlot;
+    const url = overrides[slotKey];
+    const currentEl = slotEl.querySelector('.wap-current');
+    if (!currentEl) return;
+    if (url) {
+      currentEl.innerHTML = `<img src="${url.replace(/"/g,'&quot;')}" alt="" style="max-width:100%;max-height:100%;object-fit:contain;">`;
+      currentEl.style.borderStyle = 'solid';
+      currentEl.style.borderColor = '#c4b5fd';
+    } else {
+      currentEl.innerHTML = '<span style="font-size:10px;color:#52525b;">— default (auto-picked) —</span>';
+      currentEl.style.borderStyle = 'dashed';
+      currentEl.style.borderColor = '#27272a';
+    }
+  });
+}
+function wapOpenModal(slotKey, slotLabel) {
+  const modal = document.getElementById('wap-modal');
+  const labelEl = document.getElementById('wap-modal-slot-label');
+  const grid   = document.getElementById('wap-modal-grid');
+  if (!modal || !grid) return;
+  labelEl.textContent = slotLabel || slotKey;
+  const candidates = _wapGetCandidateImages();
+  if (!candidates.length) {
+    grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;color:#71717a;font-size:12px;padding:24px;">No scraped images available. Run brand_scrape first (Save & Regenerate Job).</div>';
+  } else {
+    grid.innerHTML = candidates.map(c => `
+      <div data-wap-pick="${c.url.replace(/"/g,'&quot;')}" data-wap-slot="${slotKey}"
+           style="cursor:pointer;border:1px solid #27272a;border-radius:6px;overflow:hidden;background:#0a0a0a;transition:border-color .15s;"
+           onmouseover="this.style.borderColor='#c4b5fd'" onmouseout="this.style.borderColor='#27272a'">
+        <div style="height:80px;display:flex;align-items:center;justify-content:center;background:#000;overflow:hidden;">
+          <img src="${c.url.replace(/"/g,'&quot;')}" alt="" style="max-width:100%;max-height:100%;object-fit:contain;" onerror="this.parentNode.innerHTML='<span style=&quot;color:#52525b;font-size:10px&quot;>image unavailable</span>'">
+        </div>
+        <div style="padding:5px 8px;font-size:10px;color:#a1a1aa;line-height:1.3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${(c.label||'').replace(/"/g,'&quot;')}">${c.label || '—'}</div>
+      </div>
+    `).join('');
+    // Wire pick clicks
+    grid.querySelectorAll('[data-wap-pick]').forEach(el => {
+      el.addEventListener('click', () => {
+        wapSetOverride(el.dataset.wapSlot, el.dataset.wapPick);
+        wapCloseModal();
+      });
+    });
+  }
+  modal.style.display = 'flex';
+}
+function wapCloseModal() {
+  const m = document.getElementById('wap-modal');
+  if (m) m.style.display = 'none';
+}
+async function wapSetOverride(slotKey, url) {
+  const jobId = _getPortalJobId();
+  if (!jobId) { _wapSetStatus('⚠️ No job ID in URL', '#fbbf24'); return; }
+  const allowed = ['webinar_logo_url','webinar_hero_image_url','webinar_headshot_url'];
+  if (!allowed.includes(slotKey)) return;
+  // Update local session immediately so the slide re-renders without waiting
+  // for the round-trip. The PATCH is the source of truth on persistence.
+  try {
+    if (!window.SESSION.extracted) window.SESSION.extracted = {};
+    if (!window.SESSION.extracted._overrides) window.SESSION.extracted._overrides = {};
+    if (url == null) delete window.SESSION.extracted._overrides[slotKey];
+    else window.SESSION.extracted._overrides[slotKey] = url;
+  } catch(_) {}
+  _wapSetStatus('Saving…', '#94a3b8');
+  try {
+    const body = {};
+    body[slotKey] = url == null ? '' : url;
+    const r = await fetch('/api/jobs/' + encodeURIComponent(jobId) + '/overrides', {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+    });
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      throw new Error(e.error || ('HTTP ' + r.status));
+    }
+    _wapSetStatus('✓ Saved — click ↻ Regenerate to push to the asset', '#4ade80');
+    _wapRenderSlots();
+    // Re-render the live slide with the new override
+    if (typeof window._reRunPersonalization === 'function' && typeof buildCompatSession === 'function') {
+      const freshRes = await fetch('/api/jobs/' + encodeURIComponent(jobId));
+      if (freshRes.ok) window._reRunPersonalization(buildCompatSession(await freshRes.json()));
+    }
+  } catch(e) {
+    _wapSetStatus('✗ ' + e.message, '#f87171');
+  }
+}
+function _wapSetStatus(msg, color) {
+  const el = document.getElementById('wap-status');
+  if (el) { el.textContent = msg; el.style.color = color || '#71717a'; }
 }
 
 // ── Prospect Infos tab — rep-only ─────────────────────────────────────────────
