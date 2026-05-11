@@ -61,6 +61,14 @@ body { background: #0d0d12; font-family: -apple-system, BlinkMacSystemFont, 'Int
 .filter-tag { font-size: 11px; font-weight: 500; color: #a1a1aa; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.07); border-radius: 6px; padding: 3px 9px; }
 .filter-sep { color: #3f3f46; font-size: 12px; }
 
+/* Prospect-mode visibility gate — hide rep-only UI when not in edit mode.
+   The head-script sets `data-mode="prospect"` on <html> before <body> is even
+   parsed, so .rep-only elements never flash in for prospects. Anything tagged
+   .rep-only disappears for prospects: Edit Filters button, top-nav Settings
+   link, Calendar Invite's Regenerate / Brain buttons, etc.
+   !important wins over inline styles like `style="display:flex"`. */
+html[data-mode="prospect"] .rep-only { display: none !important; }
+
 /* Editable filter mode */
 .filter-edit-btn { font-size: 10px; font-weight: 600; color: #71717a; background: none; border: 1px solid rgba(255,255,255,0.08); border-radius: 6px; padding: 3px 10px; cursor: pointer; font-family: inherit; transition: all 100ms; margin-left: auto; }
 .filter-edit-btn:hover { border-color: rgba(245,158,11,0.4); color: #fbbf24; }
@@ -604,6 +612,15 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
 .cs-modal-quote { font-size: 13px; color: #71717a; font-style: italic; line-height: 1.55; margin-bottom: 16px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.06); }
 .cs-modal-cta { font-size: 12px; color: #52525b; text-align: center; }
 </style>
+<script>
+  // Runs before <body> is parsed so rep-only UI never flashes in for prospects.
+  // ?edit=true → rep view (no attribute); anything else → prospect view
+  // (sets data-mode="prospect" on <html>, which the .rep-only CSS rule reads).
+  (function(){
+    var isEdit = new URLSearchParams(window.location.search).get('edit') === 'true';
+    if (!isEdit) document.documentElement.dataset.mode = 'prospect';
+  })();
+</script>
 </head>
 <body>
 
@@ -617,7 +634,7 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
     <svg style="width:11px;height:11px;" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/></svg>
     Dashboard
   </a>
-  <a href="/settings" style="font-size:11px;color:#f59e0b;text-decoration:none;display:flex;align-items:center;gap:4px;padding:4px 8px;border-radius:6px;transition:color 100ms;" onmouseenter="this.style.color='#fbbf24'" onmouseleave="this.style.color='#f59e0b'" title="Settings — Prompts &amp; Copy Brain">
+  <a href="/settings" class="rep-only" style="font-size:11px;color:#f59e0b;text-decoration:none;display:flex;align-items:center;gap:4px;padding:4px 8px;border-radius:6px;transition:color 100ms;" onmouseenter="this.style.color='#fbbf24'" onmouseleave="this.style.color='#f59e0b'" title="Settings — Prompts &amp; Copy Brain">
     ⚙️ Settings
   </a>
 </nav>
@@ -770,7 +787,7 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
 
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
         <div style="font-size:10px;font-weight:600;letter-spacing:0.07em;text-transform:uppercase;color:#3f3f46;">ICP Parameters Used</div>
-        <button class="filter-edit-btn" id="filter-edit-btn" onclick="toggleFilterEdit()" style="display:none;">✏️ Edit Filters</button>
+        <button class="filter-edit-btn rep-only" id="filter-edit-btn" onclick="toggleFilterEdit()" style="display:none;">✏️ Edit Filters</button>
       </div>
       <div class="tam-filters-row">
         <span class="filter-tag" style="color:#52525b;background:none;border:none;">Loading ICP parameters...</span>
@@ -854,8 +871,8 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
           <span id="var-tag" style="font-size:11px;color:#9aa0a6;">Problem-aware</span>
           <span id="cal-brain-stamp" style="font-size:10px;color:#80868b;display:none;"></span>
           <div style="margin-left:auto;display:flex;align-items:center;gap:8px;">
-            <button id="cal-regen-btn" onclick="regenerateCalendarCopy()" title="Re-run with current Copy Brain (Settings → Copy Brain)" style="font-size:11px;font-weight:600;padding:5px 12px;border-radius:8px;border:1px solid rgba(139,92,246,0.5);background:rgba(139,92,246,0.12);color:#c4b5fd;cursor:pointer;transition:all 100ms;font-family:inherit;">↻ Regenerate</button>
-            <a href="/settings" target="_blank" title="Edit Copy Brain" style="font-size:11px;color:#9aa0a6;text-decoration:none;border:1px solid #dadce0;border-radius:6px;padding:4px 8px;">Brain</a>
+            <button id="cal-regen-btn" class="rep-only" onclick="regenerateCalendarCopy()" title="Re-run with current Copy Brain (Settings → Copy Brain)" style="font-size:11px;font-weight:600;padding:5px 12px;border-radius:8px;border:1px solid rgba(139,92,246,0.5);background:rgba(139,92,246,0.12);color:#c4b5fd;cursor:pointer;transition:all 100ms;font-family:inherit;">↻ Regenerate</button>
+            <a href="/settings" class="rep-only" target="_blank" title="Edit Copy Brain" style="font-size:11px;color:#9aa0a6;text-decoration:none;border:1px solid #dadce0;border-radius:6px;padding:4px 8px;">Brain</a>
           </div>
         </div>
         <div id="cal-regen-progress" style="display:none;margin-bottom:14px;padding:8px 12px;background:#f1f3f4;border-radius:8px;font-size:12px;color:#5f6368;">
