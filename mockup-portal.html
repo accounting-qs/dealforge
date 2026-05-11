@@ -3323,11 +3323,15 @@ function runPersonalization(session) {
 
     // ── Reminder emails — use AI-generated copy from calendar_visual task ────────
     // Fall back to generic copy only when the task hasn't run yet for this job.
+    // Declarations live INSIDE _safe so a future null/typo here can't escape to
+    // the outer catch and kill every section below (lead table, diagnostics, etc).
+    // The previous "prospectContactName is not defined" ReferenceError (typo for
+    // contactName from line 2974) used to do exactly that.
+    _safe('email-subjects', function() {
     const aiEmails = gen.calendarEmails; // array of {timing, subject, preview} from handleCalendarVisual
-    const prospectFirst = (prospectContactName || '').split(' ')[0] ||
+    const prospectFirst = (contactName || '').split(' ')[0] ||
                           (session.email || '').split('@')[0] || '';
     const repName = ext.rep_name || ext.host_name || prospect.company || 'Your Host';
-    _safe('email-subjects', function() {
 
     const e1preview = document.getElementById('email-1-preview');
     if (e1preview) {
