@@ -2299,26 +2299,24 @@ async function handleBrandScrape(task, job) {
 
   let logoUrl = null;
 
-  // Path 1: og:image
-  const ogImage = html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i)?.[1] ||
-                  html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i)?.[1];
-  if (ogImage) logoUrl = resolveUrl(ogImage);
-
-  // Path 2: <img> / <source> with "logo" in class, id, alt, or src
-  if (!logoUrl) {
-    const logoPatterns = [
-      /<img[^>]+(?:class|id|alt)=["'][^"']*logo[^"']*["'][^>]+src=["']([^"']+)["']/i,
-      /<img[^>]+src=["']([^"']+)["'][^>]+(?:class|id|alt)=["'][^"']*logo[^"']*["']/i,
-      /<img[^>]+src=["']([^"']*logo[^"'"]*)["']/i,
-      /<source[^>]+srcset=["']([^"']*logo[^"'"]+\.(?:png|svg|webp|jpg)[^"' ]*)["' ]/i,
-    ];
-    for (const p of logoPatterns) {
-      const m = html.match(p);
-      if (m?.[1]) { logoUrl = resolveUrl(m[1]); break; }
-    }
+  // Path 1 — Explicit "logo" intent in HTML: <img> / <source> tags with the word
+  // "logo" in src / alt / class / id. Demoted from old Path 2 because og:image
+  // is unreliable as a logo source (many sites use it for hero banners or
+  // lead-magnet covers — e.g. 4fp.co serves a 1200×630 "Devoted Client
+  // Attraction Method" banner via og:image, which is wrong for a brand mark).
+  const logoPatterns = [
+    /<img[^>]+(?:class|id|alt)=["'][^"']*logo[^"']*["'][^>]+src=["']([^"']+)["']/i,
+    /<img[^>]+src=["']([^"']+)["'][^>]+(?:class|id|alt)=["'][^"']*logo[^"']*["']/i,
+    /<img[^>]+src=["']([^"']*logo[^"'"]*)["']/i,
+    /<source[^>]+srcset=["']([^"']*logo[^"'"]+\.(?:png|svg|webp|jpg)[^"' ]*)["' ]/i,
+  ];
+  for (const p of logoPatterns) {
+    const m = html.match(p);
+    if (m?.[1]) { logoUrl = resolveUrl(m[1]); break; }
   }
 
-  // Path 3: Apple touch icon or high-res <link rel="icon">
+  // Path 2 — High-res square icons (Apple touch icon / sized rel=icon). These
+  // are explicitly designed to be square brand marks at avatar-friendly sizes.
   if (!logoUrl) {
     const iconMatch =
       html.match(/<link[^>]+rel=["']apple-touch-icon(?:-precomposed)?["'][^>]+href=["']([^"']+)["']/i) ||
@@ -2327,7 +2325,15 @@ async function handleBrandScrape(task, job) {
     if (iconMatch?.[1]) logoUrl = resolveUrl(iconMatch[1]);
   }
 
-  // Path 4: Google Favicon CDN — guaranteed, free, no API key (already used in portal nav)
+  // Path 3 — og:image. Demoted because it's often a wide marketing banner, not
+  // a brand mark. Still useful when the site has no proper logo markup.
+  const ogImage = html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i)?.[1] ||
+                  html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i)?.[1];
+  if (!logoUrl && ogImage) logoUrl = resolveUrl(ogImage);
+
+  // Path 4 — Google Favicon CDN. Last resort, guaranteed to return something,
+  // always square. Also stored separately as `favicon_url` so callers that
+  // specifically want a square brand mark for an avatar can prefer that field.
   const faviconUrl = `https://www.google.com/s2/favicons?domain=${domain}&sz=256`;
   if (!logoUrl) logoUrl = faviconUrl;
 
