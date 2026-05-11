@@ -882,11 +882,18 @@ Your job is to pull out the richest possible context for creating personalized s
 
 Rules:
 - Extract ONLY what was explicitly stated. Return null for anything not mentioned.
-- Never infer, guess, or hallucinate values.
+- Never infer, guess, or hallucinate values — with two narrow exceptions noted below.
 - The PROSPECT is the CLIENT company being pitched to — NOT Quantum Scaling, NOT Lloyd Yip, NOT QS team.
 - For verbatim fields: copy exact words spoken. Do not paraphrase.
 - For apollo_titles: return ONLY real job titles (2-4 words each) that a person would hold on LinkedIn or a business card. These feed directly into an API search. Sentence fragments, role descriptions, and qualifiers are NEVER valid titles — infer the actual titles from the described role.
-- Return valid JSON only. No markdown, no explanation.`;
+
+Two narrow inference exceptions (everything else stays strict):
+1. prospect.contact_title — if the speaker is clearly the owner/operator (signals: "I built", "we built", "my team", "my company", "my $X/month", "I have a sales lead", "I run this") but never states a title verbatim, you MAY default to "Founder & Owner". Record this in _provenance as "inferred".
+2. metrics.ltv — if a clear price is explicitly stated ("$5,000/year", "$500 setup + $500/month"), you MAY compute the annual deal value and report it (e.g. "$5,000/year"). Record _provenance as "computed". If no price is stated, return null. Never compute LTV from goal language like "I want $30k/month" — that's a future goal, not a current price.
+
+NEVER infer: close_rate, show_rate, revenue_range (current revenue), case study numbers, proof figures, geography. If those aren't stated explicitly, return null with _provenance "missing".
+
+Return valid JSON only. No markdown, no explanation.`;
 
   const userPrompt = `Known contact info (treat as ground truth if not contradicted):
 Company: ${knownCompany || 'unknown — extract from transcript'}
@@ -901,7 +908,7 @@ Return this exact JSON (null for anything not found):
   "prospect": {
     "company":       "string — the prospect's LEGAL EMPLOYER / business entity. NOT their product, methodology, framework, or offering. CRITICAL DISTINCTION: a company is who they work for (the entity on their LinkedIn 'Experience' section, the entity that owns their website). An offering/product is what they sell ('our system X', 'we built X', 'X helps clients'). Examples — if the prospect says 'I'm Jake, founder of 4FP Agency, and we built Fiddle Link AI for RIAs': company='4FP Agency', NOT 'Fiddle Link AI'. If they say 'I run Acme Consulting and we use the Devoted Client Method': company='Acme Consulting', NOT 'Devoted Client Method'. Resolution rules: (1) Strongest signal is the verified known value (from CRM / website). Trust it unless the transcript provides clear evidence the person works at a different entity. (2) Override the known value only when the transcript explicitly states a different employer ('I'm the CEO of X', 'I founded X', 'I work at X'). Phrases like 'we built X', 'our X', 'X is our system' point to an offering and DO NOT override company. (3) When the transcript is silent on employer name, use the known value. (4) Never invent a name that appears in neither source. (5) If the call mentions BOTH a company AND an offering, put the legal entity here and the product/methodology in 'offering_name'.",
     "contact_name":  "string | null — full name of person on the call",
-    "contact_title": "string | null — their job title",
+    "contact_title": "string | null — their job title. Extract verbatim if stated. Otherwise apply the contact_title inference exception from the rules above (default to 'Founder & Owner' when ownership is clear, set _provenance.\"prospect.contact_title\" = \"inferred\").",
     "offering_name": "string | null — the name of the product, service, app, framework, or methodology the prospect is building/selling, IF separate from the company name. NOT the company itself. Examples: 'Fiddle Link AI', 'The Revenue Engine', 'Devoted Client Attraction Method'. Extract verbatim from the call. Null if (a) no specific named offering is mentioned, or (b) the offering and the company share the same name."
   },
   "icp": {
@@ -913,15 +920,15 @@ Return this exact JSON (null for anything not found):
     "company_size":  "string | null — human-readable size of their TARGET clients, for display only (e.g. '50-200 employees', 'mid-market', 'enterprise'). Concise — not a full sentence.",
     "apollo_employee_ranges": "array of strings | null — Apollo API employee range codes for their TARGET clients. Choose ONLY from these exact strings: '1,10', '11,50', '51,200', '201,500', '501,1000', '1001,10000', '10001,50000', '50001+'. Match to the described size: '50+ employees, ideally 100+' → ['51,200','201,500']. 'Enterprise/large organizations' → ['501,1000','1001,10000','10001,50000']. CRITICAL RULE: if transcript mentions 'enterprise', 'large organizations', 'government agencies', 'Fortune 500', 'enterprise clients', or any equivalent → you MUST include '1001,10000' in the ranges. Government agencies and large enterprises are typically 1000+ employees. 'Small businesses under 10' → ['1,10']. Select 1-4 contiguous ranges that bracket the target. Null if no size mentioned.",
     "geography":     "string | null — target geography narrative, only if explicitly mentioned",
-    "apollo_geography": "array of strings | null — clean country/region names for Apollo API. Valid entries: country names, continent names ('Europe', 'Asia', 'North America'), US/Canadian/Australian states or provinces, major cities. STRICT RULES: (1) NEVER include language names — Estonian, Latvian, Lithuanian, Montenegrin, English are LANGUAGES not locations. Extract the countries instead. (2) NEVER write 'European Union' — it is not a country. Instead expand to the specific European countries mentioned or implied: 'EU' → list the relevant member countries explicitly (e.g. Estonia, Latvia, Lithuania, Germany, France). If broadly EU-wide, use 'Europe'. (3) NEVER include narrative phrases. (4) Extract ONLY location nouns. Examples: 'North America' → ['United States', 'Canada']. 'Baltic states' → ['Estonia', 'Latvia', 'Lithuania']. 'DACH region' → ['Germany', 'Austria', 'Switzerland']. 'EU' broadly → ['Europe']. Null if no geography mentioned.",
+    "apollo_geography": "array of strings | null — clean country/region names for Apollo API. ONLY extract geography that is EXPLICITLY MENTIONED IN THIS TRANSCRIPT — do NOT echo example country names from these instructions. Valid entries: country names, continent names ('Europe', 'Asia', 'North America'), US/Canadian/Australian states or provinces, major cities. STRICT RULES: (1) NEVER include language names (e.g. a language name is not a location — extract the country instead). (2) NEVER write 'European Union' — expand to the specific member countries the transcript actually names. If the transcript says 'EU' with no specifics, use ['Europe']. (3) NEVER include narrative phrases. (4) Extract ONLY location nouns the transcript states. (5) If the transcript mentions a region grouping (e.g. 'Baltic states', 'DACH', 'Nordics', 'MENA'), expand it to the standard member countries — but only when the transcript explicitly used that grouping. (6) DO NOT default to any specific country list when the transcript is silent about geography — return null. Null if no geography is mentioned at all.",
     "person_seniorities": "array of strings | null — seniority levels of target buyers. Choose ONLY from these exact values: owner, founder, c_suite, partner, vp, head, director, manager. Infer from role/title context. Null if completely unclear.",
     "company_revenue": "string | null — revenue range of their TARGET clients if mentioned or clearly implied (e.g. '$1M-$5M', '$500K+', '$2M ARR'). Verbatim if stated, short inference if strongly implied. Null if not determinable.",
     "kpis":          "array of 3-5 strings — the specific business performance metrics the prospect's service directly helps their ICP improve. Extract verbatim if mentioned. If not explicitly stated, INFER from the service description, promised outcomes, and problems solved — look at what their clients gain. Return short, specific metric names like 'Revenue per client', 'Customer acquisition rate', 'Client retention rate', 'Brand visibility', 'Lead conversion rate', 'Average deal size'. Never null — always infer at least 3."
   },
   "metrics": {
-    "ltv":        "string | null — client lifetime value, verbatim from transcript. null if not explicitly stated.",
-    "close_rate": "string | null — current close rate, verbatim from transcript. null if not explicitly stated.",
-    "show_rate":  "string | null — current show/attendance rate, verbatim from transcript. null if not explicitly stated."
+    "ltv":        "string | null — client lifetime value. If a clear annual or one-time price is stated, compute the annual value (e.g. '$5,000/year') and set _provenance.\"metrics.ltv\" = \"computed\". If stated verbatim ('LTV is $20k'), use that verbatim with _provenance \"transcript\". NEVER compute from goal language ('I want $30k/month'). null + _provenance \"missing\" if no price/LTV.",
+    "close_rate": "string | null — current close rate, verbatim from transcript. NEVER infer. null + _provenance \"missing\" if not explicitly stated.",
+    "show_rate":  "string | null — current show/attendance rate, verbatim from transcript. NEVER infer. null + _provenance \"missing\" if not explicitly stated."
   },
   "angle": {
     "pain":        "string | null — the DEEP, specific, emotional frustration their clients experience. Go beyond the surface problem: what does it actually cost them (money, time, stress, missed opportunity)? What have they tried that didn't work? What does failure look or feel like for their client day-to-day? Write in customer language — raw frustration, not a polished problem statement. Pull their exact words from the transcript wherever possible. 4-6 sentences.",
@@ -947,6 +954,28 @@ Return this exact JSON (null for anything not found):
   "titles": {
     "a": "string | null — compelling webinar title based on their pain + result, max 70 chars",
     "b": "string | null — second variant with different angle or audience framing, max 70 chars"
+  },
+  "_provenance": {
+    "prospect.company":        "one of: transcript | inferred | missing — how you got this value",
+    "prospect.contact_name":   "one of: transcript | inferred | missing",
+    "prospect.contact_title":  "one of: transcript | inferred | missing — use 'inferred' when ownership is clear but title not stated verbatim",
+    "prospect.offering_name":  "one of: transcript | missing",
+    "icp.role":                "one of: transcript | missing",
+    "icp.industry":            "one of: transcript | missing",
+    "icp.company_size":        "one of: transcript | missing",
+    "icp.geography":           "one of: transcript | missing — NEVER fabricate or echo example countries from the instructions; missing if the transcript is silent",
+    "icp.company_revenue":     "one of: transcript | missing",
+    "metrics.ltv":             "one of: transcript | computed | missing — 'computed' when derived from a stated price",
+    "metrics.close_rate":      "one of: transcript | missing — NEVER inferred",
+    "metrics.show_rate":       "one of: transcript | missing — NEVER inferred",
+    "angle.pain":              "one of: transcript | missing",
+    "angle.result":            "one of: transcript | missing",
+    "angle.methodology":       "one of: transcript | missing",
+    "angle.proof":             "one of: transcript | missing — NEVER inferred",
+    "situation.revenue_range": "one of: transcript | missing — NEVER inferred from goals",
+    "situation.team_size":     "one of: transcript | missing",
+    "situation.current_lead_gen": "one of: transcript | missing",
+    "context.goals":           "one of: transcript | missing"
   }
 }`;
 
@@ -963,15 +992,34 @@ Return this exact JSON (null for anything not found):
 }
 
 function emptyBrief(contactInfo) {
+  const company = contactInfo.company || null;
+  const name    = contactInfo.name    || null;
+  const title   = contactInfo.title   || null;
   return {
-    prospect:  { company: contactInfo.company || null, contact_name: contactInfo.name || null, contact_title: null, offering_name: null },
+    prospect:  { company, contact_name: name, contact_title: title, offering_name: null },
     icp:       { role: null, target_audience_type: 'b2b', apollo_titles: null, apollo_keyword: null, industry: null, company_size: null, apollo_employee_ranges: null, geography: null, apollo_geography: null, person_seniorities: null, company_revenue: null, kpis: null },
     metrics:   { ltv: null, close_rate: null, show_rate: null },
     angle:     { pain: null, result: null, methodology: null, proof: null },
     verbatim:  { pain_quote: null, result_quote: null, goal_quote: null },
     situation: { current_lead_gen: null, revenue_range: null, team_size: null, biggest_challenge: null },
     context:   { goals: null, why_webinar: null },
-    titles:    { a: null, b: null }
+    titles:    { a: null, b: null },
+    _provenance: {
+      // External fields populated by GHL/Apollo/website_title at prefetch time —
+      // marked as missing if not filled; the prefetch wrapper overlays the right
+      // source. Transcript-only fields stay missing because there was no transcript.
+      'prospect.company':        company ? 'external' : 'missing',
+      'prospect.contact_name':   name    ? 'external' : 'missing',
+      'prospect.contact_title':  title   ? 'external' : 'missing',
+      'icp.geography':           'missing',
+      'metrics.ltv':             'missing',
+      'metrics.close_rate':      'missing',
+      'metrics.show_rate':       'missing',
+      'angle.pain':              'missing',
+      'angle.result':            'missing',
+      'angle.proof':             'missing',
+      'situation.revenue_range': 'missing',
+    },
   };
 }
 
@@ -3409,16 +3457,37 @@ const server = http.createServer(async (req, res) => {
         const webContent = website?.bodyText || '';
         console.log(`[prefetch] Transcript context: ${txContent.length} chars (${rawSentences.length} verbatim + summaries)`);
         brief = await extractBriefFromTranscript(txContent, webContent, contactInfo);
+        // Overlay external-source provenance onto the brief's _provenance map so the
+        // UI can show "FROM APOLLO" / "FROM GHL" / "FROM WEBSITE" for fields the
+        // transcript path didn't fill but external lookups did. The extract prompt
+        // only sees the transcript + website body and can't know Apollo/GHL filled
+        // a value upstream, so we patch that in here.
+        if (brief && typeof brief === 'object') {
+          brief._provenance = brief._provenance || {};
+          const setProv = (key, source) => {
+            // Only overwrite if the prompt returned 'missing' or no value at all —
+            // never downgrade a 'transcript' or 'inferred' tag.
+            const current = brief._provenance[key];
+            if (!current || current === 'missing') brief._provenance[key] = source;
+          };
+          // contactSources comes from the waterfall above (ghl > apollo > website_title etc.)
+          if (contactSources.company)      setProv('prospect.company',       contactSources.company === 'website_title' ? 'website' : contactSources.company);
+          if (contactSources.name)         setProv('prospect.contact_name',  contactSources.name);
+          if (contactSources.title)        setProv('prospect.contact_title', contactSources.title);
+          if (contactSources.linkedin_url) setProv('prospect.linkedin_url',  contactSources.linkedin_url);
+        }
         // Promote extracted contact info back to contactInfo and update its source
         // to 'transcript' so the brief UI shows the rep that the call (not stale GHL)
         // is what populated this field.
         if (brief?.prospect?.company && !body.company) {
           contactInfo.company = brief.prospect.company;
           contactSources.company = 'transcript';
+          if (brief._provenance) brief._provenance['prospect.company'] = 'transcript';
         }
         if (brief?.prospect?.contact_name && !body.name) {
           contactInfo.name = brief.prospect.contact_name;
           contactSources.name = 'transcript';
+          if (brief._provenance) brief._provenance['prospect.contact_name'] = 'transcript';
         }
         if (brief?.prospect?.contact_title) {
           contactInfo.title = brief.prospect.contact_title;
