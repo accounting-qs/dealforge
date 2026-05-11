@@ -4146,17 +4146,24 @@ const server = http.createServer(async (req, res) => {
       const fullName = (p.first_name && p.last_name)
         ? `${p.first_name} ${p.last_name}`.trim()
         : (p.name || leads[idx].name);
-      // Reveal scope is intentionally minimal: full name + work email only.
-      // We do NOT swap linkedin_url (company URL stays — Apollo charges 1 credit
-      // either way and the rep already has the company link), we do NOT store
-      // photo_url, and we do NOT store headline. Same per-match cost, leaner DB,
-      // smaller blast radius if anything goes wrong.
+      // Reveal scope: full name + work email + real employee count.
+      // The employee count rides along for free in people/match — the search
+      // endpoint strips it, but the match response (the 1-credit reveal call)
+      // returns the full organization block with estimated_num_employees. We
+      // capture it here and let it override the band fallback ("1–50 emp" from
+      // the ICP filter) with a real number like "130 emp". No extra credit cost.
+      // We still do NOT swap linkedin_url (company URL stays), and we still
+      // skip photo_url / headline — kept that scope unchanged.
+      const employeeCount = p.organization?.estimated_num_employees;
       const updatedLead = {
         ...leads[idx],
         name:     fullName,
         email:    p.email || null,
         revealed: true
       };
+      if (Number.isFinite(employeeCount) && employeeCount > 0) {
+        updatedLead.company_size = fmtEmp(employeeCount);
+      }
       leads[idx] = updatedLead;
       // Persist the mutated leads array back into _generated.
       const updatedData = {

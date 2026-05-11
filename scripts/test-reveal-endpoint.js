@@ -91,12 +91,11 @@ async function supa(method, urlPath, body) {
     console.log('   status:', r1.status, '| took', (Date.now()-t0)+'ms');
     console.log('   cached:', d1.cached);
     console.log('   revealed lead:', JSON.stringify({
-      name: d1.lead?.name,
+      name:         d1.lead?.name,
+      email:        d1.lead?.email,
+      company_size: d1.lead?.company_size,     // band fallback → real count after reveal
       linkedin_url: d1.lead?.linkedin_url,
-      email: d1.lead?.email,
-      photo_url: d1.lead?.photo_url ? '<headshot URL>' : null,
-      headline: d1.lead?.headline,
-      revealed: d1.lead?.revealed
+      revealed:     d1.lead?.revealed
     }, null, 2));
 
     console.log('▶ 5. POST again (should be idempotent → cached:true, no new credit)');
