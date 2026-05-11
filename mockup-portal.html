@@ -2631,6 +2631,13 @@ function wireROIEditMode() {
     document.head.appendChild(style);
     if (typeof _initWebinarRegenRow === 'function') _initWebinarRegenRow();
     if (typeof _initWebinarAssetPicker === 'function') _initWebinarAssetPicker();
+    // Reveal Prospect Infos tab + Brand Gallery panel at page-load so they appear
+    // for the rep even if runPersonalization fails mid-flight (the form/panel content
+    // still gets populated inside runPersonalization, but the chrome is independent).
+    const pInfoTab = document.getElementById('tab-btn-prospect-info');
+    if (pInfoTab) pInfoTab.style.display = '';
+    const bgPanel = document.getElementById('brand-gallery-panel');
+    if (bgPanel) bgPanel.style.display = 'block';
   }
 
   // ── saveOverride and addEditIcon are now module-level (defined above IIFE)
@@ -3000,16 +3007,21 @@ function runPersonalization(session) {
     // Brief schema stores financials under metrics; spec schema uses business — merge both
     const business = Object.assign({}, ext.business || {}, ext.metrics || {});
 
-    // Override PROSPECT object
-    if (prospect.company) PROSPECT.name = prospect.company;
-    if (prospect.website) PROSPECT.domain = normalizeDomain(prospect.website);
-    else if (brand.domain) PROSPECT.domain = normalizeDomain(brand.domain);
-    else if (session.domain) PROSPECT.domain = normalizeDomain(session.domain);
+    // Override PROSPECT object + apply branding + populate intel panels. Wrapped in
+    // _safe so a throw in any of these calls (e.g. normalizeDomain on a weird URL,
+    // a missing DOM node when the static HTML drifts) doesn't kill every downstream
+    // render block. Before this guard, a single throw here left the page on its
+    // hardcoded "Acme Corp" defaults and hid the Brand Gallery + Prospect Info tab.
+    _safe('branding-prospect-init', function() {
+      if (prospect.company) PROSPECT.name = prospect.company;
+      if (prospect.website) PROSPECT.domain = normalizeDomain(prospect.website);
+      else if (brand.domain) PROSPECT.domain = normalizeDomain(brand.domain);
+      else if (session.domain) PROSPECT.domain = normalizeDomain(session.domain);
 
-    // Apply branding + populate intelligence panels
-    applyProspectBranding(typeof SESSION !== "undefined" ? SESSION.brand : null);
-    populateSourceIntelligence(session);
-    populateBrandGallery(session);
+      applyProspectBranding(typeof SESSION !== "undefined" ? SESSION.brand : null);
+      populateSourceIntelligence(session);
+      populateBrandGallery(session);
+    });
 
     // ── Pre-fill ROI inputs ──────────────────────────────────────────────────
     // Parse LTV: "$48,000" or "48000" or "$48K"
