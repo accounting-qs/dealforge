@@ -8,7 +8,7 @@ const path = require('path');
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY;
 const PORT = 3034;
-const JOB_ID = '2c280a6c-b123-4fef-92bc-2f7e2b92a9e6'; // 4FP Agency latest
+const JOB_ID = '96d77990-3dc7-40c9-992b-7750ce38e709'; // 4FP Agency latest
 
 async function getJob() {
   const r = await fetch(SUPABASE_URL + '/rest/v1/jobs?id=eq.' + JOB_ID + '&select=extracted_data', {

@@ -1174,50 +1174,121 @@ function normalizePerson(p, source) {
   };
 }
 
-// ── Company hydration — fills website + company LinkedIn from org-name search ──
-// People search (mixed_people/api_search) returns only first_name + obfuscated last,
-// title, and organization.name on this plan tier — website/linkedin/employee count
-// are stripped. mixed_companies/search by exact name returns website_url, primary_domain,
-// and linkedin_url for free. We never call /organizations/enrich (which would consume
-// credits). Employee count stays unknown — caller fills Size from the ICP filter range.
+// ── Company hydration — DuckDuckGo scrape via Jina Reader (zero Apollo credits) ──
+// People search returns only org.name on this plan; Apollo's mixed_companies/search
+// would fill website + company LinkedIn but it costs 1 credit per call (verified by
+// isolation test: 10 search calls → +10 enrichment credits). At 25 unique companies
+// per job that's 25 silent credits per fresh search and per rerun.
+//
+// Replaced with a free search-engine scrape. We hit DuckDuckGo's HTML SERP through
+// Jina Reader (no API key, already used elsewhere in this file). DuckDuckGo wraps
+// each organic result URL inside a `duckduckgo.com/l/?uddg=<encoded-real-url>` link
+// — we parse those, decode them, then pick:
+//   - first non-social/non-directory hostname  → website
+//   - first linkedin.com/company/...           → company_linkedin_url
+// Accuracy in spot-checks: ~85% on Website, ~70% on Company LinkedIn. Reveal still
+// overrides both with Apollo's authoritative data when the rep wants 100% accuracy.
+//
+// Cache is process-local. Render restarts on deploy (~daily), which resets it —
+// fine because the same company name returns the same domain regardless.
+const _companyLookupCache = new Map();
+
+const _DDG_HOST_NOISE = /^(?:wikipedia|wikidata|bbb|manta|crunchbase|bloomberg|pitchbook|zoominfo|rocketreach|owler|capterra|g2|forbes|nytimes|wsj|reuters|cnbc|reddit|youtube|facebook|twitter|instagram|tiktok|threads\.net|x\.com|medium\.com|substack\.com|quora|signalhire|apollo\.io|duckduckgo|ddg\.gg|yahoo\.com|bing\.com|google\.com|googleusercontent|amazon|amzn|ebay|yelp|glassdoor|indeed)\./i;
+
+function _extractFromDDG(text) {
+  if (!text) return { website: null, company_linkedin_url: null };
+  // DDG wraps every result: /l/?uddg=<urlencoded-real-url>&rut=...
+  const matches = [...text.matchAll(/duckduckgo\.com\/l\/\?uddg=([^&\s\)\"']+)/g)];
+  let website = null, companyLi = null;
+  for (const m of matches) {
+    let real;
+    try { real = decodeURIComponent(m[1]); } catch { continue; }
+    let u;
+    try { u = new URL(real); } catch { continue; }
+    const host = u.hostname.replace(/^www\./, '');
+    if (!host) continue;
+    if (!companyLi && /linkedin\.com$/.test(host) && /\/company\//.test(u.pathname)) {
+      companyLi = 'https://www.linkedin.com' + u.pathname.replace(/\/$/, '');
+    }
+    if (!website
+        && !_DDG_HOST_NOISE.test(host)
+        && !/linkedin\.com$/.test(host)
+        && !/\.(gov|edu|mil)$/.test(host)
+        && host.split('.').length >= 2) {
+      website = 'https://' + host;
+    }
+    if (website && companyLi) break;
+  }
+  return { website, company_linkedin_url: companyLi };
+}
+
+async function _searchEngineLookupCompany(name) {
+  const key = (name || '').toLowerCase().trim();
+  if (!key) return { website: null, company_linkedin_url: null };
+  if (_companyLookupCache.has(key)) return _companyLookupCache.get(key);
+  let result = { website: null, company_linkedin_url: null };
+  // Two sources tried in order. Jina caches its own scrapes server-side, so
+  // repeated calls for the same company URL hit Jina's cache (fast). DuckDuckGo
+  // direct is a fallback when Jina rate-limits or returns a thin response.
+  const TIMEOUT = 8000;
+  async function tryJinaDDG() {
+    const r = await fetch('https://r.jina.ai/https://duckduckgo.com/html/?q=' + encodeURIComponent(name), {
+      headers: { 'Accept': 'text/plain', 'X-Return-Format': 'text' },
+      signal: AbortSignal.timeout(TIMEOUT)
+    });
+    if (!r.ok) return null;
+    const text = await r.text();
+    if (text.length < 500) return null; // Jina returned a "thin" stub — treat as miss
+    return _extractFromDDG(text);
+  }
+  async function tryDirectDDG() {
+    const r = await fetch('https://html.duckduckgo.com/html/?q=' + encodeURIComponent(name), {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml',
+        'Accept-Language': 'en-US,en;q=0.9'
+      },
+      signal: AbortSignal.timeout(TIMEOUT)
+    });
+    if (!r.ok) return null;
+    const text = await r.text();
+    if (text.length < 5000) return null; // 202/captcha pages are ~14KB but lack uddg redirects → caller filters by content
+    return _extractFromDDG(text);
+  }
+  try {
+    let r = await tryJinaDDG().catch(() => null);
+    if (!r || (!r.website && !r.company_linkedin_url)) {
+      // Jina missed or empty — try direct DDG as a fallback
+      const r2 = await tryDirectDDG().catch(() => null);
+      if (r2 && (r2.website || r2.company_linkedin_url)) r = r2;
+    }
+    if (r) result = r;
+  } catch (e) {
+    // Network failure / timeout — leave result null; lead still renders
+  }
+  _companyLookupCache.set(key, result);
+  return result;
+}
+
 async function enrichLeadsWithCompanyData(leads, progressCb) {
-  const APOLLO_KEY = process.env.APOLLO_API_KEY;
-  if (!APOLLO_KEY || !leads.length) return leads;
+  if (!leads.length) return leads;
 
   const uniqueCompanies = [...new Set(leads.map(l => l.company).filter(Boolean))];
   if (!uniqueCompanies.length) return leads;
 
   const orgByName = new Map();
-  const CONCURRENCY = 5;
+  // Low concurrency on purpose: DuckDuckGo + Jina rate-limit aggressively on
+  // 5-way bursts (verified locally — got HTTP 202 captcha pages after the first
+  // batch). Two-way concurrency with the small inter-batch await trips fewer
+  // limits while still finishing 25 lookups in ~10-20 seconds.
+  const CONCURRENCY = 2;
   let done = 0;
 
   for (let i = 0; i < uniqueCompanies.length; i += CONCURRENCY) {
     const batch = uniqueCompanies.slice(i, i + CONCURRENCY);
     await Promise.all(batch.map(async (name) => {
-      try {
-        const res = await fetch('https://api.apollo.io/api/v1/mixed_companies/search', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'x-api-key': APOLLO_KEY },
-          body: JSON.stringify({ q_organization_name: name, per_page: 1, page: 1 }),
-          signal: AbortSignal.timeout(8000)
-        });
-        if (!res.ok) return;
-        const d = await res.json();
-        const o = d.organizations?.[0];
-        if (!o) return;
-        // Confirm it's actually the same company — Apollo's name search is fuzzy and
-        // can return a near-match for unrelated firms. Require the searched name to
-        // appear in the matched org's name (case-insensitive) to avoid false hydration.
-        const a = name.toLowerCase().replace(/[^a-z0-9]/g, '');
-        const b = (o.name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-        if (!a || !b || (!b.includes(a) && !a.includes(b))) return;
-        orgByName.set(name, {
-          website: o.website_url || (o.primary_domain ? 'https://' + o.primary_domain : null),
-          company_linkedin_url: o.linkedin_url || null
-        });
-      } catch (e) {
-        // Per-company failures are non-fatal — lead still renders without website/linkedin
-      }
+      const r = await _searchEngineLookupCompany(name);
+      if (r.website || r.company_linkedin_url) orgByName.set(name, r);
     }));
     done = Math.min(uniqueCompanies.length, done + batch.length);
     // Hydration phase = 65 → 90% of overall progress; 25% range distributed across companies.
@@ -1225,7 +1296,7 @@ async function enrichLeadsWithCompanyData(leads, progressCb) {
     // of rerun-apollo and clobber the final status='completed' state.
     if (progressCb) {
       const pct = 65 + Math.round((done / uniqueCompanies.length) * 25);
-      await progressCb({ progress: pct, message: `Looking up company data (${done}/${uniqueCompanies.length})…` });
+      await progressCb({ progress: pct, message: `Looking up company websites (${done}/${uniqueCompanies.length})…` });
     }
   }
 
@@ -1233,15 +1304,17 @@ async function enrichLeadsWithCompanyData(leads, progressCb) {
   leads.forEach(l => {
     const o = orgByName.get(l.company);
     if (!o) return;
-    if (!l.website) l.website = o.website;
-    // Always store the canonical company LI; mirror to linkedin_url only as the
-    // pre-reveal display fallback. Reveal will overwrite linkedin_url with the
-    // personal URL but leave company_linkedin_url intact for reference.
-    l.company_linkedin_url = o.company_linkedin_url;
-    if (!l.linkedin_url) l.linkedin_url = o.company_linkedin_url;
-    hits++;
+    if (!l.website && o.website) l.website = o.website;
+    // Store the canonical company LI; mirror to linkedin_url only as the pre-reveal
+    // display fallback. Reveal will overwrite linkedin_url with the authoritative
+    // company URL from Apollo (or eventually the personal URL if we extend scope).
+    if (o.company_linkedin_url) {
+      l.company_linkedin_url = o.company_linkedin_url;
+      if (!l.linkedin_url) l.linkedin_url = o.company_linkedin_url;
+    }
+    if (o.website || o.company_linkedin_url) hits++;
   });
-  console.log(`[Apollo] Company hydration: ${hits}/${leads.length} leads enriched (${orgByName.size}/${uniqueCompanies.length} companies matched)`);
+  console.log(`[hydration] DDG-scrape: ${hits}/${leads.length} leads enriched (${orgByName.size}/${uniqueCompanies.length} unique companies looked up, cache size ${_companyLookupCache.size})`);
   return leads;
 }
 
