@@ -1834,20 +1834,25 @@ function setRsvp(btn, type) {
   ['rsvp-yes-btn','rsvp-no-btn','rsvp-maybe-btn'].forEach(id => {
     document.getElementById(id).classList.remove('confirmed-yes','confirmed-no','confirmed-maybe');
   });
+  const confirmEl = document.getElementById('rsvp-confirmed');
   if (type === 'yes') {
     btn.classList.add('confirmed-yes');
     btn.textContent = '✓ Going';
-    document.getElementById('rsvp-confirmed').style.display = 'block';
+    confirmEl.textContent = "✓ You're registered. Reminders on the way.";
+    confirmEl.style.color = '#1a73e8';
+    confirmEl.style.display = 'block';
     document.getElementById('email-side-panel').classList.add('open');
   } else if (type === 'no') {
     btn.classList.add('confirmed-no');
     btn.textContent = '✗ Not Going';
-    document.getElementById('rsvp-confirmed').style.display = 'none';
+    confirmEl.textContent = "✗ You won't receive any further notifications from us.";
+    confirmEl.style.color = '#d93025';
+    confirmEl.style.display = 'block';
     document.getElementById('email-side-panel').classList.remove('open');
   } else {
     btn.classList.add('confirmed-maybe');
     btn.textContent = '? Maybe';
-    document.getElementById('rsvp-confirmed').style.display = 'none';
+    confirmEl.style.display = 'none';
     document.getElementById('email-side-panel').classList.remove('open');
   }
 }
