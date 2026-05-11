@@ -977,66 +977,6 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
     <span id="webinar-regen-status" style="font-size:11px;color:#94a3b8;min-width:120px;text-align:right;"></span>
   </div>
 
-  <!-- Asset Picker — rep-only. Lets the rep pick which scraped image goes
-       into each visual slot of the webinar slide (logo / hero / headshot).
-       Auto-saves as an override on the job and re-renders the slide live.
-       Click "Regenerate" above to push the new picks into the standalone HTML asset. -->
-  <div id="webinar-asset-picker" style="display:none;max-width:1280px;margin:0 auto 14px;padding:14px 16px;background:rgba(167,139,250,0.05);border:1px solid rgba(167,139,250,0.18);border-radius:8px;">
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
-      <div>
-        <span style="font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#c4b5fd;">Rep only · Asset picker</span>
-        <span style="font-size:11px;color:#71717a;margin-left:10px;">Pick which scraped image goes in each slot. Saves on click.</span>
-      </div>
-      <span id="wap-status" style="font-size:11px;color:#71717a;"></span>
-    </div>
-    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;">
-      <div data-wap-slot="webinar_logo_url" style="background:rgba(0,0,0,0.3);border:1px solid #27272a;border-radius:6px;padding:10px;">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
-          <span style="font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#a1a1aa;">Logo</span>
-          <button type="button" class="wap-reset" data-slot="webinar_logo_url" style="background:none;border:none;color:#52525b;font-size:10px;cursor:pointer;text-decoration:underline;">Reset</button>
-        </div>
-        <div class="wap-current" style="height:60px;background:#0a0a0a;border:1px dashed #27272a;border-radius:4px;display:flex;align-items:center;justify-content:center;overflow:hidden;margin-bottom:8px;">
-          <span style="font-size:10px;color:#52525b;">— default —</span>
-        </div>
-        <button type="button" class="wap-change" data-slot="webinar_logo_url" data-label="Logo"
-          style="width:100%;background:rgba(255,255,255,0.04);border:1px solid #3f3f46;border-radius:5px;color:#e2e8f0;font-size:11px;font-weight:500;padding:6px;cursor:pointer;">Pick image →</button>
-      </div>
-      <div data-wap-slot="webinar_hero_image_url" style="background:rgba(0,0,0,0.3);border:1px solid #27272a;border-radius:6px;padding:10px;">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
-          <span style="font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#a1a1aa;">Background (hero)</span>
-          <button type="button" class="wap-reset" data-slot="webinar_hero_image_url" style="background:none;border:none;color:#52525b;font-size:10px;cursor:pointer;text-decoration:underline;">Reset</button>
-        </div>
-        <div class="wap-current" style="height:60px;background:#0a0a0a;border:1px dashed #27272a;border-radius:4px;display:flex;align-items:center;justify-content:center;overflow:hidden;margin-bottom:8px;">
-          <span style="font-size:10px;color:#52525b;">— default —</span>
-        </div>
-        <button type="button" class="wap-change" data-slot="webinar_hero_image_url" data-label="Background"
-          style="width:100%;background:rgba(255,255,255,0.04);border:1px solid #3f3f46;border-radius:5px;color:#e2e8f0;font-size:11px;font-weight:500;padding:6px;cursor:pointer;">Pick image →</button>
-      </div>
-      <div data-wap-slot="webinar_headshot_url" style="background:rgba(0,0,0,0.3);border:1px solid #27272a;border-radius:6px;padding:10px;">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
-          <span style="font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#a1a1aa;">Host headshot</span>
-          <button type="button" class="wap-reset" data-slot="webinar_headshot_url" style="background:none;border:none;color:#52525b;font-size:10px;cursor:pointer;text-decoration:underline;">Reset</button>
-        </div>
-        <div class="wap-current" style="height:60px;background:#0a0a0a;border:1px dashed #27272a;border-radius:4px;display:flex;align-items:center;justify-content:center;overflow:hidden;margin-bottom:8px;">
-          <span style="font-size:10px;color:#52525b;">— default —</span>
-        </div>
-        <button type="button" class="wap-change" data-slot="webinar_headshot_url" data-label="Headshot"
-          style="width:100%;background:rgba(255,255,255,0.04);border:1px solid #3f3f46;border-radius:5px;color:#e2e8f0;font-size:11px;font-weight:500;padding:6px;cursor:pointer;">Pick image →</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- Modal — image grid picker, opens when rep clicks "Pick image →" -->
-  <div id="wap-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.8);z-index:9998;align-items:center;justify-content:center;padding:20px;" onclick="if(event.target===this)wapCloseModal()">
-    <div style="background:#111;border:1px solid #27272a;border-radius:10px;max-width:760px;width:100%;max-height:80vh;overflow-y:auto;padding:18px 20px;">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
-        <h3 style="font-size:14px;font-weight:600;color:#e4e4e7;margin:0;">Pick image for <span id="wap-modal-slot-label" style="color:#c4b5fd;">slot</span></h3>
-        <button type="button" onclick="wapCloseModal()" style="background:none;border:none;color:#71717a;font-size:20px;cursor:pointer;line-height:1;">×</button>
-      </div>
-      <div id="wap-modal-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:10px;"></div>
-    </div>
-  </div>
-
   <div class="webinar-wrap">
     <div class="webinar-top-bar">
       <div style="display:flex;align-items:center;gap:16px;">
@@ -1189,6 +1129,68 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
         <div id="brand-images-grid" class="brand-images-grid"></div>
         <div id="brand-images-none" style="font-size:11px;color:#3f3f46;display:none;">No images collected</div>
       </div>
+    </div>
+  </div>
+
+  <!-- Asset Picker — rep-only. Lets the rep pick which scraped image goes into
+       each visual slot of the webinar slide (logo / hero / headshot). Sits at
+       the bottom of the tab below the slide preview + brand gallery so it
+       doesn't push the actual webinar render off-screen. Auto-saves as an
+       override on the job and re-renders the slide live. Click "↻ Regenerate"
+       at the top to push the new picks into the standalone HTML asset. -->
+  <div id="webinar-asset-picker" style="display:none;max-width:1280px;margin:24px auto 40px;padding:14px 16px;background:rgba(167,139,250,0.05);border:1px solid rgba(167,139,250,0.18);border-radius:8px;">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+      <div>
+        <span style="font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#c4b5fd;">Rep only · Asset picker</span>
+        <span style="font-size:11px;color:#71717a;margin-left:10px;">Pick which scraped image goes in each slot. Saves on click.</span>
+      </div>
+      <span id="wap-status" style="font-size:11px;color:#71717a;"></span>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;">
+      <div data-wap-slot="webinar_logo_url" style="background:rgba(0,0,0,0.3);border:1px solid #27272a;border-radius:6px;padding:10px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+          <span style="font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#a1a1aa;">Logo</span>
+          <button type="button" class="wap-reset" data-slot="webinar_logo_url" style="background:none;border:none;color:#52525b;font-size:10px;cursor:pointer;text-decoration:underline;">Reset</button>
+        </div>
+        <div class="wap-current" style="height:60px;background:#0a0a0a;border:1px dashed #27272a;border-radius:4px;display:flex;align-items:center;justify-content:center;overflow:hidden;margin-bottom:8px;">
+          <span style="font-size:10px;color:#52525b;">— default —</span>
+        </div>
+        <button type="button" class="wap-change" data-slot="webinar_logo_url" data-label="Logo"
+          style="width:100%;background:rgba(255,255,255,0.04);border:1px solid #3f3f46;border-radius:5px;color:#e2e8f0;font-size:11px;font-weight:500;padding:6px;cursor:pointer;">Pick image →</button>
+      </div>
+      <div data-wap-slot="webinar_hero_image_url" style="background:rgba(0,0,0,0.3);border:1px solid #27272a;border-radius:6px;padding:10px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+          <span style="font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#a1a1aa;">Background (hero)</span>
+          <button type="button" class="wap-reset" data-slot="webinar_hero_image_url" style="background:none;border:none;color:#52525b;font-size:10px;cursor:pointer;text-decoration:underline;">Reset</button>
+        </div>
+        <div class="wap-current" style="height:60px;background:#0a0a0a;border:1px dashed #27272a;border-radius:4px;display:flex;align-items:center;justify-content:center;overflow:hidden;margin-bottom:8px;">
+          <span style="font-size:10px;color:#52525b;">— default —</span>
+        </div>
+        <button type="button" class="wap-change" data-slot="webinar_hero_image_url" data-label="Background"
+          style="width:100%;background:rgba(255,255,255,0.04);border:1px solid #3f3f46;border-radius:5px;color:#e2e8f0;font-size:11px;font-weight:500;padding:6px;cursor:pointer;">Pick image →</button>
+      </div>
+      <div data-wap-slot="webinar_headshot_url" style="background:rgba(0,0,0,0.3);border:1px solid #27272a;border-radius:6px;padding:10px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+          <span style="font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#a1a1aa;">Host headshot</span>
+          <button type="button" class="wap-reset" data-slot="webinar_headshot_url" style="background:none;border:none;color:#52525b;font-size:10px;cursor:pointer;text-decoration:underline;">Reset</button>
+        </div>
+        <div class="wap-current" style="height:60px;background:#0a0a0a;border:1px dashed #27272a;border-radius:4px;display:flex;align-items:center;justify-content:center;overflow:hidden;margin-bottom:8px;">
+          <span style="font-size:10px;color:#52525b;">— default —</span>
+        </div>
+        <button type="button" class="wap-change" data-slot="webinar_headshot_url" data-label="Headshot"
+          style="width:100%;background:rgba(255,255,255,0.04);border:1px solid #3f3f46;border-radius:5px;color:#e2e8f0;font-size:11px;font-weight:500;padding:6px;cursor:pointer;">Pick image →</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal — image grid picker, opens when rep clicks "Pick image →" -->
+  <div id="wap-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.8);z-index:9998;align-items:center;justify-content:center;padding:20px;" onclick="if(event.target===this)wapCloseModal()">
+    <div style="background:#111;border:1px solid #27272a;border-radius:10px;max-width:760px;width:100%;max-height:80vh;overflow-y:auto;padding:18px 20px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;">
+        <h3 style="font-size:14px;font-weight:600;color:#e4e4e7;margin:0;">Pick image for <span id="wap-modal-slot-label" style="color:#c4b5fd;">slot</span></h3>
+        <button type="button" onclick="wapCloseModal()" style="background:none;border:none;color:#71717a;font-size:20px;cursor:pointer;line-height:1;">×</button>
+      </div>
+      <div id="wap-modal-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:10px;"></div>
     </div>
   </div>
 </div>
@@ -2283,12 +2285,40 @@ function applyProspectBranding(brandData) {
   // override re-renders without a full pipeline run.
   const _ov = (typeof SESSION !== 'undefined' && SESSION?.extracted?._overrides) || {};
 
-  // 4. Hero image — rep override → first images[type=hero] → first image
+  // 4. Hero image — rep override (URL or '__brand_only__' sentinel) → auto-picked hero → first image
   const autoHero = brandData?.images?.find(img => img.type === 'hero') || brandData?.images?.[0];
-  const heroUrl  = _ov.webinar_hero_image_url || autoHero?.url || '';
+  const brandOnly = _ov.webinar_hero_image_url === '__brand_only__';
+  const heroUrl  = brandOnly ? '' : (_ov.webinar_hero_image_url || autoHero?.url || '');
   const slideEl = document.getElementById('slide-1-el');
   const overlayEl = document.getElementById('slide-1-overlay');
-  if (heroUrl && slideEl) {
+  if (brandOnly && slideEl) {
+    // "Brand colors only" path — clean gradient background with the company name
+    // as a large watermark. Used when the scraped images are bad fits and the
+    // rep would rather show a stylish minimal slide.
+    const p2 = effectivePrimary || '#22c55e';
+    const s2 = effectiveSecondary || p2;
+    slideEl.style.backgroundImage = `linear-gradient(135deg, ${p2}, ${s2})`;
+    slideEl.style.backgroundSize  = '';
+    slideEl.style.backgroundPosition = '';
+    if (overlayEl) overlayEl.style.display = 'none';  // no gradient overlay needed — slide IS the gradient
+    // Inject (or refresh) a company-name watermark layer
+    let wm = slideEl.querySelector('.slide-1-brand-wm');
+    const companyName = brandData?.company_name || PROSPECT.name || '';
+    if (companyName) {
+      if (!wm) {
+        wm = document.createElement('div');
+        wm.className = 'slide-1-brand-wm';
+        wm.style.cssText = 'position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:clamp(60px,12vw,180px);font-weight:800;letter-spacing:-0.04em;color:rgba(255,255,255,0.08);text-transform:uppercase;pointer-events:none;z-index:0;white-space:nowrap;overflow:hidden;';
+        slideEl.appendChild(wm);
+      }
+      wm.textContent = companyName;
+    } else if (wm) {
+      wm.remove();
+    }
+    console.log('[Deal Forge] Hero set to BRAND-ONLY mode (gradient + company name)');
+  } else if (heroUrl && slideEl) {
+    // Remove any leftover brand-only watermark from a prior render
+    slideEl.querySelector('.slide-1-brand-wm')?.remove();
     slideEl.style.backgroundImage = `url('${heroUrl}')`;
     slideEl.style.backgroundSize = 'cover';
     slideEl.style.backgroundPosition = 'center';
@@ -2302,6 +2332,9 @@ function applyProspectBranding(brandData) {
       overlayEl.style.display = 'block';
     }
     console.log('[Deal Forge] Hero image applied to webinar slide:', heroUrl, _ov.webinar_hero_image_url ? '(rep override)' : '');
+  } else if (slideEl) {
+    // No hero at all — also clear any stale watermark
+    slideEl.querySelector('.slide-1-brand-wm')?.remove();
   }
 
   // 5. Logo on slide 1 — rep override → brand_data.logo_url
@@ -4178,12 +4211,21 @@ function _initWebinarAssetPicker() {
 }
 function _wapRenderSlots() {
   const overrides = _wapGetOverrides();
+  const brand = window.SESSION?.brand || {};
+  const companyName = brand.company_name || window.SESSION?.extracted?.prospect?.company || 'Your Company';
   document.querySelectorAll('#webinar-asset-picker [data-wap-slot]').forEach(slotEl => {
     const slotKey = slotEl.dataset.wapSlot;
     const url = overrides[slotKey];
     const currentEl = slotEl.querySelector('.wap-current');
     if (!currentEl) return;
-    if (url) {
+    if (url === WAP_BRAND_ONLY) {
+      // Special "no image" override — show a gradient swatch with the company name
+      const primary = brand.primary_color || '#22c55e';
+      const secondary = brand.secondary_color || brand.accent_color || '#16a34a';
+      currentEl.innerHTML = `<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg, ${primary}, ${secondary});color:#fff;font-size:12px;font-weight:700;text-shadow:0 1px 4px rgba(0,0,0,.5);padding:0 6px;text-align:center;">${(companyName||'').slice(0,24)}</div>`;
+      currentEl.style.borderStyle = 'solid';
+      currentEl.style.borderColor = '#c4b5fd';
+    } else if (url) {
       currentEl.innerHTML = `<img src="${url.replace(/"/g,'&quot;')}" alt="" style="max-width:100%;max-height:100%;object-fit:contain;">`;
       currentEl.style.borderStyle = 'solid';
       currentEl.style.borderColor = '#c4b5fd';
@@ -4194,6 +4236,11 @@ function _wapRenderSlots() {
     }
   });
 }
+// Sentinel value the rep can pick for the Background slot. When the scraped
+// images are bad fits (logos-as-banners, irrelevant stock photos), the rep
+// can choose this to drop the hero entirely and show a clean brand-color
+// gradient with the company name typeset on it instead.
+const WAP_BRAND_ONLY = '__brand_only__';
 function wapOpenModal(slotKey, slotLabel) {
   const modal = document.getElementById('wap-modal');
   const labelEl = document.getElementById('wap-modal-slot-label');
@@ -4201,10 +4248,26 @@ function wapOpenModal(slotKey, slotLabel) {
   if (!modal || !grid) return;
   labelEl.textContent = slotLabel || slotKey;
   const candidates = _wapGetCandidateImages();
-  if (!candidates.length) {
+
+  // For the Background slot only: offer a "brand colors only" tile that drops
+  // the hero image entirely in favour of a clean gradient + company name.
+  const brand = window.SESSION?.brand || {};
+  const primary = brand.primary_color || '#22c55e';
+  const secondary = brand.secondary_color || brand.accent_color || '#16a34a';
+  const companyName = brand.company_name || window.SESSION?.extracted?.prospect?.company || 'Your Company';
+  const brandOnlyTile = slotKey === 'webinar_hero_image_url' ? `
+    <div data-wap-pick="${WAP_BRAND_ONLY}" data-wap-slot="${slotKey}"
+         style="cursor:pointer;border:2px solid #c4b5fd;border-radius:6px;overflow:hidden;background:#0a0a0a;transition:filter .15s;"
+         onmouseover="this.style.filter='brightness(1.1)'" onmouseout="this.style.filter='none'">
+      <div style="height:80px;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg, ${primary}, ${secondary});color:#fff;font-size:14px;font-weight:700;text-shadow:0 1px 4px rgba(0,0,0,.5);padding:0 8px;text-align:center;line-height:1.2;overflow:hidden;">${(companyName||'').slice(0,24)}</div>
+      <div style="padding:5px 8px;font-size:10px;color:#c4b5fd;line-height:1.3;font-weight:600;">🎨 Brand colors only (no image)</div>
+    </div>
+  ` : '';
+
+  if (!candidates.length && !brandOnlyTile) {
     grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;color:#71717a;font-size:12px;padding:24px;">No scraped images available. Run brand_scrape first (Save & Regenerate Job).</div>';
   } else {
-    grid.innerHTML = candidates.map(c => `
+    grid.innerHTML = brandOnlyTile + candidates.map(c => `
       <div data-wap-pick="${c.url.replace(/"/g,'&quot;')}" data-wap-slot="${slotKey}"
            style="cursor:pointer;border:1px solid #27272a;border-radius:6px;overflow:hidden;background:#0a0a0a;transition:border-color .15s;"
            onmouseover="this.style.borderColor='#c4b5fd'" onmouseout="this.style.borderColor='#27272a'">

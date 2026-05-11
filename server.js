@@ -2943,8 +2943,13 @@ async function handleWebinarMock(task, job, customInstructions = '') {
   const forLine        = variant.for_line           || '';
 
   // Hero image: rep override → first image typed 'hero' → first image in array.
+  // Sentinel `__brand_only__` means rep explicitly wants no hero (use a clean
+  // brand-color slide). Pass empty heroImageUrl in that case so the template
+  // gradient takes over without a competing background image.
   const heroImage = (brandData.images || []).find(i => i.type === 'hero') || (brandData.images || [])[0];
-  const heroImageUrl = overrides.webinar_hero_image_url || heroImage?.url || '';
+  const heroOverride = overrides.webinar_hero_image_url;
+  const brandOnlyHero = heroOverride === '__brand_only__';
+  const heroImageUrl = brandOnlyHero ? '' : (heroOverride || heroImage?.url || '');
 
   // Proof slide derivation — uses already-extracted data only.
   const proof = deriveProof(variant.proof_story, extracted.angle, extracted.verbatim);
