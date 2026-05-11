@@ -1076,6 +1076,36 @@ function formatEmployeeRangeBand(ranges) {
   const hi = Math.max(...bounds.map(b => b[1]));
   return lo === hi ? `${lo} emp` : `${lo}–${hi} emp`;
 }
+
+// Shared finalizer for the lead list. Used by handleLeadList (worker path) AND
+// the POST /api/jobs/:id/rerun-apollo handler — both used to have their own
+// dedup logic. Without this, rerun-apollo persisted the raw 50-lead Apollo
+// response (no dedup, no Size column fallback), and the lead-table UI would
+// show duplicates and empty Size cells for every job that was re-run.
+//
+// Steps:
+//   1. Dedup by company name (case-insensitive). First occurrence wins;
+//      Apollo's default ranking puts higher-relevance contacts first.
+//   2. Cap at 25 leads (spec §11b — "never two contacts from the same company").
+//   3. Apply the ICP's employee-range band as a Size fallback whenever the lead
+//      itself has no company_size (which is every lead on this Apollo plan tier,
+//      since people search responses strip estimated_num_employees).
+function finalizeLeadList(rawLeads, icp) {
+  const seen = new Set();
+  const deduped = [];
+  for (const l of (rawLeads || [])) {
+    const key = (l.company || '').trim().toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(l);
+    if (deduped.length >= 25) break;
+  }
+  const sizeFallback = formatEmployeeRangeBand(icp?.apollo_employee_ranges);
+  if (sizeFallback) {
+    deduped.forEach(l => { if (!l.company_size) l.company_size = sizeFallback; });
+  }
+  return { leads: deduped, sizeFallback };
+}
 const PARKING_SIGNALS = ['domain for sale','this domain is for sale','buy this domain','coming soon','under construction','parked by','domain parking'];
 // ── Jina AI Reader — JS-rendering-aware website scraper ─────────────────────
 // Replaces raw fetch() + HTML parser. Jina runs a headless browser on their end,
@@ -2537,28 +2567,10 @@ async function handleLeadList(task, job) {
   const result = await fetchLeadsFromApollo(icp);
   const rawLeads = result?.leads || [];
 
-  // Unique-company dedup: spec §11b — never show two contacts from the same company
-  // in the prospect-facing list. Pick the first occurrence per company; Apollo's
-  // default ranking puts higher-relevance contacts first. Cap at 25.
-  const seen = new Set();
-  const dedupedLeads = [];
-  for (const l of rawLeads) {
-    const key = (l.company || '').trim().toLowerCase();
-    if (!key || seen.has(key)) continue;
-    seen.add(key);
-    dedupedLeads.push(l);
-    if (dedupedLeads.length >= 25) break;
-  }
-
-  // Size fallback: search responses on this plan don't return estimated_num_employees,
-  // but we filtered on apollo_employee_ranges so we know each company sits inside that
-  // band. Show the band as Size when the exact count is missing.
-  const sizeFallback = formatEmployeeRangeBand(icp.apollo_employee_ranges);
-  if (sizeFallback) {
-    dedupedLeads.forEach(l => { if (!l.company_size) l.company_size = sizeFallback; });
-  }
-
-  const leads = dedupedLeads;
+  // Dedup + size fallback — shared helper so the rerun-apollo path produces the
+  // same shape as this worker-driven path (previously they diverged: rerun
+  // persisted raw 50-lead output with empty Size cells).
+  const { leads, sizeFallback } = finalizeLeadList(rawLeads, icp);
   console.log(`[lead_list] Dedup: ${rawLeads.length} → ${leads.length} unique-company leads (size fallback: ${sizeFallback || 'none'})`);
 
   // fetchLeadsFromApollo returns { total }; legacy callers used { totalAvailable }
@@ -3979,6 +3991,12 @@ const server = http.createServer(async (req, res) => {
               ? 100000
               : tam > 0 ? Math.max(1000, Math.round(tam / 3 / 1000) * 1000) : 30000;
 
+            // Dedup + size fallback — same shared helper handleLeadList uses, so
+            // a rerun produces an identically-shaped list (25 unique-company leads,
+            // each with a Size band when the ICP has apollo_employee_ranges).
+            const { leads: finalizedLeads } = finalizeLeadList(result.leads, icp);
+            console.log(`[rerun-apollo] Dedup: ${result.leads.length} → ${finalizedLeads.length} unique-company leads`);
+
             // Re-read latest extracted_data so we don't clobber progress writes that
             // landed during the search (writeProgress patches extracted_data too).
             const fresh = await getJob(jobId);
@@ -3989,7 +4007,7 @@ const server = http.createServer(async (req, res) => {
               ...existingData,
               _generated: {
                 ...(existingData._generated || {}),
-                leads:                result.leads,
+                leads:                finalizedLeads,
                 tam_total:            tam,
                 tam_source:           result.tamSource,
                 recommendedOutreach:  recommendedOutreach,
@@ -3998,7 +4016,7 @@ const server = http.createServer(async (req, res) => {
                 apollo_rerun:         {
                   status:     'completed',
                   progress:   100,
-                  message:    `Done — ${result.leads.length} leads, TAM ${tam.toLocaleString()}`,
+                  message:    `Done — ${finalizedLeads.length} leads, TAM ${tam.toLocaleString()}`,
                   finished_at: new Date().toISOString()
                 }
               }
