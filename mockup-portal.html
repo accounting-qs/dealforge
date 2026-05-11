@@ -1772,6 +1772,24 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
 </div>
 
 <script>
+// Sentinel value the rep can pick for the Background slot. When the scraped
+// images are bad fits (logos-as-banners, irrelevant stock photos), the rep
+// can choose this to drop the hero entirely and show a clean brand-color
+// gradient with the company name typeset on it instead.
+//
+// MUST stay at the very top of this <script>. Functions that use it
+// (_wapRenderSlots, wapOpenModal, applyProspectBranding) are hoisted, but
+// const declarations are NOT — they live in the Temporal Dead Zone until the
+// line of declaration is executed. The personalization IIFE near line 2600
+// calls _initWebinarAssetPicker() at page load. If WAP_BRAND_ONLY were
+// declared further down (it used to be at line 4255), that IIFE would throw
+// a ReferenceError trying to read it, which silently killed every downstream
+// render block — including the prospect company name override, source intel
+// population, brand gallery reveal, and prospect-info tab reveal. The user-
+// visible symptom was the page stuck on "Acme Corp" defaults with chrome
+// missing. Keep this declaration above all uses.
+const WAP_BRAND_ONLY = '__brand_only__';
+
 // ── Tab switching ──
 function switchTab(i) {
   document.querySelectorAll('.tab-content').forEach((t,j) => t.classList.toggle('active', i===j));
@@ -4248,11 +4266,9 @@ function _wapRenderSlots() {
     }
   });
 }
-// Sentinel value the rep can pick for the Background slot. When the scraped
-// images are bad fits (logos-as-banners, irrelevant stock photos), the rep
-// can choose this to drop the hero entirely and show a clean brand-color
-// gradient with the company name typeset on it instead.
-const WAP_BRAND_ONLY = '__brand_only__';
+// WAP_BRAND_ONLY is declared at the top of this <script> (search for it).
+// Must be at top to avoid Temporal Dead Zone — the page-load IIFE that calls
+// _wapRenderSlots runs before this point in source order.
 function wapOpenModal(slotKey, slotLabel) {
   const modal = document.getElementById('wap-modal');
   const labelEl = document.getElementById('wap-modal-slot-label');
