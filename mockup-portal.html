@@ -4024,12 +4024,19 @@ function _renderTabReadinessPanel() {
   if (!el) return;
   const tasks = window._latestJobTasks || {};
 
-  // Map each menu tab to the underlying pipeline tasks it depends on.
+  // Map each menu tab to the underlying pipeline tasks it actually drives.
   // Empty array = static UX (no AI task). Order matches the visible tab order.
+  //
+  // IMPORTANT: "tasks" must reflect what the prospect SEES in the tab. The
+  // Calendar Invite tab modal is rendered from webinar_titles output (variant
+  // title + buildGeneratedDesc), NOT from calendar_visual — which is a separate
+  // standalone HTML asset uploaded to Supabase Storage for email-linkable view.
+  // softTasks are downstream assets whose failures should warn the rep but not
+  // mark the tab as failed when the in-portal view is rendering correctly.
   const TAB_MAP = [
     { name: 'How It Works',       tasks: ['extract'],                          static: false },
     { name: 'Lead List',          tasks: ['lead_list'],                        static: false },
-    { name: 'Calendar Invite',    tasks: ['calendar_visual'],                  static: false },
+    { name: 'Calendar Invite',    tasks: ['webinar_titles'], softTasks: ['calendar_visual'], static: false },
     { name: 'Webinar Experience', tasks: ['webinar_titles', 'webinar_mock'],   static: false },
     { name: 'Onboarding',         tasks: [],                                   static: true  },
     { name: 'ROI Model',          tasks: ['roi_model'],                        static: false },
@@ -4073,6 +4080,18 @@ function _renderTabReadinessPanel() {
       for (const taskName of tab.tasks) {
         const t = tasks[taskName] || {};
         if (t.status === 'needs_input' && t.error) { detail = String(t.error).slice(0, 140); break; }
+      }
+    }
+    // Soft task failures (e.g. calendar_visual HTML asset for Calendar Invite tab)
+    // — don't downgrade the tab status, but surface a non-blocking note if the
+    // in-portal view is ready and only the downstream asset failed.
+    if (tab.softTasks && (worst === 'completed' || worst === 'ready')) {
+      for (const taskName of tab.softTasks) {
+        const t = tasks[taskName] || {};
+        if (t.status === 'failed') {
+          detail = `${taskName} asset failed — click Regenerate to retry`;
+          break;
+        }
       }
     }
     return { tab, status: worst, detail };

@@ -34,6 +34,22 @@ try {
   console.log('[Templates] Loaded roi_model, calendar_visual, webinar_mock');
 } catch(e) { console.warn('[Templates] Could not load HTML templates:', e.message); }
 
+// Lazy template loader. If the startup read above failed for any reason
+// (transient FS issue during deploy, partial container state, etc.) the cached
+// template stays as empty string and every task that uses it dies with
+// "template not loaded". This helper re-reads from disk at task time so the
+// pipeline self-heals on the next worker tick instead of needing a redeploy.
+function ensureTemplate(filename) {
+  try {
+    const content = fs.readFileSync(path.join(TEMPLATES_DIR, filename), 'utf8');
+    console.log(`[Templates] Lazy-loaded ${filename} (${content.length} chars)`);
+    return content;
+  } catch (e) {
+    console.warn(`[Templates] Lazy-load failed for ${filename}: ${e.message}`);
+    return '';
+  }
+}
+
 function interpolate(template, vars) {
   return template.replace(/\{\{(\w+)\}\}/g, (_, k) => (vars[k] !== undefined && vars[k] !== null) ? vars[k] : '');
 }
@@ -1909,33 +1925,47 @@ Return this exact JSON:
 }
 
 // ── Webinar mock: live chat messages ─────────────────────────────────────────
-async function generateChatMessages(title, icp, customerPain, resultDelivered, hostName, geography, currentLeadGen, proofStory, customInstructions) {
+async function generateChatMessages(title, icp, customerPain, resultDelivered, hostName, companyName, geography, currentLeadGen, proofStory, customInstructions) {
   const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
   const proofSnippet = (proofStory || '').slice(0, 240);
   const customSnippet = (customInstructions || '').slice(0, 600);
+  const company = companyName || 'Your Company';
   const fallback = `You are generating realistic live chat messages for a webinar. Return valid JSON only. No markdown.
+
+This webinar is hosted by "${company}" — a company branded for THEIR audience. Every message must read as if "${company}" is the entity running this room. NEVER use "QS", "QS Support", "Quantum Scaling", "Deal Forge", "Skarpe", or any other brand. The ONLY allowed support sender label is exactly: "${company} Support".
 
 Generate 18 live chat messages for this webinar:
 
 Webinar title: ${title}
+Prospect company hosting the webinar: ${company}
+Host (presenter on screen): ${hostName}
 Target audience role: ${icp?.role || 'business owners'}
 Target audience industry: ${icp?.industry || 'B2B'}
 Target audience geography: ${geography || 'global'}
 How they currently get clients: ${currentLeadGen || 'mixed channels'}
 Core problem they face: ${customerPain || 'growing their business'}
 Result they want: ${resultDelivered || 'more revenue'}
-Host / company name: ${hostName}
 Recent client outcome (for support-team booking messages): ${proofSnippet || 'n/a'}
 ${customSnippet ? `\nRep override instructions (must be respected — they tell you how the rep wants this regenerated): ${customSnippet}\n` : ''}
+Voice & realism (CRITICAL):
+- Attendees are real people in "${icp?.role || 'business owners'}" roles at "${icp?.industry || 'B2B'}" companies, watching this webinar live RIGHT NOW as the slides play.
+- Write the way people actually type in live chats: short, casual, often lowercase, occasional typos or informal phrasing, no marketing-speak, no buzzwords, no hashtags.
+- Messages should be reactions and questions about the WEBINAR'S TOPIC — they are responding to what they are seeing/hearing on screen, not pitching themselves.
+- Mix curiosities, mild skepticism, brief agreement ("makes sense", "this is us"), questions about specifics, and short bits of their own situation in their industry.
+- NEVER reference Quantum Scaling, QS, Deal Forge, ROI models, lead lists, or any rep-tool. The audience does not know those exist.
+
+Chronological flow:
+- Messages 1-5 (early): brief greetings (where they're tuning in from), reactions to the hero/intro, who they are in one phrase.
+- Messages 6-13 (mid): specific questions about the topic + comments tying it back to their own ${icp?.industry || 'business'} situation + 1-2 messages echoing the "${currentLeadGen || 'mixed channels'}" lead-gen struggle in their own words.
+- Messages 14-18 (late): reactions to proof + booking activity from the support team.
+
 Requirements:
-- 14 attendee messages: realistic first names, short messages (max 15 words). Mix of questions + reactions + struggles that reference the specific industry, region, and current-lead-gen pattern above
-- 1-2 attendee messages should echo the "how they currently get clients" struggle in customer language
-- 4 support team messages from "${hostName} Team": encourage booking a call. At least one team message should reference the recent client outcome above (only if it contains real numbers)
-- Messages should feel chronologically natural
-- Attendee questions MUST reference the webinar topic and industry specifically
+- 14 attendee messages: realistic first names only (no last names), max 15 words each. Vary length — some 4-6 words, some up to 15.
+- 4 support team messages with sender EXACTLY "${company} Support": one welcomes attendees, one answers a common question (e.g. replay availability), and at least one or two celebrate an attendee by first name who just booked a call with ${company}. If the recent client outcome above contains real numbers, reference them naturally in one support message.
+- Output JSON only.
 
 Return:
-{"messages":[{"sender":"string","text":"string — max 15 words","is_team":boolean,"timestamp":"string e.g. 12:14 PM"}]}`;
+{"messages":[{"sender":"string — first name for attendees OR exactly '${company} Support' for team","text":"string — max 15 words","is_team":boolean,"timestamp":"string e.g. 12:14 PM"}]}`;
   const promptText = await loadPromptFromDB('chat_messages', fallback);
   let userContent = promptText
     .replace(/\{\{webinar_title\}\}/g, title || '')
@@ -1946,8 +1976,13 @@ Return:
     .replace(/\{\{customer_pain\}\}/g, customerPain || 'growing their business')
     .replace(/\{\{result_delivered\}\}/g, resultDelivered || 'more revenue')
     .replace(/\{\{host_name\}\}/g, hostName || 'Your Host')
+    .replace(/\{\{company_name\}\}/g, company)
     .replace(/\{\{proof_story\}\}/g, proofSnippet || 'n/a')
     .replace(/\{\{custom_instructions\}\}/g, customSnippet || '');
+  // If the DB-stored prompt has no {{company_name}} placeholder, append a hard brand-anchor so the support sender is still re-branded correctly.
+  if (!/company_name/.test(promptText)) {
+    userContent += `\n\nBRAND ANCHOR (overrides anything above): the webinar is hosted by "${company}". The ONLY support sender label is exactly "${company} Support". Never use "QS Support", "Quantum Scaling", "Deal Forge", or any other brand.`;
+  }
   // If the DB-stored prompt has no {{custom_instructions}} placeholder, append the override at the end so it still affects generation.
   if (customSnippet && !/custom_instructions/.test(promptText)) {
     userContent += `\n\nRep override instructions (must be respected): ${customSnippet}`;
@@ -2578,6 +2613,7 @@ async function handleRoiModel(task, job) {
   const showRate  = parseRate(extracted?.metrics?.show_rate  || extracted?.business?.show_rate,  0.70);
   const projections = calcRoiProjections(ltv, closeRate, showRate);
 
+  if (!ROI_MODEL_TEMPLATE) ROI_MODEL_TEMPLATE = ensureTemplate('roi_model.html');
   if (!ROI_MODEL_TEMPLATE) throw new Error('roi_model.html template not loaded');
 
   const company = extracted?.prospect?.company || job.prospect_company || 'Your Company';
@@ -2647,6 +2683,7 @@ async function handleCalendarVisual(task, job) {
   while (eventDate.getDay() !== 2) eventDate.setDate(eventDate.getDate() + 1);
   const dateStr = eventDate.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' }) + ' · 7:00 – 8:00pm';
 
+  if (!CALENDAR_VISUAL_TEMPLATE) CALENDAR_VISUAL_TEMPLATE = ensureTemplate('calendar_visual.html');
   if (!CALENDAR_VISUAL_TEMPLATE) throw new Error('calendar_visual.html template not loaded');
 
   const description = variant.description || [
@@ -2779,6 +2816,7 @@ async function handleWebinarMock(task, job, customInstructions = '') {
     extracted.customer_pain   || extracted.angle?.pain,
     extracted.result_delivered || extracted.angle?.result,
     hostName,
+    companyName,
     extracted.icp?.geography || (extracted.icp?.apollo_geography || [])[0] || '',
     extracted.situation?.current_lead_gen || '',
     variant.proof_story || '',
@@ -2800,6 +2838,7 @@ async function handleWebinarMock(task, job, customInstructions = '') {
   // Attendee count: realistic
   const attendeeCount = 750 + Math.floor(Math.random() * 300);
 
+  if (!WEBINAR_MOCK_TEMPLATE) WEBINAR_MOCK_TEMPLATE = ensureTemplate('webinar_mock.html');
   if (!WEBINAR_MOCK_TEMPLATE) throw new Error('webinar_mock.html template not loaded');
 
   const slide1Title    = variant.title || '';
