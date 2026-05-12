@@ -70,6 +70,10 @@
      clicking it doesn't toggle the group. */
   .open-latest-btn { font-size: 11px; font-weight: 500; color: #c4b5fd; background: rgba(139,92,246,0.10); border: 1px solid rgba(139,92,246,0.30); padding: 4px 10px; border-radius: 7px; cursor: pointer; font-family: inherit; white-space: nowrap; transition: background 100ms; }
   .open-latest-btn:hover { background: rgba(139,92,246,0.20); color: #ffffff; }
+  /* Prospect-view button — shareable/external feel, matches the portal's
+     "Open Prospect View ↗" green accent. Subtler than Open latest. */
+  .btn-prospect-view { font-size: 11px; font-weight: 500; color: #71717a; background: transparent; border: 1px solid rgba(255,255,255,0.10); padding: 4px 10px; border-radius: 7px; cursor: pointer; font-family: inherit; white-space: nowrap; transition: all 100ms; }
+  .btn-prospect-view:hover { border-color: rgba(34,197,94,0.5); color: #86efac; background: rgba(34,197,94,0.06); }
   /* Status pill — used in child rows, more readable than a bare dot + word. */
   .status-pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 8px; border-radius: 11px; font-size: 11px; font-weight: 500; }
   .status-pill.pill-green { background: rgba(34,197,94,0.10);  border: 1px solid rgba(34,197,94,0.25);  color: #86efac; }
@@ -486,7 +490,7 @@
         <div style="width:110px;font-size:11px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:#3f3f46;">Rep</div>
         <div style="width:100px;font-size:11px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:#3f3f46;">Status</div>
         <div style="width:60px;text-align:right;font-size:11px;font-weight:600;letter-spacing:0.06em;text-transform:uppercase;color:#3f3f46;">Latest</div>
-        <div style="width:120px;"></div>
+        <div style="width:210px;"></div>
       </div>
 
       <div id="job-rows">
@@ -1643,6 +1647,7 @@ function _renderJobRow(job) {
 // its status, who owns it, and an Open arrow.
 function _renderChildJobRow(job) {
   var portalUrl     = job.portal_url || ('/?job=' + job.job_id);
+  var prospectUrl   = portalUrl;
   var editPortalUrl = portalUrl + (portalUrl.includes('?') ? '&' : '?') + 'edit=true';
   var jobId   = job.job_id || '';
   var repSlug = job.assigned_rep || '';
@@ -1661,6 +1666,7 @@ function _renderChildJobRow(job) {
     + '<div style="width:140px;flex-shrink:0;">'
     +   '<select class="row-rep-select" data-job-id="' + jobId + '" onclick="event.stopPropagation()" onchange="changeRowRep(this)" style="background:transparent;border:1px solid rgba(255,255,255,0.06);color:#a1a1aa;font-size:11px;padding:3px 6px;border-radius:6px;font-family:inherit;cursor:pointer;width:100%;">' + repOpts + '</select>'
     + '</div>'
+    + '<button class="btn-prospect-view" title="Open the prospect-facing view of this job in a new tab" onclick="event.stopPropagation();window.open(\'' + prospectUrl + '\',\'_blank\');">Prospect ↗</button>'
     + '<span style="color:#52525b;font-size:11px;flex-shrink:0;">Open →</span>'
     + '<button onclick="event.stopPropagation();deleteJob(\'' + jobId + '\',this)" title="Delete job" style="background:none;border:none;cursor:pointer;color:#52525b;padding:4px 6px;border-radius:4px;display:flex;align-items:center;flex-shrink:0;" onmouseover="this.style.color=\'#ef4444\'" onmouseout="this.style.color=\'#52525b\'">' + trashIcon + '</button>'
     + '</div>';
@@ -1675,6 +1681,9 @@ function _renderContactGroup(g) {
   // All groups collapsed by default. Rep expands to see history, or clicks
   // the Open latest button to jump straight to the most recent run.
   var latestPortal   = latest.portal_url || ('/?job=' + latest.job_id);
+  // Prospect view = portal URL without edit=true (matches the portal's own
+  // "Open Prospect View ↗" link). Rep edit view appends edit=true.
+  var latestProspect = latestPortal;
   var latestEditUrl  = latestPortal + (latestPortal.includes('?') ? '&' : '?') + 'edit=true';
   return '<div class="contact-group" data-email="' + g.email + '" data-rep="' + repSlug + '" data-name="' + name.toLowerCase() + '" data-company="' + company.toLowerCase() + '">'
     + '<div class="contact-row" onclick="toggleContactGroup(this.parentNode)">'
@@ -1689,7 +1698,8 @@ function _renderContactGroup(g) {
     +   '<div style="width:110px;font-size:11px;color:#71717a;">' + (_SALES_REPS_BY_SLUG[repSlug] && _SALES_REPS_BY_SLUG[repSlug].display_name || '—') + '</div>'
     +   '<div style="width:100px;display:flex;align-items:center;gap:6px;">' + statusDot(latest.status) + '</div>'
     +   '<div style="width:60px;text-align:right;font-size:12px;color:#52525b;">' + latestDate + '</div>'
-    +   '<div style="width:120px;display:flex;justify-content:flex-end;">'
+    +   '<div style="width:210px;display:flex;justify-content:flex-end;gap:6px;">'
+    +     '<button class="btn-prospect-view" title="Open the prospect-facing view of the latest job in a new tab" onclick="event.stopPropagation();window.open(\'' + latestProspect + '\',\'_blank\');">Prospect ↗</button>'
     +     '<button class="open-latest-btn" onclick="event.stopPropagation();window.open(\'' + latestEditUrl + '\',\'_blank\');">Open latest →</button>'
     +   '</div>'
     + '</div>'
