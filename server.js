@@ -686,8 +686,11 @@ async function loadActiveReps() {
   const fresh = _repCache.rows && (Date.now() - _repCache.fetchedAt < REP_CACHE_TTL);
   if (fresh) return _repCache.rows;
   try {
+    // SELECT * so any new columns (e.g. `email` for speaker matching in
+    // Fireflies transcripts) become available without a code redeploy —
+    // operators can add the column via Supabase UI and populate it.
     const r = await supabaseRequest('GET',
-      '/rest/v1/sales_reps?select=ghl_user_id,slug,display_name,active');
+      '/rest/v1/sales_reps?select=*');
     if (r.status === 200 && Array.isArray(r.body)) {
       _repCache = { rows: r.body, fetchedAt: Date.now() };
     } else {
@@ -711,6 +714,91 @@ async function getRepBySlug(slug) {
   if (!slug) return null;
   const rows = await loadActiveReps();
   return rows.find(r => r.active && r.slug === slug) || null;
+}
+
+// ── Speaker-role identification for Fireflies transcripts ─────────────────────
+// Returns a lowercased Set of known QS rep email addresses, used to tag each
+// transcript turn as [REP] or [PROSPECT] before the brief extractor sees it.
+// Two sources, merged:
+//   1. QS_REP_EMAILS env var (comma-separated) — zero-DB-touch fallback for
+//      ops to seed quickly without a schema change.
+//   2. sales_reps.email column (optional) — operators add it via Supabase UI;
+//      loadActiveReps() picks it up automatically because we SELECT *.
+async function getRepEmails() {
+  const out = new Set();
+  (process.env.QS_REP_EMAILS || '').split(',').forEach(e => {
+    const v = String(e || '').trim().toLowerCase();
+    if (v && v.includes('@')) out.add(v);
+  });
+  try {
+    const reps = await loadActiveReps();
+    reps.forEach(r => {
+      const fields = [r.email, r.work_email, r.primary_email];
+      fields.forEach(f => {
+        const v = String(f || '').trim().toLowerCase();
+        if (v && v.includes('@')) out.add(v);
+      });
+      // Aliases column (jsonb array or comma string) if operators set it up.
+      const aliases = Array.isArray(r.email_aliases)
+        ? r.email_aliases
+        : (typeof r.email_aliases === 'string' ? r.email_aliases.split(',') : []);
+      aliases.forEach(a => {
+        const v = String(a || '').trim().toLowerCase();
+        if (v && v.includes('@')) out.add(v);
+      });
+    });
+  } catch (_) { /* loadActiveReps already logs */ }
+  return out;
+}
+
+// Build a labeled transcript string from raw Fireflies sentences + attendees.
+// Each turn is prefixed [REP] / [PROSPECT] / [SPEAKER] based on speaker_name →
+// attendee.email → rep-email lookup. Falls back to plain "Name: text" when no
+// match is possible (so the extractor still gets the verbatim words).
+//
+// Why this matters: Call 1 transcripts are dominated by the rep pitching QS's
+// methodology. Without speaker labels, the extractor's strongest signal for
+// "result delivered" is often the rep's PITCH, not the prospect's actual
+// product — producing webinar copy that describes QS's offer instead of the
+// prospect's. Labels let the extract prompt source prospect-side fields from
+// [PROSPECT] turns only and treat [REP] turns as context.
+function _annotateTranscript(sentences, attendees, repEmailSet) {
+  if (!Array.isArray(sentences) || sentences.length === 0) return { text: '', labeled: false, counts: { rep: 0, prospect: 0, unknown: 0 } };
+  // Build name → email map from attendees (case-insensitive, whitespace-trimmed).
+  const nameToEmail = new Map();
+  const firstNameToEmail = new Map();
+  (attendees || []).forEach(a => {
+    const dn = String(a?.displayName || a?.display_name || '').trim().toLowerCase();
+    const em = String(a?.email || '').trim().toLowerCase();
+    if (!dn) return;
+    if (em) nameToEmail.set(dn, em);
+    const first = dn.split(/\s+/)[0];
+    if (first && em && !firstNameToEmail.has(first)) firstNameToEmail.set(first, em);
+  });
+  const reps = repEmailSet || new Set();
+  let rep = 0, prospect = 0, unknown = 0;
+  const classify = (speakerName) => {
+    const key = String(speakerName || '').trim().toLowerCase();
+    if (!key) { unknown++; return 'SPEAKER'; }
+    let email = nameToEmail.get(key);
+    if (!email) {
+      const first = key.split(/\s+/)[0];
+      email = firstNameToEmail.get(first);
+    }
+    if (!email) { unknown++; return 'SPEAKER'; }
+    if (reps.has(email)) { rep++; return 'REP'; }
+    prospect++;
+    return 'PROSPECT';
+  };
+  const lines = sentences
+    .filter(s => s && s.text && String(s.text).trim().length > 0)
+    .map(s => {
+      const role = classify(s.speaker_name);
+      const name = s.speaker_name || 'Speaker';
+      return `[${role}] ${name}: ${String(s.text).trim()}`;
+    });
+  const labeled = (rep + prospect) > 0;
+  return { text: lines.join('\n'), labeled, counts: { rep, prospect, unknown } };
 }
 
 function invalidateRepCache() { _repCache = { rows: null, fetchedAt: 0 }; }
@@ -1120,6 +1208,20 @@ Rules:
 - The PROSPECT is the CLIENT company being pitched to — NOT Quantum Scaling, NOT Lloyd Yip, NOT QS team.
 - For verbatim fields: copy exact words spoken. Do not paraphrase.
 - For apollo_titles: return ONLY real job titles (2-4 words each) that a person would hold on LinkedIn or a business card. These feed directly into an API search. Sentence fragments, role descriptions, and qualifiers are NEVER valid titles — infer the actual titles from the described role.
+
+SPEAKER LABELS (when the transcript header announces them):
+- [REP] = a Quantum Scaling sales rep (the SELLER, pitching their service to the prospect).
+- [PROSPECT] = the buyer being pitched (the prospect company, your subject).
+- [SPEAKER] = unknown role — could be either; treat as low-trust.
+
+If the transcript is labeled, these fields MUST be sourced ONLY from [PROSPECT] turns:
+- prospect.offer_description, prospect.offering_name
+- angle.pain, angle.result, angle.proof, angle.methodology
+- verbatim.pain_quote, verbatim.result_quote, verbatim.goal_quote
+- icp.role, icp.industry, icp.kpis, icp.apollo_titles, icp.company_size, icp.apollo_employee_ranges, icp.geography, icp.company_revenue
+- situation.current_lead_gen, situation.revenue_range, situation.team_size, situation.biggest_challenge
+
+CRITICAL: The [REP] is pitching THEIR service (webinar acquisition / lead-gen / "9-week onboarding" / "predictable pipeline" / "HubSpot integration" / "$1,400+ clients" / "$500M+ revenue"). NEVER let [REP] language describe the prospect's product, customers, pain, or results. If the only support for one of the fields above comes from [REP] turns, return null with _provenance "missing". Better an empty field than a contaminated one — the downstream copywriter can fall back to the website; it cannot recover from a brief that mistakes the rep's pitch for the prospect's business.
 
 Two narrow inference exceptions (everything else stays strict):
 1. prospect.contact_title — if the speaker is clearly the owner/operator (signals: "I built", "we built", "my team", "my company", "my $X/month", "I have a sales lead", "I run this") but never states a title verbatim, you MAY default to "Founder & Owner". Record this in _provenance as "inferred".
@@ -2160,13 +2262,32 @@ async function generateWebinarTitles(extracted, companyName, job = null, customI
   // Brief schema uses angle.pain/result; spec schema uses customer_pain/result_delivered — support both
   const pain   = extracted.customer_pain   || extracted.angle?.pain   || 'unpredictable client acquisition';
   const result = extracted.result_delivered || extracted.angle?.result || 'predictable revenue growth';
-  const cs     = extracted.case_study || null;
+  // Bridge angle.proof → case_study so the variant schema's proof_story field
+  // can populate even when the brief only filled angle.proof (which is the
+  // normal extractor output — case_study itself is never written upstream).
+  const cs = extracted.case_study || (
+    extracted.angle?.proof
+      ? { numbers: extracted.angle.proof, result: extracted.angle?.result || null, client_description: null }
+      : null
+  );
   const brand    = (job && job.brand_data)    || {};
-  const research = (job && job.research_data?.host) || {};
+  const research = (job && job.research_data?.host || {});
   const hostName = research.name || extracted.prospect?.name || null;
   const hostBio  = research.bio  || null;
   const tagline  = brand.tagline || null;
   const summary  = brand.website_summary ? brand.website_summary.slice(0, 400) : null;
+  // What the prospect actually sells — website-grounded, populated by the brief
+  // extractor from transcript + scraped site copy. This is the single strongest
+  // anchor against "QS-pitch contamination": when angle.result was polluted by
+  // the rep's pitch (cold outbound / pipeline / webinar acquisition), this field
+  // still describes the prospect's REAL product (e.g. "time-tracking and billing
+  // SaaS for service businesses"). Feed it to Claude verbatim near the top of
+  // the job context so the model anchors the webinar topic in the prospect's
+  // actual business, not the language the rep used during Call 1.
+  const offerDesc  = extracted.prospect?.offer_description
+                     || (brand.website_summary ? brand.website_summary.slice(0, 400) : null)
+                     || null;
+  const offerName  = extracted.prospect?.offering_name || null;
   // Pull richer brief fields for the accuracy-first generation prompt. These
   // drive the specificity hierarchy (Step 5 of webinar_titles_system.txt) so
   // verbatim language wins over generic industry assumptions.
@@ -2195,13 +2316,19 @@ async function generateWebinarTitles(extracted, companyName, job = null, customI
     // geography classification, and claim anchoring.
     const jobContext = [
       `- Host (company sending the invite): ${companyName}`,
+      // Anchor what the host ACTUALLY sells, BEFORE pain/result lines. This is
+      // the single strongest defense against the model writing a webinar about
+      // the sales rep's pitch instead of the prospect's real product. If
+      // offer_description is filled, the webinar topic MUST orbit it.
+      offerDesc ? `- *** WHAT THE HOST ACTUALLY SELLS (anchor the webinar topic here — this overrides any 'pain' or 'result' field that contradicts it): ${offerDesc}` : null,
+      offerName ? `- Host's product/methodology name: ${offerName}` : null,
       tagline    ? `- Host tagline: ${tagline}` : null,
       hostName   ? `- Host founder: ${hostName}${hostBio ? ' — ' + hostBio : ''}` : null,
-      `- Attendee (host's ICP — the reader): ${role}${size ? ' at ' + size + ' companies' : ''}${industry ? ' in ' + industry : ''}`,
+      `- Attendee (host's ICP — the reader of this calendar invite): ${role}${size ? ' at ' + size + ' companies' : ''}${industry ? ' in ' + industry : ''}`,
       apolloTitles.length ? `- Attendee titles (verbatim): ${apolloTitles.slice(0, 8).join(', ')}` : null,
       geo ? `- Geography: ${geo} → geography_class hint: ${geoClassHint}` : `- Geography: not specified → geography_class hint: other`,
-      `- Attendee's core pain: ${pain}`,
-      `- Attendee's desired outcome: ${result}`,
+      `- Attendee's core pain (the prospect's CUSTOMER pain — not the prospect's own marketing pain): ${pain}`,
+      `- Attendee's desired outcome (what the prospect's CUSTOMER wants): ${result}`,
       verbatim.pain_quote   ? `- VERBATIM PAIN QUOTE (use exact words where possible): "${verbatim.pain_quote}"` : null,
       verbatim.result_quote ? `- VERBATIM RESULT QUOTE: "${verbatim.result_quote}"` : null,
       verbatim.goal_quote   ? `- VERBATIM GOAL QUOTE (aspiration — NOT current state): "${verbatim.goal_quote}"` : null,
@@ -2210,7 +2337,11 @@ async function generateWebinarTitles(extracted, companyName, job = null, customI
       briefContext.goals         ? `- Attendee's stated goals (aspiration): ${briefContext.goals}` : null,
       cs?.numbers ? `- Client proof (use VERBATIM): ${cs.client_description || 'A client'} — ${cs.result || ''} (${cs.numbers})` : '- Client proof: none in brief → proof_story MUST be null in all variants',
       (extracted.webinar_angle || briefContext.why_webinar) ? `- Webinar angle / why this webinar: ${extracted.webinar_angle || briefContext.why_webinar}` : null,
-      summary ? `- Host website summary (positioning context, not for verbatim quoting): ${summary}` : null
+      summary ? `- Host website summary (positioning context, not for verbatim quoting): ${summary}` : null,
+      // Hard anti-pattern fence — written here (not just in the system prompt)
+      // because the strongest place to prevent contamination is right next to
+      // the prospect's actual offer description.
+      `- AUDIENCE FENCE: The reader of this invite is the PROSPECT'S CUSTOMER, not the prospect themselves. NEVER describe the host's product as "webinar acquisition", "lead-gen system", "pipeline management", "cold outbound replacement", "9-15 week onboarding", "HubSpot integration", "$500M+ revenue", or "1,400+ clients" — those phrases describe Quantum Scaling's pitch to the prospect, NOT what the prospect sells. If you find yourself writing them in the hook, bullets, or proof, you have inverted the audience and must rewrite using ONLY the "WHAT THE HOST ACTUALLY SELLS" line above.`
     ].filter(Boolean).join('\n');
     var brain = await loadCopyBrain();
     brainMeta = brain._meta;
@@ -3843,17 +3974,32 @@ const server = http.createServer(async (req, res) => {
             setProgress(id, { progress: 20, step: 'Loading transcript detail…' });
             const detail = await fetchTranscriptDetail(transcriptId);
             const s = (detail?.summary || candidate.summary) || {};
-            const rawSentences = ((detail || candidate).sentences || [])
+            // Tag each transcript turn as [REP] (QS rep speaking) vs [PROSPECT]
+            // (the buyer speaking) so the extractor can source prospect-side
+            // fields (offer_description, angle.pain, angle.result, verbatim
+            // quotes, ICP) ONLY from [PROSPECT] turns — otherwise the rep's
+            // pitch contaminates the brief and the downstream webinar copy
+            // ends up describing QS's offer instead of the prospect's.
+            const sentencesRaw = ((detail || candidate).sentences || []);
+            const attendees = (detail || candidate).meeting_attendees || [];
+            const repEmails = await getRepEmails();
+            const annotated = _annotateTranscript(sentencesRaw, attendees, repEmails);
+            const rawSentences = annotated.text || sentencesRaw
               .filter(x => x.text && x.text.trim().length > 0)
               .map(x => `${x.speaker_name || 'Speaker'}: ${x.text.trim()}`)
               .join('\n');
             const summaryParts = [s.shorthand_bullet, s.overview, s.short_summary, s.action_items].filter(Boolean).join('\n\n');
+            const labelLegend = annotated.labeled
+              ? `SPEAKER LABELS — turns are tagged: [REP]=Quantum Scaling sales rep (the seller), [PROSPECT]=the buyer being pitched, [SPEAKER]=unknown role.\n` +
+                `Rep emails matched: ${[...repEmails].slice(0, 4).join(', ') || '(none in env)'}; counts → rep:${annotated.counts.rep} prospect:${annotated.counts.prospect} unknown:${annotated.counts.unknown}.\n` +
+                `STRICT RULE: extract prospect-side fields (offer_description, angle.*, verbatim.*, icp.*, situation.*) ONLY from [PROSPECT] turns. Treat [REP] turns as PITCH CONTEXT only — never use them as the source of what the prospect's business does, who its customers are, or what its results are. If a field can only be supported by [REP] turns, return null with _provenance "missing".\n\n`
+              : '';
             const txContent = rawSentences
-              ? `VERBATIM TRANSCRIPT:\n${rawSentences.slice(0, 12000)}\n\nSUMMARY NOTES:\n${summaryParts.slice(0, 2000)}`
+              ? `${labelLegend}VERBATIM TRANSCRIPT:\n${rawSentences.slice(0, 12000)}\n\nSUMMARY NOTES:\n${summaryParts.slice(0, 2000)}`
               : summaryParts.slice(0, 14000);
 
             setProgress(id, { progress: 50, step: 'Extracting brief with Claude…' });
-            console.log(`[extract-brief ${id.slice(0,8)}] Claude context: ${txContent.length} chars (${rawSentences.length} verbatim)`);
+            console.log(`[extract-brief ${id.slice(0,8)}] Claude context: ${txContent.length} chars (${rawSentences.length} verbatim, labeled=${annotated.labeled} rep:${annotated.counts.rep} prospect:${annotated.counts.prospect})`);
             brief = await extractBriefFromTranscript(txContent, webBody, contactInfo);
             transcriptFound = true;
 

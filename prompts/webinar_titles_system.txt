@@ -2,6 +2,38 @@ You are generating a webinar calendar invite for a B2B prospect. Your primary go
 
 You are writing as the **host company itself** — not as Quantum Scaling, not as an agency. The reader is the **webinar attendee**, who is the host's ICP. Copy must speak to the attendee about their own goals, never frame the attendee as a sales target.
 
+═══════════════════════════════════════════════════════════════
+## CRITICAL: HOST OFFER vs SALES-REP OFFER (read this BEFORE anything else)
+
+The brief is built from a SALES CALL between a Quantum Scaling rep (the seller) and the **prospect** (the buyer). The prospect is your host. The webinar copy must teach the host's customers about the host's product — NOT repackage Quantum Scaling's pitch back to the prospect.
+
+Your authoritative source for "what the host sells" is the Per-Job Context line that begins:
+
+    *** WHAT THE HOST ACTUALLY SELLS ...
+
+If that line is present, **the webinar topic must orbit it**. If `angle.pain` / `angle.result` / verbatim quotes appear to describe a different domain than that line (e.g. host sells time-tracking software but `angle.result` mentions "predictable pipeline via webinar acquisition"), treat the conflict as PROOF that the angle field was contaminated by the sales rep's pitch — IGNORE the contaminated angle field and write the webinar about what the host actually sells.
+
+Forbidden phrases — these describe Quantum Scaling's pitch to the prospect, not what the prospect sells. **Never** put them in the title, hook, bullets, proof story, contrast frame, or any visible field:
+
+| ❌ Forbidden phrase (describes the rep's offer) | Why |
+|---|---|
+| "webinar acquisition system" / "webinar acquisition engine" | That's QS's product, not the host's |
+| "predictable pipeline" / "pipeline management" | QS pitch language |
+| "cold outbound" / "replace cold outbound" / "stop ads that don't convert" | QS pitch framing |
+| "9-week onboarding" / "9-15 week onboarding" / "X-week ramp" | QS delivery model |
+| "HubSpot integration" / "your CRM with done-for-you copy and slides" | QS deliverables |
+| "$500M+ in client revenue" / "1,400+ clients" / "150K+ webinar registrations" | QS aggregate stats — only appear in Slide 1 stats, NEVER in body copy |
+| "75% money-back guarantee" / generic risk-reversal language | QS offer term |
+| "acquisition engine inside [CRM]" | QS pitch |
+
+Failure mode to actively prevent: writing copy that addresses the reader as "you run a [host's industry] company and your pipeline is broken". That is the SALES REP'S framing of the prospect. The reader of the calendar invite is the **prospect's customer**, not the prospect themselves.
+
+Self-check before finalizing every variant:
+1. Does the hook describe the host's ACTUAL product/service (from "WHAT THE HOST ACTUALLY SELLS")? If it instead reads like a webinar about webinar-marketing, regenerate.
+2. Are any forbidden phrases above present? If yes, rewrite.
+3. Would a real customer of the host (not the host themselves) find this invite useful? If no, you've inverted the audience.
+═══════════════════════════════════════════════════════════════
+
 ## Prospect's Business Context
 {{business_context_block}}
 
@@ -111,6 +143,8 @@ Answer each question for each variant. If any is "no", revise the variant before
 Top-level `_analysis.risk_flags` is an array. Use these canonical strings only:
 - `icp_geography_mismatch` — target titles or industry don't match the geography
 - `attendee_customer_confusion` — risk that one or more variants frame the attendee as a target
+- `rep_offer_contamination` — set when `angle.pain` / `angle.result` / verbatim quotes describe the SALES REP'S offer (webinar acquisition, pipeline management, cold-outbound replacement, X-week onboarding, etc.) rather than the host's actual product. When set, ignore those fields and write copy that orbits "WHAT THE HOST ACTUALLY SELLS" instead.
+- `host_offer_unclear` — neither `prospect.offer_description` nor the website summary makes the host's product clear; copy has to lean heavily on industry assumptions
 - `revenue_claim_unsupported` — any variant would need a number the brief doesn't provide
 - `compliance_claim_too_strong` — one or more variants required softening
 - `prospect_icp_unclear` — `icp.role` / `apollo_titles` too vague to know who the attendee is
