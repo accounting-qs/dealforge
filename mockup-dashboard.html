@@ -31,14 +31,37 @@
   .contact-row { display: flex; align-items: center; padding: 14px 20px; cursor: pointer; transition: background 100ms; }
   .contact-row:hover { background: rgba(139,92,246,0.04); }
   .contact-row .chev { width: 14px; flex-shrink: 0; color: #52525b; transition: transform 120ms ease-out; display: inline-block; text-align: center; line-height: 1; }
-  .contact-group.open .contact-row .chev { transform: rotate(90deg); }
-  .contact-children { display: none; background: rgba(255,255,255,0.015); border-top: 1px solid rgba(255,255,255,0.04); }
+  .contact-group.open .contact-row .chev { transform: rotate(90deg); color: #a78bfa; }
+  .contact-children { display: none; background: rgba(139,92,246,0.025); border-top: 1px solid rgba(139,92,246,0.10); padding: 4px 0 6px 0; }
   .contact-group.open .contact-children { display: block; }
-  /* Child job rows: smaller, indented, subdued. They keep .job-row so filters
-     and per-row handlers continue to work without any JS changes. */
-  .contact-children .job-row { padding-left: 44px !important; padding-top: 11px !important; padding-bottom: 11px !important; }
-  .contact-children .job-row > div:first-child > div:first-child { font-size: 12.5px; color: #d4d4d8; }
+  /* Child job rows. Compact, tree-connected on the left so the hierarchy
+     is obvious without re-stating the contact's company/email. */
+  .contact-children .job-row {
+    position: relative;
+    padding: 9px 20px 9px 56px !important;
+    border-bottom: none !important;
+    font-size: 12px;
+  }
+  .contact-children .job-row:hover { background: rgba(139,92,246,0.06); }
+  /* Vertical rail down the children + horizontal stub into each row. */
+  .contact-children .job-row::before {
+    content: ''; position: absolute; left: 30px; top: 0; bottom: 50%;
+    border-left: 1px solid rgba(139,92,246,0.25);
+    border-bottom: 1px solid rgba(139,92,246,0.25);
+    width: 12px;
+    border-bottom-left-radius: 4px;
+  }
+  .contact-children .job-row:not(:last-child)::after {
+    content: ''; position: absolute; left: 30px; top: 50%; bottom: 0;
+    border-left: 1px solid rgba(139,92,246,0.25);
+  }
   .job-count-badge { font-size: 11px; font-weight: 500; color: #71717a; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.06); padding: 2px 7px; border-radius: 10px; margin-left: 8px; }
+  /* Status pill — used in child rows, more readable than a bare dot + word. */
+  .status-pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 8px; border-radius: 11px; font-size: 11px; font-weight: 500; }
+  .status-pill.pill-green { background: rgba(34,197,94,0.10);  border: 1px solid rgba(34,197,94,0.25);  color: #86efac; }
+  .status-pill.pill-amber { background: rgba(245,158,11,0.10); border: 1px solid rgba(245,158,11,0.25); color: #fcd34d; }
+  .status-pill.pill-red   { background: rgba(239,68,68,0.10);  border: 1px solid rgba(239,68,68,0.25);  color: #fca5a5; }
+  .status-pill.pill-purple{ background: rgba(139,92,246,0.10); border: 1px solid rgba(139,92,246,0.25); color: #c4b5fd; }
 
   .status-dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
   .dot-green { background: #22c55e; box-shadow: 0 0 6px rgba(34,197,94,0.5); }
@@ -1528,6 +1551,21 @@ function statusDot(status) {
   if (status === 'failed')    return '<span class="status-dot dot-red"></span><span style="font-size:12px;color:#71717a;">Failed</span>';
   return '<span class="status-dot dot-purple"></span><span style="font-size:12px;color:#71717a;">Processing</span>';
 }
+function statusPill(status) {
+  if (status === 'completed') return '<span class="status-pill pill-green"><span class="status-dot dot-green"></span>Complete</span>';
+  if (status === 'failed')    return '<span class="status-pill pill-red"><span class="status-dot dot-red"></span>Failed</span>';
+  if (status === 'needs_input') return '<span class="status-pill pill-amber"><span class="status-dot dot-amber"></span>Needs input</span>';
+  return '<span class="status-pill pill-purple"><span class="status-dot dot-purple"></span>Processing</span>';
+}
+// Date + time, e.g. "May 11 · 10:32".
+function _fmtDateTime(d) {
+  if (!d) return '';
+  var dt = new Date(d);
+  if (isNaN(dt)) return '';
+  var date = dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  var time = dt.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+  return date + ' · ' + time;
+}
 
 function deleteJob(jobId, btn) {
   if (!confirm('Delete this job? This cannot be undone.')) return;
@@ -1585,6 +1623,34 @@ function _renderJobRow(job) {
     + '<button onclick="event.stopPropagation();deleteJob(\'' + jobId + '\',this)" title="Delete job" style="background:none;border:none;cursor:pointer;color:#52525b;padding:4px 6px;margin-left:6px;border-radius:4px;display:flex;align-items:center;" onmouseover="this.style.color=\'#ef4444\'" onmouseout="this.style.color=\'#52525b\'">' + trashIcon + '</button>'
     + '</div>';
 }
+// Compact child row used inside an expanded contact group. Strips the
+// redundant company/email (already in the parent header) and shows just the
+// per-run fields the rep needs to choose between runs: when it happened,
+// its status, who owns it, and an Open arrow.
+function _renderChildJobRow(job) {
+  var portalUrl     = job.portal_url || ('/?job=' + job.job_id);
+  var editPortalUrl = portalUrl + (portalUrl.includes('?') ? '&' : '?') + 'edit=true';
+  var jobId   = job.job_id || '';
+  var repSlug = job.assigned_rep || '';
+  var dateStr = _fmtDateTime(job.created_at);
+  var name    = job.prospect_name || job.prospect_email || '';
+  var company = _fmtCompany(job);
+  var repOpts = '<option value="">—</option>'
+    + _SALES_REPS.map(function(r) {
+        return '<option value="' + r.slug + '"' + (r.slug === repSlug ? ' selected' : '') + '>' + r.display_name + '</option>';
+      }).join('');
+  return '<div class="row-item job-row" data-job-id="' + jobId + '" data-rep="' + repSlug + '" data-name="' + name.toLowerCase() + '" data-company="' + company.toLowerCase() + '" onclick="window.open(\'' + editPortalUrl + '\',\'_blank\')" style="display:flex;align-items:center;gap:12px;">'
+    + '<div style="flex:1;display:flex;align-items:center;gap:12px;min-width:0;">'
+    +   '<span style="color:#52525b;font-size:11px;flex-shrink:0;">' + dateStr + '</span>'
+    +   statusPill(job.status)
+    + '</div>'
+    + '<div style="width:140px;flex-shrink:0;">'
+    +   '<select class="row-rep-select" data-job-id="' + jobId + '" onclick="event.stopPropagation()" onchange="changeRowRep(this)" style="background:transparent;border:1px solid rgba(255,255,255,0.06);color:#a1a1aa;font-size:11px;padding:3px 6px;border-radius:6px;font-family:inherit;cursor:pointer;width:100%;">' + repOpts + '</select>'
+    + '</div>'
+    + '<span style="color:#52525b;font-size:11px;flex-shrink:0;">Open →</span>'
+    + '<button onclick="event.stopPropagation();deleteJob(\'' + jobId + '\',this)" title="Delete job" style="background:none;border:none;cursor:pointer;color:#52525b;padding:4px 6px;border-radius:4px;display:flex;align-items:center;flex-shrink:0;" onmouseover="this.style.color=\'#ef4444\'" onmouseout="this.style.color=\'#52525b\'">' + trashIcon + '</button>'
+    + '</div>';
+}
 function _renderContactGroup(g) {
   var latest      = g.jobs[0];
   var company     = _fmtCompany(latest);
@@ -1611,7 +1677,7 @@ function _renderContactGroup(g) {
     +   '<div style="width:30px;"></div>'
     + '</div>'
     + '<div class="contact-children">'
-    +   g.jobs.map(_renderJobRow).join('')
+    +   g.jobs.map(_renderChildJobRow).join('')
     + '</div>'
   + '</div>';
 }
