@@ -4264,6 +4264,10 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'pass ?email=…' })); return;
     }
+    // Always read sales_reps fresh on a diag hit. The 5-min cache otherwise
+    // hides table edits made in Supabase, which is exactly when we want to
+    // verify that an UPDATE landed.
+    invalidateRepCache();
     try {
       const contact = await lookupGHLContact(email);
       const oppOwner = contact?.id ? await lookupGHLOpportunityOwner(contact.id) : null;
