@@ -20,7 +20,6 @@ let WEBINAR_USER_TEMPLATE   = '';
 let WEBINAR_FALLBACK_FORMAT = '';
 let ROI_MODEL_TEMPLATE      = '';
 let CALENDAR_VISUAL_TEMPLATE = '';
-let WEBINAR_MOCK_TEMPLATE   = '';
 try {
   WEBINAR_SYSTEM_TEMPLATE  = fs.readFileSync(path.join(PROMPTS_DIR,   'webinar_titles_system.txt'), 'utf8');
   WEBINAR_USER_TEMPLATE    = fs.readFileSync(path.join(PROMPTS_DIR,   'webinar_titles_user.txt'),   'utf8');
@@ -30,8 +29,7 @@ try {
 try {
   ROI_MODEL_TEMPLATE       = fs.readFileSync(path.join(TEMPLATES_DIR, 'roi_model.html'),       'utf8');
   CALENDAR_VISUAL_TEMPLATE = fs.readFileSync(path.join(TEMPLATES_DIR, 'calendar_visual.html'), 'utf8');
-  WEBINAR_MOCK_TEMPLATE    = fs.readFileSync(path.join(TEMPLATES_DIR, 'webinar_mock.html'),    'utf8');
-  console.log('[Templates] Loaded roi_model, calendar_visual, webinar_mock');
+  console.log('[Templates] Loaded roi_model, calendar_visual');
 } catch(e) { console.warn('[Templates] Could not load HTML templates:', e.message); }
 
 // Lazy template loader. If the startup read above failed for any reason
@@ -2169,77 +2167,6 @@ Return this exact JSON:
   return extractJsonObject(raw);
 }
 
-// ── Webinar mock: live chat messages ─────────────────────────────────────────
-async function generateChatMessages(title, icp, customerPain, resultDelivered, hostName, companyName, geography, currentLeadGen, proofStory, customInstructions) {
-  const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-  const proofSnippet = (proofStory || '').slice(0, 240);
-  const customSnippet = (customInstructions || '').slice(0, 600);
-  const company = companyName || 'Your Company';
-  const fallback = `You are generating realistic live chat messages for a webinar. Return valid JSON only. No markdown.
-
-This webinar is hosted by "${company}" — a company branded for THEIR audience. Every message must read as if "${company}" is the entity running this room. NEVER use "QS", "QS Support", "Quantum Scaling", "Deal Forge", "Skarpe", or any other brand. The ONLY allowed support sender label is exactly: "${company} Support".
-
-Generate 18 live chat messages for this webinar:
-
-Webinar title: ${title}
-Prospect company hosting the webinar: ${company}
-Host (presenter on screen): ${hostName}
-Target audience role: ${icp?.role || 'business owners'}
-Target audience industry: ${icp?.industry || 'B2B'}
-Target audience geography: ${geography || 'global'}
-How they currently get clients: ${currentLeadGen || 'mixed channels'}
-Core problem they face: ${customerPain || 'growing their business'}
-Result they want: ${resultDelivered || 'more revenue'}
-Recent client outcome (for support-team booking messages): ${proofSnippet || 'n/a'}
-${customSnippet ? `\nRep override instructions (must be respected — they tell you how the rep wants this regenerated): ${customSnippet}\n` : ''}
-Voice & realism (CRITICAL):
-- Attendees are real people in "${icp?.role || 'business owners'}" roles at "${icp?.industry || 'B2B'}" companies, watching this webinar live RIGHT NOW as the slides play.
-- Write the way people actually type in live chats: short, casual, often lowercase, occasional typos or informal phrasing, no marketing-speak, no buzzwords, no hashtags.
-- Messages should be reactions and questions about the WEBINAR'S TOPIC — they are responding to what they are seeing/hearing on screen, not pitching themselves.
-- Mix curiosities, mild skepticism, brief agreement ("makes sense", "this is us"), questions about specifics, and short bits of their own situation in their industry.
-- NEVER reference Quantum Scaling, QS, Deal Forge, ROI models, lead lists, or any rep-tool. The audience does not know those exist.
-
-Chronological flow:
-- Messages 1-5 (early): brief greetings (where they're tuning in from), reactions to the hero/intro, who they are in one phrase.
-- Messages 6-13 (mid): specific questions about the topic + comments tying it back to their own ${icp?.industry || 'business'} situation + 1-2 messages echoing the "${currentLeadGen || 'mixed channels'}" lead-gen struggle in their own words.
-- Messages 14-18 (late): reactions to proof + booking activity from the support team.
-
-Requirements:
-- 14 attendee messages: realistic first names only (no last names), max 15 words each. Vary length — some 4-6 words, some up to 15.
-- 4 support team messages with sender EXACTLY "${company} Support": one welcomes attendees, one answers a common question (e.g. replay availability), and at least one or two celebrate an attendee by first name who just booked a call with ${company}. If the recent client outcome above contains real numbers, reference them naturally in one support message.
-- Output JSON only.
-
-Return:
-{"messages":[{"sender":"string — first name for attendees OR exactly '${company} Support' for team","text":"string — max 15 words","is_team":boolean,"timestamp":"string e.g. 12:14 PM"}]}`;
-  const promptText = await loadPromptFromDB('chat_messages', fallback);
-  let userContent = promptText
-    .replace(/\{\{webinar_title\}\}/g, title || '')
-    .replace(/\{\{icp_role\}\}/g, icp?.role || 'business owners')
-    .replace(/\{\{icp_industry\}\}/g, icp?.industry || 'B2B')
-    .replace(/\{\{icp_geography\}\}/g, geography || 'global')
-    .replace(/\{\{current_lead_gen\}\}/g, currentLeadGen || 'mixed channels')
-    .replace(/\{\{customer_pain\}\}/g, customerPain || 'growing their business')
-    .replace(/\{\{result_delivered\}\}/g, resultDelivered || 'more revenue')
-    .replace(/\{\{host_name\}\}/g, hostName || 'Your Host')
-    .replace(/\{\{company_name\}\}/g, company)
-    .replace(/\{\{proof_story\}\}/g, proofSnippet || 'n/a')
-    .replace(/\{\{custom_instructions\}\}/g, customSnippet || '');
-  // If the DB-stored prompt has no {{company_name}} placeholder, append a hard brand-anchor so the support sender is still re-branded correctly.
-  if (!/company_name/.test(promptText)) {
-    userContent += `\n\nBRAND ANCHOR (overrides anything above): the webinar is hosted by "${company}". The ONLY support sender label is exactly "${company} Support". Never use "QS Support", "Quantum Scaling", "Deal Forge", or any other brand.`;
-  }
-  // If the DB-stored prompt has no {{custom_instructions}} placeholder, append the override at the end so it still affects generation.
-  if (customSnippet && !/custom_instructions/.test(promptText)) {
-    userContent += `\n\nRep override instructions (must be respected): ${customSnippet}`;
-  }
-  const msg = await anthropic.messages.create({
-    model: 'claude-sonnet-4-6', max_tokens: 900, temperature: 0.7,
-    messages: [{ role: 'user', content: userContent }]
-  });
-  const raw = msg.content[0].text;
-  return extractJsonObject(raw);
-}
-
 // ── TASK HANDLERS ─────────────────────────────────────────────────────────────
 
 // ── Phase 3: Read approved calls from DB before hitting Fireflies API ────────
@@ -2951,223 +2878,6 @@ async function handleCalendarVisual(task, job) {
   };
 }
 
-// HEAD-check a candidate headshot URL. Returns the URL on 200, null otherwise.
-// 2s timeout — webinar_mock should never block on a slow image host.
-async function checkHeadshot(url) {
-  if (!url || typeof url !== 'string' || !url.startsWith('http')) return null;
-  try {
-    const r = await fetch(url, { method: 'HEAD', signal: AbortSignal.timeout(2000) });
-    if (!r.ok) return null;
-    const ct = r.headers.get('content-type') || '';
-    if (ct && !ct.startsWith('image/')) return null;
-    return url;
-  } catch { return null; }
-}
-
-// Build the Proof slide content from the richest available source.
-// Priority: webinar_titles.variants[0].proof_story → extracted.angle.proof + verbatim.result_quote.
-// Returns { show, heading, quote, attribution, methodology }. show=false → skip the slide.
-function deriveProof(proofStory, angle, verbatim) {
-  const methodology = (angle && angle.methodology) || '';
-  const firstSentence = (s) => {
-    if (!s) return '';
-    const m = String(s).match(/^[^.!?\n]+[.!?]?/);
-    return (m ? m[0] : String(s)).trim();
-  };
-  // Attribution regex: capture "Name → numbers" first occurrence in proof_story
-  const attribFromStory = (s) => {
-    if (!s) return '';
-    const m = String(s).match(/([A-Z][\w'.-]+(?:\s+[A-Z][\w'.-]+){0,3})\s*[→\-–—]\s*([^.→\n]+?(?:\d[^.→\n]*))/);
-    if (!m) return '';
-    return `${m[1].trim()} — ${m[2].trim().replace(/\s+/g, ' ')}`.slice(0, 120);
-  };
-
-  if (proofStory && String(proofStory).trim().length >= 20) {
-    const heading = firstSentence(proofStory) || 'Recent client outcome';
-    const attribution = attribFromStory(proofStory);
-    // Quote: full proof_story minus the attribution lead, truncated. Strip the leading "Name →" segment so it doesn't repeat.
-    let quote = String(proofStory).replace(/^[A-Z][\w'.-]+(?:\s+[A-Z][\w'.-]+){0,3}\s*[→\-–—]\s*/, '').trim();
-    if (quote.length > 220) quote = quote.slice(0, 217).replace(/\s+\S*$/, '') + '…';
-    return { show: true, heading, quote, attribution, methodology };
-  }
-
-  // Fallback: synthesize from angle.proof + verbatim.result_quote
-  const proof = (angle && angle.proof) || '';
-  const resultQuote = (verbatim && verbatim.result_quote) || '';
-  if (!proof && !resultQuote) return { show: false, heading: '', quote: '', attribution: '', methodology: '' };
-
-  const heading = firstSentence(proof || (angle && angle.result) || 'A recent client outcome');
-  const quote = (resultQuote && resultQuote.length >= 12)
-    ? `"${resultQuote.replace(/^["']|["']$/g, '').trim()}"`
-    : (proof ? proof.split(/(?<=[.!?])\s+/).slice(1, 3).join(' ').slice(0, 220) : '');
-  const attribution = attribFromStory(proof);
-  return { show: !!(heading && (quote || attribution)), heading, quote, attribution, methodology };
-}
-
-async function handleWebinarMock(task, job, customInstructions = '') {
-  // Fetch dependencies
-  const webinarTitlesTask = await getTaskOutput(job.id, 'webinar_titles');
-  if (!webinarTitlesTask || webinarTitlesTask.status !== 'completed') {
-    throw new Error('DEPS_PENDING: webinar_mock waiting for webinar_titles');
-  }
-  // calendar_blockers fallback — see handleCalendarVisual comment for rationale.
-  const titles = webinarTitlesTask.output_data?.variants
-              || webinarTitlesTask.output_data?.calendar_blockers
-              || webinarTitlesTask.output_data?.titles
-              || [];
-  const variant = titles[0];
-  if (!variant) throw new Error('webinar_mock: no title variant found');
-
-  const extracted = job.extracted_data || {};
-  const brandData  = job.brand_data   || {};
-  const research   = job.research_data?.host || {};
-  // Rep overrides — set per-job via the Asset Picker on the Webinar Experience
-  // tab. Each override (when non-empty) wins over the auto-selected default
-  // for its slot. Empty string / null means "fall back to default".
-  const overrides = extracted._overrides || {};
-
-  const esc = (s) => String(s || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-
-  const primaryColor   = brandData.primary_color   || '#0D9488';
-  const secondaryColor = brandData.secondary_color  || '#1F2937';
-  const accentColor    = brandData.accent_color    || brandData.primary_color || '#0D9488';
-  const brandFont      = brandData.font_family     || `-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif`;
-  const logoUrl        = overrides.webinar_logo_url    || brandData.logo_url    || '';
-  const tagline        = brandData.tagline          || '';
-  const companyName    = brandData.company_name     || extracted.prospect?.company || job.prospect_company || 'Your Company';
-  const hostName       = research.name              || extracted.prospect?.name    || companyName;
-  const hostTitle      = research.title             || 'Webinar Host';
-  const hostBio        = (research.bio || '').slice(0, 140);
-  // Headshot precedence: rep override → LinkedIn-scraped headshot (with HEAD-check).
-  // The override is trusted as-is (rep picked it from the gallery, no need to re-verify).
-  const hostHeadshot   = overrides.webinar_headshot_url || await checkHeadshot(research.headshot_url);
-  const forLine        = variant.for_line           || '';
-
-  // Hero image: rep override → first image typed 'hero' → first image in array.
-  // Sentinel `__brand_only__` means rep explicitly wants no hero (use a clean
-  // brand-color slide). Pass empty heroImageUrl in that case so the template
-  // gradient takes over without a competing background image.
-  const heroImage = (brandData.images || []).find(i => i.type === 'hero') || (brandData.images || [])[0];
-  const heroOverride = overrides.webinar_hero_image_url;
-  const brandOnlyHero = heroOverride === '__brand_only__';
-  const heroImageUrl = brandOnlyHero ? '' : (heroOverride || heroImage?.url || '');
-
-  // Proof slide derivation — uses already-extracted data only.
-  const proof = deriveProof(variant.proof_story, extracted.angle, extracted.verbatim);
-
-  // Generate chat messages via AI prompt
-  const chatResult = await generateChatMessages(
-    variant.title, extracted.icp,
-    extracted.customer_pain   || extracted.angle?.pain,
-    extracted.result_delivered || extracted.angle?.result,
-    hostName,
-    companyName,
-    extracted.icp?.geography || (extracted.icp?.apollo_geography || [])[0] || '',
-    extracted.situation?.current_lead_gen || '',
-    variant.proof_story || '',
-    customInstructions || ''
-  ).catch(e => { console.warn('[webinar_mock] chat gen failed:', e.message); return null; });
-  const messages = chatResult?.messages || [];
-
-  // Generate timestamps starting 12:05 PM, 30-90s apart
-  let startTime = 12 * 60 + 5;
-  const timedMessages = messages.map((m) => {
-    const t = startTime;
-    startTime += 30 + Math.floor(Math.random() * 60);
-    const h = Math.floor(t / 60) % 12 || 12;
-    const min = (t % 60).toString().padStart(2, '0');
-    const ampm = Math.floor(t / 60) >= 12 ? 'PM' : 'AM';
-    return { ...m, timestamp: `${h}:${min} ${ampm}` };
-  });
-
-  // Attendee count: realistic
-  const attendeeCount = 750 + Math.floor(Math.random() * 300);
-
-  if (!WEBINAR_MOCK_TEMPLATE) WEBINAR_MOCK_TEMPLATE = ensureTemplate('webinar_mock.html');
-  if (!WEBINAR_MOCK_TEMPLATE) throw new Error('webinar_mock.html template not loaded');
-
-  const slide1Title    = variant.title || '';
-  const slide1Subtitle = tagline || `How ${companyName} Grows Your Business`;
-  const slide2Title    = 'What You\'ll Learn Today';
-  const bulletsList    = (variant.bullets || ['Proven system for getting clients', 'Step-by-step framework', 'How to scale predictably']).slice(0, 4);
-
-  // Slide order: Hero (1) → Proof (2, conditional) → Agenda (3 or 2)
-  const maxSlides = proof.show ? 3 : 2;
-  const agendaSlideId = proof.show ? 3 : 2;
-
-  const apiBaseUrl = (process.env.APP_URL || 'https://deal-forge-production.up.railway.app').replace(/\/$/, '');
-
-  let htmlContent = interpolate(WEBINAR_MOCK_TEMPLATE, {
-    EVENT_TITLE:        esc(slide1Title),
-    SLIDE1_TITLE:       esc(slide1Title),
-    SLIDE1_SUBTITLE:    esc(slide1Subtitle),
-    SLIDE2_TITLE:       slide2Title,
-    BULLETS_JSON:       JSON.stringify(bulletsList),
-    COMPANY_NAME:       esc(companyName),
-    HOST_NAME:          esc(hostName),
-    HOST_TITLE:         esc(hostTitle),
-    HOST_BIO:           esc(hostBio),
-    HOST_HEADSHOT_URL:  hostHeadshot || '',
-    FOR_LINE:           esc(forLine),
-    TAGLINE:            esc(tagline),
-    PRIMARY_COLOR:      primaryColor,
-    SECONDARY_COLOR:    secondaryColor,
-    ACCENT_COLOR:       accentColor,
-    BRAND_FONT:         brandFont,
-    LOGO_URL:           logoUrl,
-    HERO_IMAGE_URL:     heroImageUrl,
-    ATTENDEE_COUNT:     attendeeCount,
-    MESSAGES_JSON:      JSON.stringify(timedMessages),
-    QS_STAT_1_VALUE:    '$500M+',
-    QS_STAT_1_LABEL:    'Client Revenue',
-    QS_STAT_2_VALUE:    '1,400+',
-    QS_STAT_2_LABEL:    'Clients Served',
-    QS_STAT_3_VALUE:    '150K+',
-    QS_STAT_3_LABEL:    'Webinar Registrations',
-    PROOF_HEADING:      esc(proof.heading),
-    PROOF_QUOTE:        esc(proof.quote),
-    PROOF_ATTRIBUTION:  esc(proof.attribution),
-    METHODOLOGY:        esc(proof.methodology),
-    MAX_SLIDES:         maxSlides,
-    AGENDA_SLIDE_ID:    agendaSlideId,
-    JOB_ID:             job.id,
-    API_BASE_URL:       apiBaseUrl,
-    LAST_INSTRUCTIONS:  esc(customInstructions || '')
-  });
-
-  // Resolve Mustache-style conditional blocks (logo, headshot, for-line, tagline, proof slide, methodology).
-  const applyBlock = (key, present) => {
-    const truthy = new RegExp(`\\{\\{#${key}\\}\\}([\\s\\S]*?)\\{\\{/${key}\\}\\}`, 'g');
-    const falsy  = new RegExp(`\\{\\{\\^${key}\\}\\}([\\s\\S]*?)\\{\\{/${key}\\}\\}`, 'g');
-    if (present) {
-      htmlContent = htmlContent.replace(truthy, '$1').replace(falsy, '');
-    } else {
-      htmlContent = htmlContent.replace(truthy, '').replace(falsy, '$1');
-    }
-  };
-  applyBlock('LOGO_URL',          !!logoUrl);
-  applyBlock('HOST_HEADSHOT_URL', !!hostHeadshot);
-  applyBlock('FOR_LINE',          !!forLine);
-  applyBlock('TAGLINE',           !!tagline);
-  applyBlock('SHOW_PROOF',        proof.show);
-  applyBlock('METHODOLOGY',       !!proof.methodology);
-
-  const storagePath = `${job.id}/webinar_mock.html`;
-  const publicUrl   = await storageUpload(storagePath, htmlContent);
-  console.log(`[webinar_mock] Uploaded: ${publicUrl} (font=${brandData.font_family||'fallback'}, headshot=${!!hostHeadshot}, proof=${proof.show})`);
-  // Store full generated data in output_data so portal can read it directly
-  return {
-    url:                  publicUrl,
-    title:                variant.title,
-    host_name:            hostName,
-    host_headshot_used:   !!hostHeadshot,
-    proof_slide_shown:    proof.show,
-    attendee_count:       attendeeCount,
-    custom_instructions:  customInstructions || '',
-    messages:             timedMessages   // ← portal reads this for live chat
-  };
-}
-
 // ── Stage orchestration — spawn new tasks when dependencies are met ───────────
 async function checkAndSpawnStageTasks(jobId) {
   const tasks = await getTasksByJobId(jobId);
@@ -3193,7 +2903,7 @@ async function checkAndSpawnStageTasks(jobId) {
   const prospectResearchTerminal = !byType['prospect_research'] || isTerminal(byType['prospect_research'].status);
 
   if (brandScrapeTerminal && webinarTitlesDone && prospectResearchTerminal) {
-    const stage3Types = ['calendar_visual', 'webinar_mock'];
+    const stage3Types = ['calendar_visual'];
     const toCreate = stage3Types.filter(t => !byType[t]);
     if (toCreate.length) {
       console.log(`[orchestrator] Spawning Stage 3 tasks: ${toCreate.join(', ')}`);
@@ -3254,7 +2964,6 @@ async function processNextTask() {
         case 'webinar_titles':    output = await handleWebinarTitles(task, job);     break;
         case 'roi_model':         output = await handleRoiModel(task, job);          break;
         case 'calendar_visual':   output = await handleCalendarVisual(task, job);    break;
-        case 'webinar_mock':      output = await handleWebinarMock(task, job);       break;
         default: throw new Error(`Unknown task type: ${task.task_type}`);
       }
 
@@ -3821,7 +3530,7 @@ const server = http.createServer(async (req, res) => {
       // - extract + prospect_research run now (re-extract with fresh transcript + LinkedIn)
       // - lead_list runs now (uses brief ICP which is already confirmed by rep)
       // - Stage 2 (brand_scrape, webinar_titles, roi_model) spawned by orchestrator when extract completes
-      // - Stage 3 (calendar_visual, webinar_mock) spawned when Stage 2 completes
+      // - Stage 3 (calendar_visual) spawned when Stage 2 completes
       await createTasks(job.id, ['extract', 'prospect_research', 'lead_list']);
 
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -3897,61 +3606,6 @@ const server = http.createServer(async (req, res) => {
       }));
     } catch(e) {
       console.error('[GET /api/jobs/:id]', e.message);
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: e.message }));
-    }
-    return;
-  }
-
-  // ── POST /api/webinar_mock/regenerate — re-run webinar_mock with custom prompt ───
-  // Called from the rep-mode toolbar in templates/webinar_mock.html. Re-uses the
-  // existing dependencies (brand_scrape / webinar_titles / prospect_research) — no
-  // upstream re-run. Overwrites the same Storage object so the URL stays stable.
-  if (req.method === 'POST' && urlPath === '/api/webinar_mock/regenerate') {
-    setCors(res);
-    try {
-      const body = await parseBody(req);
-      const jobId = body.job_id;
-      const customInstructions = (body.instructions || '').toString().slice(0, 600).trim();
-      if (!jobId) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'job_id is required' }));
-        return;
-      }
-      const job = await getJob(jobId);
-      if (!job) {
-        res.writeHead(404, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Job not found' }));
-        return;
-      }
-      const tasks = await getTasksByJobId(jobId);
-      const task = tasks.find(t => t.task_type === 'webinar_mock');
-      if (!task) {
-        res.writeHead(404, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'webinar_mock task not found for this job' }));
-        return;
-      }
-      console.log(`[POST /api/webinar_mock/regenerate] job=${jobId} instr=${customInstructions ? `"${customInstructions.slice(0,80)}"` : '(none)'}`);
-      const output = await handleWebinarMock(task, job, customInstructions);
-      await supabaseRequest('PATCH', `/rest/v1/tasks?id=eq.${task.id}`, {
-        output_data: output,
-        asset_url:   output.url,
-        status:      'completed',
-        error_message: null,
-        completed_at:  new Date().toISOString(),
-        updated_at:    new Date().toISOString()
-      });
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
-        url:                  output.url,
-        host_headshot_used:   output.host_headshot_used,
-        proof_slide_shown:    output.proof_slide_shown,
-        attendee_count:       output.attendee_count,
-        custom_instructions:  output.custom_instructions,
-        regenerated_at:       new Date().toISOString()
-      }));
-    } catch(e) {
-      console.error('[POST /api/webinar_mock/regenerate]', e.message);
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: e.message }));
     }
@@ -4034,7 +3688,7 @@ const server = http.createServer(async (req, res) => {
       });
       // Reset downstream tasks. Order doesn't matter — orchestrator handles deps.
       const tasks = await getTasksByJobId(jobId);
-      const toReset = ['brand_scrape','prospect_research','webinar_titles','calendar_visual','webinar_mock'];
+      const toReset = ['brand_scrape','prospect_research','webinar_titles','calendar_visual'];
       const resetIds = [];
       for (const t of tasks) {
         if (toReset.includes(t.task_type)) {
@@ -4072,7 +3726,7 @@ const server = http.createServer(async (req, res) => {
     const parts = urlPath.split('/');
     const jobId = parts[3];
     const asset = parts[5];
-    const allowed = { webinar_mock: 'webinar_mock.html', calendar_visual: 'calendar_visual.html', roi_model: 'roi_model.html' };
+    const allowed = { calendar_visual: 'calendar_visual.html', roi_model: 'roi_model.html' };
     const filename = allowed[asset];
     if (!filename) {
       res.writeHead(404, { 'Content-Type': 'text/plain' });
@@ -4832,12 +4486,12 @@ const server = http.createServer(async (req, res) => {
           }
           // 2) Cascade — reset downstream tasks that depend on webinar_titles so they
           // re-run with the fresh variants. Without this the rendered calendar HTML
-          // asset and the webinar mock stay frozen on the previous run's output, even
-          // though the variant text in the modal updates from the mirror. The worker
-          // picks up the reset rows within 3s because their dependency
-          // (webinar_titles) is now completed with new output.
-          await writeRerun({ status: 'running', progress: 92, message: 'Re-running calendar visual + webinar mock…' });
-          const downstreamTypes = ['calendar_visual', 'webinar_mock'];
+          // asset stays frozen on the previous run's output, even though the variant
+          // text in the modal updates from the mirror. The worker picks up the reset
+          // rows within 3s because their dependency (webinar_titles) is now completed
+          // with new output.
+          await writeRerun({ status: 'running', progress: 92, message: 'Re-running calendar visual…' });
+          const downstreamTypes = ['calendar_visual'];
           for (const t of downstreamTypes) {
             try {
               const r = await supabaseRequest(

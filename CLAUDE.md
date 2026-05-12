@@ -2,7 +2,7 @@
 
 ## What This Project Is
 
-Deal Forge is an AI-powered sales asset generation pipeline for Quantum Scaling. After a rep completes Call 1 (Business Audit), they trigger Deal Forge with the Fireflies meeting ID. An 8-task pipeline runs and generates custom prospect-specific assets before Call 2 — increasing show rates and close rates.
+Deal Forge is an AI-powered sales asset generation pipeline for Quantum Scaling. After a rep completes Call 1 (Business Audit), they trigger Deal Forge with the Fireflies meeting ID. A 7-task pipeline runs and generates custom prospect-specific assets before Call 2 — increasing show rates and close rates.
 
 ## Project State File
 
@@ -20,13 +20,13 @@ All phase tracking, decisions, milestones, and resume points live at:
 
 ## Architecture Overview
 
-**Pipeline: 8 tasks across 3 stages**
+**Pipeline: 7 tasks across 3 stages**
 
 | Stage | Tasks | Trigger |
 |-------|-------|---------|
-| Stage 1 | `extract` | Job created |
-| Stage 2 (parallel) | `brand_scrape`, `lead_list`, `webinar_titles`, `roi_model`, `email_sequence` | extract completes |
-| Stage 3 (parallel) | `calendar_visual`, `reg_page` | brand_scrape completes |
+| Stage 1 | `extract`, `prospect_research`, `lead_list` | Job created |
+| Stage 2 (parallel) | `brand_scrape`, `webinar_titles`, `roi_model` | extract completes |
+| Stage 3 | `calendar_visual` | brand_scrape + webinar_titles + prospect_research terminal |
 
 **Infrastructure:**
 - Railway project ID: `8839ef6c-015c-455e-a75a-8bb8f82c43a2`
@@ -45,21 +45,20 @@ All phase tracking, decisions, milestones, and resume points live at:
 
 See `project-control/project_state.json` → `resume_here` for exact re-entry point.
 
-As of last update: `/task-spec` in progress. `extract` fully specced. Working through remaining 7 tasks before UX design begins.
+As of last update: `/task-spec` in progress. `extract` fully specced. Working through remaining tasks before UX design begins.
 
 ## SPEC GATE — Non-Negotiable (Added after spec was ignored in build)
 
-All 8 pipeline tasks are FULLY SPECCED in `specs/`. The specs define exact input contracts, API calls, Claude prompts, output schemas, and error handling for every task. **Read all relevant spec files BEFORE writing any code.**
+All pipeline tasks are FULLY SPECCED in `specs/`. The specs define exact input contracts, API calls, Claude prompts, output schemas, and error handling for every task. **Read all relevant spec files BEFORE writing any code.**
 
 ```
 specs/extract.md          — Stage 1: Fireflies → extracted_data
 specs/prospect_research.md — Stage 1: LinkedIn/web → host bio
 specs/brand_scrape.md     — Stage 2: website → logo, colors
-specs/lead_list.md        — Stage 2: Apollo → ICP-classified leads
+specs/lead_list.md        — Stage 1: Apollo → ICP-classified leads
 specs/webinar_titles.md   — Stage 2: Claude Sonnet → 3 calendar copy variants
 specs/roi_model.md        — Stage 2: ROI projections
 specs/calendar_visual.md  — Stage 3: interactive calendar HTML
-specs/webinar_mock.md     — Stage 3: webinar experience
 ```
 
 **The spec is the implementation contract — not a reference to check after the fact.**
@@ -68,7 +67,7 @@ Implementing a feature without reading its spec is a critical failure. Do not do
 ## Rules
 
 - **SPEC GATE: Read all spec files in specs/ before writing any backend code**
-- **No UX work until `/task-spec` is complete for all 8 tasks**
+- **No UX work until `/task-spec` is complete for all tasks**
 - **No task code until its 11-section spec is signed off**
 - **Run `/schema-review` before any migration**
 - **Run `/api-isolation` before writing any API handler**

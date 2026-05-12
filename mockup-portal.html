@@ -195,9 +195,6 @@ html[data-mode="prospect"] .rep-only { display: none !important; }
 .attendee-count { font-size: 12px; color: #71717a; }
 .webinar-body { display: flex; flex: 1; min-height: 0; }
 .slide-area { flex: 1; padding: 24px; display: flex; flex-direction: column; }
-.slide-nav { display: flex; gap: 8px; margin-bottom: 16px; }
-.slide-dot { width: 8px; height: 8px; border-radius: 50%; background: rgba(255,255,255,0.15); cursor: pointer; transition: background 100ms; }
-.slide-dot.active { background: #34d399; }
 .slide { display: none; flex: 1; border-radius: 14px; overflow: hidden; min-height: 380px; }
 .slide.active { display: flex; }
 
@@ -416,25 +413,6 @@ html[data-mode="prospect"] .rep-only { display: none !important; }
 .stat-item { text-align: right; }
 .stat-value { font-size: 16px; font-weight: 700; color: #ffffff; letter-spacing: -0.01em; }
 .stat-label { font-size: 10px; color: #a1a1aa; font-weight: 500; text-transform: uppercase; letter-spacing: 0.05em; margin-top: 2px; }
-
-/* Slide 2: Client results — real data */
-.slide-2 {
-  background: linear-gradient(160deg, #050a0a 0%, #071510 100%);
-  flex-direction: column;
-  padding: 40px 52px;
-  position: relative;
-}
-.slide-2-eyebrow { font-size: 11px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--prospect-primary, #34d399); margin-bottom: 10px; }
-.slide-2-heading { font-size: 22px; font-weight: 700; color: #ffffff; letter-spacing: -0.02em; margin-bottom: 28px; }
-.result-cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-bottom: 20px; }
-.result-card { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; padding: 16px; }
-.result-arrow { font-size: 20px; font-weight: 700; color: var(--prospect-primary, #34d399); margin-bottom: 8px; }
-.result-numbers { font-size: 13px; font-weight: 700; color: #ffffff; margin-bottom: 4px; line-height: 1.3; }
-.result-name { font-size: 11px; color: #71717a; }
-.result-detail { font-size: 11px; color: #52525b; margin-top: 6px; line-height: 1.4; }
-.slide-2-avg { display: flex; gap: 32px; padding-top: 16px; border-top: 1px solid rgba(255,255,255,0.06); }
-.avg-item { font-size: 12px; color: #a1a1aa; }
-.avg-item strong { color: var(--prospect-primary, #34d399); }
 
 /* Chat panel */
 .chat-panel { width: 280px; border-left: 1px solid rgba(255,255,255,0.06); background: #0e0e16; display: flex; flex-direction: column; height: 100%; }
@@ -969,14 +947,6 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
 <!-- TAB 3: WEBINAR EXPERIENCE      -->
 <!-- ═══════════════════════════════ -->
 <div class="tab-content" id="tab-2">
-  <!-- Regenerate row — rep-only (edit mode) -->
-  <div id="webinar-regen-row" style="display:none;max-width:1280px;margin:0 auto 14px;padding:10px 14px;background:rgba(34,197,94,0.06);border:1px solid rgba(34,197,94,0.18);border-radius:8px;align-items:center;gap:10px;font-size:13px;">
-    <span style="font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#86efac;flex-shrink:0;">Rep only</span>
-    <input id="webinar-regen-input" type="text" maxlength="600" placeholder="How should this regenerate? e.g. 'Make the chat skew more enterprise, less chatty'" style="flex:1;background:rgba(0,0,0,0.3);border:1px solid rgba(255,255,255,0.08);border-radius:6px;padding:8px 12px;font-size:13px;color:#e2e8f0;outline:none;font-family:inherit;">
-    <button id="webinar-regen-btn" onclick="regenerateWebinarMock()" style="background:#22c55e;border:none;border-radius:6px;color:#052e16;font-size:13px;font-weight:600;padding:8px 16px;cursor:pointer;flex-shrink:0;">↻ Regenerate</button>
-    <span id="webinar-regen-status" style="font-size:11px;color:#94a3b8;min-width:120px;text-align:right;"></span>
-  </div>
-
   <div class="webinar-wrap">
     <div class="webinar-top-bar">
       <div style="display:flex;align-items:center;gap:16px;">
@@ -995,11 +965,6 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
 
     <div class="webinar-body">
       <div class="slide-area">
-        <div class="slide-nav">
-          <div class="slide-dot active" onclick="switchSlide(0)"></div>
-          <div class="slide-dot" onclick="switchSlide(1)"></div>
-        </div>
-
         <!-- Slide 1: Hero with real QS brand -->
         <div class="slide active" id="slide-0">
           <div class="slide-1" id="slide-1-el" style="flex:1;display:flex;flex-direction:column;">
@@ -1040,38 +1005,6 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
           </div>
         </div>
 
-        <!-- Slide 2: Real client results -->
-        <div class="slide" id="slide-1">
-          <div class="slide-2" style="flex:1;">
-            <div class="slide-2-eyebrow">Proven Results</div>
-            <div class="slide-2-heading">What Clients Have Built With This System</div>
-            <div class="result-cards">
-              <div class="result-card">
-                <div class="result-arrow">4×</div>
-                <div class="result-numbers">$500K → $2M ARR</div>
-                <div class="result-name">Brooks Golden</div>
-                <div class="result-detail">4X revenue in first month · 90% cost reduction vs. prior marketing</div>
-              </div>
-              <div class="result-card">
-                <div class="result-arrow">27×</div>
-                <div class="result-numbers">$36K → $1M ARR</div>
-                <div class="result-name">Tejas Parikh</div>
-                <div class="result-detail">Four $100K deals closed in first 6 months of the program</div>
-              </div>
-              <div class="result-card">
-                <div class="result-arrow">3×</div>
-                <div class="result-numbers">€300K → €900K ARR</div>
-                <div class="result-name">Felix Petzel</div>
-                <div class="result-detail">14X pipeline growth · 95% reduction in customer acquisition cost</div>
-              </div>
-            </div>
-            <div class="slide-2-avg">
-              <div class="avg-item">Average outcome: <strong>2–5X revenue growth</strong> in 12 months</div>
-              <div class="avg-item">Average ROI: <strong>5–175X</strong> on marketing spend</div>
-              <div class="avg-item"><strong>1,400+ clients</strong> across 12 industries</div>
-            </div>
-          </div>
-        </div>
       </div>
 
       <!-- Live Chat -->
@@ -1648,7 +1581,7 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
     <div style="background:rgba(34,197,94,0.06);border:1px solid rgba(34,197,94,0.18);border-radius:10px;padding:18px 20px;margin-bottom:16px;">
       <div style="font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#86efac;">Rep only · Edit mode</div>
       <h2 style="font-size:20px;font-weight:600;color:#e4e4e7;margin:6px 0 6px;">Prospect Information</h2>
-      <p style="font-size:13px;color:#94a3b8;margin:0;line-height:1.5;">All fields from the job-creation brief, editable. <strong style="color:#e4e4e7">Save</strong> persists changes without re-running anything. <strong style="color:#e4e4e7">Save &amp; Regenerate Job</strong> re-runs <code style="color:#a1a1aa;background:rgba(0,0,0,0.3);padding:1px 5px;border-radius:3px;">brand_scrape</code>, <code style="color:#a1a1aa;background:rgba(0,0,0,0.3);padding:1px 5px;border-radius:3px;">prospect_research</code>, <code style="color:#a1a1aa;background:rgba(0,0,0,0.3);padding:1px 5px;border-radius:3px;">webinar_titles</code>, <code style="color:#a1a1aa;background:rgba(0,0,0,0.3);padding:1px 5px;border-radius:3px;">calendar_visual</code>, <code style="color:#a1a1aa;background:rgba(0,0,0,0.3);padding:1px 5px;border-radius:3px;">webinar_mock</code>.</p>
+      <p style="font-size:13px;color:#94a3b8;margin:0;line-height:1.5;">All fields from the job-creation brief, editable. <strong style="color:#e4e4e7">Save</strong> persists changes without re-running anything. <strong style="color:#e4e4e7">Save &amp; Regenerate Job</strong> re-runs <code style="color:#a1a1aa;background:rgba(0,0,0,0.3);padding:1px 5px;border-radius:3px;">brand_scrape</code>, <code style="color:#a1a1aa;background:rgba(0,0,0,0.3);padding:1px 5px;border-radius:3px;">prospect_research</code>, <code style="color:#a1a1aa;background:rgba(0,0,0,0.3);padding:1px 5px;border-radius:3px;">webinar_titles</code>, <code style="color:#a1a1aa;background:rgba(0,0,0,0.3);padding:1px 5px;border-radius:3px;">calendar_visual</code>.</p>
     </div>
 
     <form id="prospect-info-form" onsubmit="event.preventDefault();return false;">
@@ -1695,7 +1628,7 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
       <!-- ── Angle ── -->
       <div class="pi-section">
         <div class="pi-section-title">Angle</div>
-        <div class="pi-section-sub">The pain → result narrative. Drives <code>webinar_titles</code> and webinar mock proof slide.</div>
+        <div class="pi-section-sub">The pain → result narrative. Drives <code>webinar_titles</code>.</div>
         <div class="pi-grid cols-1">
           <label class="pi-label"><span>Customer pain (4–6 sentences)</span><textarea id="pi-pain" class="pi-textarea" data-brief="angle.pain" rows="3" placeholder="The deep emotional frustration their clients experience…"></textarea></label>
           <label class="pi-label"><span>Result delivered (3–5 sentences)</span><textarea id="pi-result" class="pi-textarea" data-brief="angle.result" rows="3" placeholder="The concrete before/after transformation…"></textarea></label>
@@ -1801,12 +1734,6 @@ function switchTab(i) {
   var ob  = document.getElementById('tab-onboarding');
   if (roi && ob && roi.parentNode) roi.parentNode.insertBefore(ob, roi);
 })();
-
-// ── Slide switching ──
-function switchSlide(i) {
-  document.querySelectorAll('.slide').forEach((s,j) => s.classList.toggle('active', i===j));
-  document.querySelectorAll('.slide-dot').forEach((d,j) => d.classList.toggle('active', i===j));
-}
 
 /* ═══════════════════════════════════════════════════════════════════════════
    PERSONA POOLS — DO NOT MIX. Single source of truth. Never cross-reference.
@@ -2303,10 +2230,12 @@ function applyProspectBranding(brandData) {
   // override re-renders without a full pipeline run.
   const _ov = (typeof SESSION !== 'undefined' && SESSION?.extracted?._overrides) || {};
 
-  // 4. Hero image — rep override (URL or '__brand_only__' sentinel) → auto-picked hero → first image
-  const autoHero = brandData?.images?.find(img => img.type === 'hero') || brandData?.images?.[0];
-  const brandOnly = _ov.webinar_hero_image_url === '__brand_only__';
-  const heroUrl  = brandOnly ? '' : (_ov.webinar_hero_image_url || autoHero?.url || '');
+  // 4. Hero image — brand-colors gradient is the default. Rep can opt in to an
+  // image via the asset picker (URL override). The `__brand_only__` sentinel is
+  // retained as an explicit "reset to default" choice from the picker.
+  const heroOverride = _ov.webinar_hero_image_url;
+  const brandOnly = !heroOverride || heroOverride === '__brand_only__';
+  const heroUrl  = brandOnly ? '' : heroOverride;
   const slideEl = document.getElementById('slide-1-el');
   const overlayEl = document.getElementById('slide-1-overlay');
   if (brandOnly && slideEl) {
@@ -2388,8 +2317,7 @@ function showAssetButton(anchorId, url, label) {
   // Find the right container to attach asset links
   const targets = {
     'roi-asset-btn':           '.roi-section, .roi-calculator, [data-section="roi"]',
-    'calendar-asset-btn':      '.cal-section, .calendar-event, [data-section="calendar"]',
-    'webinar-mock-asset-btn':  '.webinar-section, .webinar-mock, [data-section="webinar"]'
+    'calendar-asset-btn':      '.cal-section, .calendar-event, [data-section="calendar"]'
   };
   const selector = targets[anchorId];
   const container = selector ? document.querySelector(selector) : null;
@@ -2431,10 +2359,8 @@ function buildCompatSession(job) {
     // AI-generated copy from Stage 3 tasks — portal reads these instead of hardcoded strings
     calendarEmails:       tasks.calendar_visual?.output?.emails || existingGen.calendarEmails || null,
     calendarTitle:        tasks.calendar_visual?.output?.title  || existingGen.calendarTitle  || null,
-    chatMessages:         tasks.webinar_mock?.output?.messages  || existingGen.chatMessages   || null,
-    webinarAttendeeCount: tasks.webinar_mock?.output?.attendee_count || existingGen.webinarAttendeeCount || null,
   }, ext._overrides);
-  
+
   return {
     email:      job.prospect_email || '',
     domain:     normalizeDomain(job.prospect_website || ''),
@@ -2443,14 +2369,6 @@ function buildCompatSession(job) {
     transcript: meta.transcript || { found: false },
     website:    meta.website    || { domain: job.prospect_website, scraped: false },
     extracted:  ext,
-    // webinarMockUrl points at our backend proxy, NOT the raw Supabase Storage
-    // URL — Supabase forces text/plain on public-bucket files (stored-XSS guard)
-    // with X-Content-Type-Options: nosniff, so opening the storage URL directly
-    // shows source code instead of a rendered page. The proxy re-serves with
-    // text/html. Null when the task hasn't completed or job id is missing.
-    webinarMockUrl:    (job.job_id && tasks.webinar_mock && tasks.webinar_mock.status === 'completed')
-                        ? `/api/jobs/${encodeURIComponent(job.job_id)}/assets/webinar_mock`
-                        : null,
     prospectInfo: {
       email:        job.prospect_email || '',
       name:         job.prospect_name || '',
@@ -2647,7 +2565,6 @@ function wireROIEditMode() {
       .override-input { background:#1e293b!important;color:#f1f5f9!important;border:1px solid #86efac!important;border-radius:6px!important;padding:4px 8px!important;font-size:inherit!important;width:auto!important;min-width:80px; }
     `;
     document.head.appendChild(style);
-    if (typeof _initWebinarRegenRow === 'function') _initWebinarRegenRow();
     if (typeof _initWebinarAssetPicker === 'function') _initWebinarAssetPicker();
     // Reveal Prospect Infos tab + Brand Gallery panel at page-load so they appear
     // for the rep even if runPersonalization fails mid-flight (the form/panel content
@@ -2747,10 +2664,6 @@ function wireROIEditMode() {
       if (!assetsChecked['cal'] && tasks.calendar_visual && tasks.calendar_visual.asset_url) {
         assetsChecked['cal'] = true;
         showAssetButton('calendar-asset-btn', tasks.calendar_visual.asset_url, 'Open Calendar Preview');
-      }
-      if (!assetsChecked['mock'] && tasks.webinar_mock && tasks.webinar_mock.asset_url) {
-        assetsChecked['mock'] = true;
-        showAssetButton('webinar-mock-asset-btn', tasks.webinar_mock.asset_url, 'Open Webinar Preview');
       }
 
       // Keep polling until job terminal AND lead_list has settled
@@ -3207,26 +3120,6 @@ function runPersonalization(session) {
       tryHeadshot();
     }
 
-    // ── "View personalized webinar" button — links to the standalone HTML asset ──
-    if (session.webinarMockUrl) {
-      let viewBtn = document.getElementById('view-personalized-webinar-btn');
-      if (!viewBtn) {
-        const topBar = document.querySelector('#tab-2 .webinar-top-bar');
-        if (topBar) {
-          viewBtn = document.createElement('a');
-          viewBtn.id = 'view-personalized-webinar-btn';
-          viewBtn.target = '_blank';
-          viewBtn.rel = 'noopener';
-          viewBtn.style.cssText = 'display:inline-flex;align-items:center;gap:6px;padding:5px 12px;background:rgba(167,139,250,0.12);border:1px solid rgba(167,139,250,0.3);border-radius:6px;color:#c4b5fd;font-size:11px;font-weight:600;text-decoration:none;margin-left:10px;';
-          viewBtn.innerHTML = '↗ View personalized webinar';
-          // Append to the right side of the top bar where the "Webinar Series · Prepared for X" badges live
-          const rightSlot = topBar.querySelector('div:last-child');
-          (rightSlot || topBar).appendChild(viewBtn);
-        }
-      }
-      if (viewBtn) viewBtn.href = session.webinarMockUrl;
-    }
-
     const seriesLabel = document.getElementById('webinar-series-label');
     if (seriesLabel) seriesLabel.textContent = hostCompany ? hostCompany + ' · Webinar' : 'Webinar Series';
 
@@ -3450,54 +3343,41 @@ function runPersonalization(session) {
       kpiLine.innerHTML = '→ These are the <strong>' + icpRoleShort + 's</strong> you could be helping improve their <strong>' + kpiText + '</strong>.';
     }
 
-    // ── Live chat personalization — use AI-generated messages from webinar_mock task ─────────────
+    // ── Live chat — contextual messages built from ICP data ─────────────
     _safe('chat-panel', function() {
     const chatPanel = document.querySelector('.chat-messages');
     if (chatPanel) {
-      const aiMessages = gen.chatMessages; // array of {sender, text, is_team, timestamp} from handleWebinarMock
-      if (aiMessages && aiMessages.length > 0) {
-        // Render AI-generated messages directly
-        chatPanel.innerHTML = aiMessages.map(function(m) {
-          var cls = 'chat-msg' + (m.booking ? ' chat-booking' : '');
-          var nameCls = 'chat-name' + (m.is_team ? ' support' : '');
-          var nameText = m.is_team ? (companyName + ' Team') : m.sender;
-          var timeHtml = m.timestamp ? '<div class="chat-time">' + m.timestamp + '</div>' : '';
-          return '<div class="' + cls + '"><div class="' + nameCls + '">' + nameText + '</div><div class="chat-text">' + m.text + '</div>' + timeHtml + '</div>';
-        }).join('');
-      } else {
-        // Fallback: build contextual messages from ICP data (no hardcoded copy)
-        const icpIndustry2 = icp.industry || 'your industry';
-        const icpRole2 = icp.role || 'decision-makers';
-        const chatKpis = Array.isArray(icp.kpis) && icp.kpis.length ? icp.kpis : null;
-        const chatVol = MONTHLY_INVITES >= 1000 ? Math.round(MONTHLY_INVITES / 1000) + 'K' : MONTHLY_INVITES.toLocaleString();
-        const kpi1 = chatKpis ? chatKpis[0] : 'revenue growth';
-        const kpi2 = chatKpis && chatKpis[1] ? chatKpis[1] : 'client acquisition';
-        const painRef = (ext.customer_pain || ext.angle?.pain || '').split('.')[0] || 'growing manually';
+      const icpIndustry2 = icp.industry || 'your industry';
+      const icpRole2 = icp.role || 'decision-makers';
+      const chatKpis = Array.isArray(icp.kpis) && icp.kpis.length ? icp.kpis : null;
+      const chatVol = MONTHLY_INVITES >= 1000 ? Math.round(MONTHLY_INVITES / 1000) + 'K' : MONTHLY_INVITES.toLocaleString();
+      const kpi1 = chatKpis ? chatKpis[0] : 'revenue growth';
+      const kpi2 = chatKpis && chatKpis[1] ? chatKpis[1] : 'client acquisition';
+      const painRef = (ext.customer_pain || ext.angle?.pain || '').split('.')[0] || 'growing manually';
 
-        const chatMsgs = [
-          { name: 'Jordan M.', text: 'Finally a system built specifically for ' + icpIndustry2 + ' — been looking for this' },
-          { name: 'Alicia F.', text: 'How long until we see the first qualified calls from the ' + icpRole2 + ' targeting?' },
-          { name: null, support: true, text: 'Alicia — typically first calls in weeks 3–4 of the campaign. ' + companyName + ' will walk through the ramp in the funnel section' },
-          { name: 'Derek O.', text: painRef.charAt(0).toUpperCase() + painRef.slice(1) + ' — this is the system I\'ve been waiting for' },
-          { name: 'Simone L.', text: 'Our clients are asking about ' + kpi1 + ' — does this target ' + icpRole2 + ' specifically?' },
-          { name: null, support: true, text: 'Simone — yes, targeting is built around ' + icpIndustry2 + ' decision-makers. ' + kpi1 + ' framing is part of the webinar positioning' },
-          { name: 'Tyler B.', text: 'The automation piece is critical — our outreach to ' + icpRole2 + ' is completely manual right now' },
-          { name: 'Priya M.', text: 'Is there a replay? Our partners want to see this but have a conflict' },
-          { name: null, support: true, text: 'Yes — replay goes out within 24 hours to all registered attendees' },
-          { name: 'Marcus W.', text: 'Most excited about the ROI model — what does ' + chatVol + ' outreaches mean for ' + kpi2 + ' specifically?' },
-          { name: null, support: true, booking: true, text: '🎉 Nadia C. just booked a strategy call — looking forward to walking through your ' + icpIndustry2 + ' funnel!' },
-          { name: 'Ryan C.', text: 'This feels like exactly the system we\'ve been missing to scale past ' + kpi1 },
-          { name: null, support: true, booking: true, text: '✅ Sophie W. — call confirmed! Looking forward to mapping this to your specific ' + icpIndustry2 + ' setup' },
-          { name: 'James O.', text: chatVol + ' automated outreaches targeting ' + icpRole2 + ' — didn\'t know this was possible at this scale' },
-        ];
+      const chatMsgs = [
+        { name: 'Jordan M.', text: 'Finally a system built specifically for ' + icpIndustry2 + ' — been looking for this' },
+        { name: 'Alicia F.', text: 'How long until we see the first qualified calls from the ' + icpRole2 + ' targeting?' },
+        { name: null, support: true, text: 'Alicia — typically first calls in weeks 3–4 of the campaign. ' + companyName + ' will walk through the ramp in the funnel section' },
+        { name: 'Derek O.', text: painRef.charAt(0).toUpperCase() + painRef.slice(1) + ' — this is the system I\'ve been waiting for' },
+        { name: 'Simone L.', text: 'Our clients are asking about ' + kpi1 + ' — does this target ' + icpRole2 + ' specifically?' },
+        { name: null, support: true, text: 'Simone — yes, targeting is built around ' + icpIndustry2 + ' decision-makers. ' + kpi1 + ' framing is part of the webinar positioning' },
+        { name: 'Tyler B.', text: 'The automation piece is critical — our outreach to ' + icpRole2 + ' is completely manual right now' },
+        { name: 'Priya M.', text: 'Is there a replay? Our partners want to see this but have a conflict' },
+        { name: null, support: true, text: 'Yes — replay goes out within 24 hours to all registered attendees' },
+        { name: 'Marcus W.', text: 'Most excited about the ROI model — what does ' + chatVol + ' outreaches mean for ' + kpi2 + ' specifically?' },
+        { name: null, support: true, booking: true, text: '🎉 Nadia C. just booked a strategy call — looking forward to walking through your ' + icpIndustry2 + ' funnel!' },
+        { name: 'Ryan C.', text: 'This feels like exactly the system we\'ve been missing to scale past ' + kpi1 },
+        { name: null, support: true, booking: true, text: '✅ Sophie W. — call confirmed! Looking forward to mapping this to your specific ' + icpIndustry2 + ' setup' },
+        { name: 'James O.', text: chatVol + ' automated outreaches targeting ' + icpRole2 + ' — didn\'t know this was possible at this scale' },
+      ];
 
-        chatPanel.innerHTML = chatMsgs.map(function(m) {
-          var cls = 'chat-msg' + (m.booking ? ' chat-booking' : '');
-          var nameCls = 'chat-name' + (m.support ? ' support' : '');
-          var nameText = m.support ? (companyName + ' Team') : m.name;
-          return '<div class="' + cls + '"><div class="' + nameCls + '">' + nameText + '</div><div class="chat-text">' + m.text + '</div></div>';
-        }).join('');
-      }
+      chatPanel.innerHTML = chatMsgs.map(function(m) {
+        var cls = 'chat-msg' + (m.booking ? ' chat-booking' : '');
+        var nameCls = 'chat-name' + (m.support ? ' support' : '');
+        var nameText = m.support ? (companyName + ' Team') : m.name;
+        return '<div class="' + cls + '"><div class="' + nameCls + '">' + nameText + '</div><div class="chat-text">' + m.text + '</div></div>';
+      }).join('');
     }
     }); // ← end _safe('chat-panel')
 
@@ -4184,17 +4064,6 @@ function _getPortalJobId() {
   return new URLSearchParams(window.location.search).get('job');
 }
 
-// ── Webinar Experience: rep-only regenerate ──────────────────────────────────
-// Surfaces the regenerate control inside the Webinar Experience tab whenever
-// IS_EDIT_MODE is true. Hits the same /api/webinar_mock/regenerate endpoint
-// the standalone HTML uses; on success reloads the page so the freshly
-// generated chat + slide data hydrate from the updated task output.
-function _initWebinarRegenRow() {
-  if (typeof IS_EDIT_MODE === 'undefined' || !IS_EDIT_MODE) return;
-  const row = document.getElementById('webinar-regen-row');
-  if (row) row.style.display = 'flex';
-}
-
 // ── Asset Picker (Webinar Experience tab) ─────────────────────────────────────
 // Lets the rep pick which scraped image goes in each visual slot of the webinar
 // slide (logo / hero / headshot). Saves the choice as an override on the job
@@ -4243,22 +4112,30 @@ function _wapRenderSlots() {
   const overrides = _wapGetOverrides();
   const brand = window.SESSION?.brand || {};
   const companyName = brand.company_name || window.SESSION?.extracted?.prospect?.company || 'Your Company';
+  const renderBrandSwatch = (currentEl) => {
+    const primary = brand.primary_color || '#22c55e';
+    const secondary = brand.secondary_color || brand.accent_color || '#16a34a';
+    currentEl.innerHTML = `<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg, ${primary}, ${secondary});color:#fff;font-size:12px;font-weight:700;text-shadow:0 1px 4px rgba(0,0,0,.5);padding:0 6px;text-align:center;">${(companyName||'').slice(0,24)}</div>`;
+    currentEl.style.borderStyle = 'solid';
+    currentEl.style.borderColor = '#c4b5fd';
+  };
   document.querySelectorAll('#webinar-asset-picker [data-wap-slot]').forEach(slotEl => {
     const slotKey = slotEl.dataset.wapSlot;
     const url = overrides[slotKey];
     const currentEl = slotEl.querySelector('.wap-current');
     if (!currentEl) return;
     if (url === WAP_BRAND_ONLY) {
-      // Special "no image" override — show a gradient swatch with the company name
-      const primary = brand.primary_color || '#22c55e';
-      const secondary = brand.secondary_color || brand.accent_color || '#16a34a';
-      currentEl.innerHTML = `<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg, ${primary}, ${secondary});color:#fff;font-size:12px;font-weight:700;text-shadow:0 1px 4px rgba(0,0,0,.5);padding:0 6px;text-align:center;">${(companyName||'').slice(0,24)}</div>`;
-      currentEl.style.borderStyle = 'solid';
-      currentEl.style.borderColor = '#c4b5fd';
+      renderBrandSwatch(currentEl);
     } else if (url) {
       currentEl.innerHTML = `<img src="${url.replace(/"/g,'&quot;')}" alt="" style="max-width:100%;max-height:100%;object-fit:contain;">`;
       currentEl.style.borderStyle = 'solid';
       currentEl.style.borderColor = '#c4b5fd';
+    } else if (slotKey === 'webinar_hero_image_url') {
+      // Hero slot: brand colors is the default state — render the swatch with
+      // a dashed border so it visually reads as "default" vs. an explicit pick.
+      renderBrandSwatch(currentEl);
+      currentEl.style.borderStyle = 'dashed';
+      currentEl.style.borderColor = '#27272a';
     } else {
       currentEl.innerHTML = '<span style="font-size:10px;color:#52525b;">— default (auto-picked) —</span>';
       currentEl.style.borderStyle = 'dashed';
@@ -4288,7 +4165,7 @@ function wapOpenModal(slotKey, slotLabel) {
          style="cursor:pointer;border:2px solid #c4b5fd;border-radius:6px;overflow:hidden;background:#0a0a0a;transition:filter .15s;"
          onmouseover="this.style.filter='brightness(1.1)'" onmouseout="this.style.filter='none'">
       <div style="height:80px;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg, ${primary}, ${secondary});color:#fff;font-size:14px;font-weight:700;text-shadow:0 1px 4px rgba(0,0,0,.5);padding:0 8px;text-align:center;line-height:1.2;overflow:hidden;">${(companyName||'').slice(0,24)}</div>
-      <div style="padding:5px 8px;font-size:10px;color:#c4b5fd;line-height:1.3;font-weight:600;">🎨 Brand colors only (no image)</div>
+      <div style="padding:5px 8px;font-size:10px;color:#c4b5fd;line-height:1.3;font-weight:600;">🎨 Brand colors (default)</div>
     </div>
   ` : '';
 
@@ -4427,7 +4304,7 @@ function _renderTabReadinessPanel() {
     { name: 'How It Works',       tasks: ['extract'],                          static: false },
     { name: 'Lead List',          tasks: ['lead_list'],                        static: false },
     { name: 'Calendar Invite',    tasks: ['webinar_titles'], softTasks: ['calendar_visual'], static: false },
-    { name: 'Webinar Experience', tasks: ['webinar_titles', 'webinar_mock'],   static: false },
+    { name: 'Webinar Experience', tasks: ['webinar_titles'],                   static: false },
     { name: 'Onboarding',         tasks: [],                                   static: true  },
     { name: 'ROI Model',          tasks: ['roi_model'],                        static: false },
     { name: 'Case Studies',       tasks: [],                                   static: true  }
@@ -4592,37 +4469,6 @@ async function regenerateJob() {
     _piSetStatus('✗ ' + e.message, '#f87171');
     btn.disabled = false; btn.style.opacity = '1';
   }
-}
-
-function regenerateWebinarMock() {
-  const jobId   = _getPortalJobId();
-  const btn     = document.getElementById('webinar-regen-btn');
-  const input   = document.getElementById('webinar-regen-input');
-  const statusEl = document.getElementById('webinar-regen-status');
-  if (!jobId) { statusEl.textContent = '⚠️ No job ID in URL'; statusEl.style.color = '#fbbf24'; return; }
-  const instructions = (input && input.value || '').trim();
-  btn.disabled = true;
-  btn.style.opacity = '.6';
-  statusEl.textContent = 'Regenerating…';
-  statusEl.style.color = '#a1a1aa';
-  fetch('/api/webinar_mock/regenerate', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ job_id: jobId, instructions: instructions })
-  })
-    .then(r => r.json().then(d => ({ ok: r.ok, body: d })))
-    .then(r => {
-      if (!r.ok) throw new Error(r.body && r.body.error || 'Regenerate failed');
-      statusEl.textContent = '✓ Done — reloading';
-      statusEl.style.color = '#4ade80';
-      setTimeout(() => { window.location.reload(); }, 700);
-    })
-    .catch(e => {
-      statusEl.textContent = '✗ ' + (e.message || 'Failed');
-      statusEl.style.color = '#f87171';
-      btn.disabled = false;
-      btn.style.opacity = '1';
-    });
 }
 
 function _showFilterStatus(msg, color) {

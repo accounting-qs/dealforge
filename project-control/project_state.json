@@ -1,17 +1,17 @@
 {
   "project_name": "Deal Forge",
-  "description": "AI pipeline that generates 8 custom prospect assets after Call 1 to increase Call 2 show rates for Quantum Scaling reps",
+  "description": "AI pipeline that generates 7 custom prospect assets after Call 1 to increase Call 2 show rates for Quantum Scaling reps",
   "business_entity": "quantum_scaling",
-  "last_updated": "2026-04-15T00:00:00Z",
+  "last_updated": "2026-05-12T00:00:00Z",
   "current_state": {
     "phase_name": "Phase 2 - Build & Test",
     "status": "debugging"
   },
   "project_overview": {
-    "what": "Deal Forge is an internal sales tool for Quantum Scaling reps. After completing a Call 1 (Business Audit), the rep triggers the app with the Fireflies meeting ID. An AI pipeline extracts the prospect's ICP and business context, then generates 8 custom assets: a verified lead list, interactive Google Calendar invite visual, a live webinar experience mock, 3 webinar title options, an interactive ROI calculator pre-populated with their numbers, a prospect research profile, and brand-scraped visual identity. All assets are ready before Call 2.",
+    "what": "Deal Forge is an internal sales tool for Quantum Scaling reps. After completing a Call 1 (Business Audit), the rep triggers the app with the Fireflies meeting ID. An AI pipeline extracts the prospect's ICP and business context, then generates 7 custom assets: a verified lead list, interactive Google Calendar invite visual, 3 webinar title options, an interactive ROI calculator pre-populated with their numbers, a prospect research profile, and brand-scraped visual identity. All assets are ready before Call 2. The in-portal Webinar Experience tab renders a one-slide branded hero + ICP-aware live chat at view time (no separate pipeline task).",
     "why": "QS's Call 2 show rate is 37.5% — the core constraint on revenue. Prospects feel informed after Call 1 and have no strong pull to return. Deal Forge creates a concrete bridge: assets so specific to the prospect that skipping Call 2 means walking away from something already built for them. The 'sunk cost' and perceived value dramatically increase show rate and close rate.",
     "end_state": "A polished internal rep dashboard used for every Call 2 booking. Rep selects today's calls from auto-loaded Fireflies meetings, clicks Generate, and has a full asset package ready within 20 minutes. The ROI model and reg page mock have shareable prospect-facing URLs. Eventually expands to full CRM integration and automated follow-up.",
-    "current_summary": "Phase 2 backend live on Railway. Full 8-task pipeline deployed. Rep portal live at deal-forge-production.up.railway.app. Key systems confirmed working: (1) Fireflies transcript lookup — 6-pass search strategy (GHL name → company → email segments → domain → recent scan p1 → p2), prefers exact email match → domain match → loose keyword. (2) GHL contact lookup — enriches contactInfo with name/company/title before Fireflies search for better matching. (3) extractBriefFromTranscript — Claude Sonnet extracts full structured brief: prospect info, ICP (apollo_titles, apollo_industries, apollo_employee_ranges, apollo_geography, person_seniorities), metrics (LTV/close/show rate), angle (pain/result/methodology/proof), verbatim quotes, situation, context, webinar title seeds. (4) /api/prefetch endpoint — runs Fireflies + GHL + website scrape + Claude extraction before job creation so rep can review the brief. (5) All 8 task handlers wired: extract, prospect_research, brand_scrape, lead_list, webinar_titles, roi_model, calendar_visual, webinar_mock. Main blocker: lead_list EU Apollo coverage — org search returns 0 for Baltic/EU ICPs. Latest fix deployed (commit c934325): strip 'Europe' from geo (invalid Apollo value), EU country list retry with no AND-logic industry filter, geoUsed flag tells classifier to accept EU-wide companies. Unconfirmed — stopped testing to avoid rate limit loop."
+    "current_summary": "Phase 2 backend live on Railway. 7-task pipeline deployed (webinar_mock task removed 2026-05-12 — standalone HTML asset was unused; in-portal Webinar Experience tab now renders a single brand-colors hero + ICP-aware chat client-side). Rep portal live at deal-forge-production.up.railway.app. Key systems confirmed working: (1) Fireflies transcript lookup — 6-pass search strategy (GHL name → company → email segments → domain → recent scan p1 → p2), prefers exact email match → domain match → loose keyword. (2) GHL contact lookup — enriches contactInfo with name/company/title before Fireflies search for better matching. (3) extractBriefFromTranscript — Claude Sonnet extracts full structured brief: prospect info, ICP (apollo_titles, apollo_industries, apollo_employee_ranges, apollo_geography, person_seniorities), metrics (LTV/close/show rate), angle (pain/result/methodology/proof), verbatim quotes, situation, context, webinar title seeds. (4) /api/prefetch endpoint — runs Fireflies + GHL + website scrape + Claude extraction before job creation so rep can review the brief. (5) Task handlers wired: extract, prospect_research, brand_scrape, lead_list, webinar_titles, roi_model, calendar_visual. Main blocker: lead_list EU Apollo coverage — org search returns 0 for Baltic/EU ICPs. Latest fix deployed (commit c934325): strip 'Europe' from geo (invalid Apollo value), EU country list retry with no AND-logic industry filter, geoUsed flag tells classifier to accept EU-wide companies. Unconfirmed — stopped testing to avoid rate limit loop."
   },
   "resume_here": "Phase 2 backend deployed. Full Fireflies→brief pipeline confirmed working. lead_list is the remaining blocker for EU/Baltic ICPs — returns 0 leads. Latest fix committed (c934325): EU org retry uses explicit country list with geo+size only (no AND-logic industry filter), geoUsed flag tells classifier to accept EU-wide companies. NOT yet confirmed working — stopped testing to avoid Apollo rate limit loop. Next session: (1) trigger one fresh job for rait@planpro.ee, (2) check Railway logs for which Apollo tier fires and what HTTP status/org count comes back, (3) if still 0, test people/search direct with person_locations as fallback path.",
   "current_phase": {
@@ -19,13 +19,13 @@
     "goal": "Debug lead_list EU Apollo coverage, confirm full pipeline end-to-end with real Call 1 transcripts, then polish rep portal UI.",
     "current_focus": [
       "lead_list task returning 0 leads for Baltic/EU ICPs (rait@planpro.ee test case) — latest fix c934325 not yet confirmed working",
-      "Everything else confirmed working: Fireflies 6-pass transcript lookup, GHL contact enrichment, website scrape, Claude brief extraction, all 8 task handlers wired"
+      "Everything else confirmed working: Fireflies 6-pass transcript lookup, GHL contact enrichment, website scrape, Claude brief extraction, all 7 task handlers wired"
     ],
     "immediate_next_steps": [
       "Fresh session: trigger one real job for rait@planpro.ee, watch Railway logs — need to see which Apollo org search tier fires and what count it returns",
       "If Apollo EU org search still 0: try people/search direct with person_locations (person-level geo, separate from org search) — may have better EU coverage",
       "Run end-to-end test with a US/NA-based prospect ICP to confirm pipeline works outside EU — isolates whether 0-leads issue is EU-specific",
-      "Once lead_list confirmed: run full 8-task e2e on a real QS Call 1 transcript and review all asset outputs",
+      "Once lead_list confirmed: run full 7-task e2e on a real QS Call 1 transcript and review all asset outputs",
       "Rep portal UI polish — currently functional but unstyled"
     ],
     "known_issues": [
@@ -48,15 +48,15 @@
   },
   "next_phase": {
     "name": "Phase 2 - Build & Test",
-    "goal": "Build the Node.js worker, task handlers for all 8 tasks, and deploy to Railway. Internal test with 2-3 real Call 1 transcripts.",
+    "goal": "Build the Node.js worker, task handlers for all 7 tasks, and deploy to Railway. Internal test with 2-3 real Call 1 transcripts.",
     "key_features": [
       "Job queue worker with atomic task claiming (UPDATE...RETURNING)",
       "Stage 1: extract handler, prospect_research handler",
       "Stage 2: brand_scrape, lead_list, webinar_titles, roi_model handlers (parallel)",
-      "Stage 3: calendar_visual, webinar_mock handlers (parallel)",
+      "Stage 3: calendar_visual handler",
       "Recovery cron (2-min interval, 5-min task timeout)",
-      "Supabase Storage upload for all HTML assets (roi_model, calendar_visual, webinar_mock)",
-      "HTML templates for ROI calculator, Google Calendar mock, and live webinar experience mock"
+      "Supabase Storage upload for HTML assets (roi_model, calendar_visual)",
+      "HTML templates for ROI calculator and Google Calendar mock"
     ],
     "tools_and_apis": [
       "Anthropic Claude API (Haiku + Sonnet)",
@@ -67,7 +67,7 @@
       "Supabase JS client",
       "Railway deployment"
     ],
-    "prerequisites": "/task-spec complete for all 8 tasks. /ux-design complete. Ample Leads credentials obtained."
+    "prerequisites": "/task-spec complete for all 7 tasks. /ux-design complete. Ample Leads credentials obtained."
   },
   "future_phases": [
     {
@@ -89,7 +89,7 @@
       "date": "2026-04-03"
     },
     {
-      "description": "8-task pipeline architecture designed and approved (batch-design + state-machine)",
+      "description": "Pipeline architecture designed and approved (batch-design + state-machine) — originally 8 tasks; webinar_mock removed 2026-05-12 (current count: 7)",
       "date": "2026-04-03"
     },
     {
@@ -145,16 +145,16 @@
       "date": "2026-04-08"
     },
     {
-      "description": "webinar_mock task specced — live webinar experience simulator, 2 branded slides, AI-generated ICP live chat (18 messages), LIVE badge + attendee count",
+      "description": "Phase 1 spec gate complete — all pipeline tasks fully specced. Ready for /ux-design and Phase 2 build.",
       "date": "2026-04-08"
     },
     {
-      "description": "Phase 1 spec gate complete — all 8 pipeline tasks fully specced. Ready for /ux-design and Phase 2 build.",
-      "date": "2026-04-08"
-    },
-    {
-      "description": "Phase 2 backend built and deployed to Railway — full 8-task pipeline live, GHL webhook, Fireflies lookup, rep portal at deal-forge-production.up.railway.app",
+      "description": "Phase 2 backend built and deployed to Railway — pipeline live, GHL webhook, Fireflies lookup, rep portal at deal-forge-production.up.railway.app",
       "date": "2026-04-15"
+    },
+    {
+      "description": "webinar_mock task removed — standalone HTML asset deprecated (no one opened it); in-portal Webinar Experience tab simplified to a single brand-colors hero slide + ICP-aware chat panel. Pipeline drops from 8 → 7 tasks.",
+      "date": "2026-05-12"
     },
     {
       "description": "Fireflies 6-pass transcript lookup confirmed working: GHL name → company → email segments → domain → recent scan (p1+p2). Prefers exact email attendee → domain attendee → loose keyword match.",
@@ -200,7 +200,7 @@
     },
     {
       "decision": "extract writes to jobs.extracted_data (not tasks.output_data)",
-      "reasoning": "All 5 Stage 2 tasks need this data. Writing to the job record makes it accessible without joins through the tasks table.",
+      "reasoning": "All Stage 2 tasks need this data. Writing to the job record makes it accessible without joins through the tasks table.",
       "phase": "Phase 1 - Backend Architecture"
     },
     {
@@ -222,6 +222,11 @@
       "decision": "reg_page replaced by webinar_mock (live webinar experience simulator)",
       "reasoning": "Calendar invite IS the registration mechanism — showing a reg page alongside it creates cognitive dissonance ('just click Yes' vs 'also fill out this form'). webinar_mock is more powerful: shows the prospect their brand applied to the full webinar experience (slides + live chat), creating the 'oh shit' moment. Same brand data is used, better outcome.",
       "phase": "Phase 1 - Backend Architecture"
+    },
+    {
+      "decision": "webinar_mock task removed (2026-05-12)",
+      "reasoning": "The standalone HTML asset (generated server-side, stored in Supabase, opened via a 'View personalized webinar' button) saw no rep usage. The same hero + chat experience renders client-side inside the portal's Webinar Experience tab — no separate asset needed. Pipeline simplifies to 7 tasks. Hero slide also flipped to brand-colors-only by default (image is opt-in via the asset picker) since reps preferred the cleaner look.",
+      "phase": "Phase 2 - Build & Test"
     }
   ],
   "completed_phases": [],
