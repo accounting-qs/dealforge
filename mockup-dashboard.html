@@ -25,6 +25,21 @@
   .row-item:hover { background: rgba(39,39,42,0.4); cursor: pointer; }
   .row-item:last-child { border-bottom: none; }
 
+  /* Contact grouping — top-level row per email, expandable to show its jobs. */
+  .contact-group { border-bottom: 1px solid rgba(255,255,255,0.06); }
+  .contact-group:last-child { border-bottom: none; }
+  .contact-row { display: flex; align-items: center; padding: 14px 20px; cursor: pointer; transition: background 100ms; }
+  .contact-row:hover { background: rgba(139,92,246,0.04); }
+  .contact-row .chev { width: 14px; flex-shrink: 0; color: #52525b; transition: transform 120ms ease-out; display: inline-block; text-align: center; line-height: 1; }
+  .contact-group.open .contact-row .chev { transform: rotate(90deg); }
+  .contact-children { display: none; background: rgba(255,255,255,0.015); border-top: 1px solid rgba(255,255,255,0.04); }
+  .contact-group.open .contact-children { display: block; }
+  /* Child job rows: smaller, indented, subdued. They keep .job-row so filters
+     and per-row handlers continue to work without any JS changes. */
+  .contact-children .job-row { padding-left: 44px !important; padding-top: 11px !important; padding-bottom: 11px !important; }
+  .contact-children .job-row > div:first-child > div:first-child { font-size: 12.5px; color: #d4d4d8; }
+  .job-count-badge { font-size: 11px; font-weight: 500; color: #71717a; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.06); padding: 2px 7px; border-radius: 10px; margin-left: 8px; }
+
   .status-dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
   .dot-green { background: #22c55e; box-shadow: 0 0 6px rgba(34,197,94,0.5); }
   .dot-amber { background: #f59e0b; box-shadow: 0 0 6px rgba(245,158,11,0.5); }
@@ -782,6 +797,21 @@ function changeRowRep(selectEl) {
     var row = selectEl.closest('.job-row');
     if (row) {
       row.dataset.rep = slug || '';
+      // If this is the LATEST job in its contact group (first .job-row child),
+      // the group's data-rep + visible rep label are derived from it — keep
+      // them in sync so the pill filter doesn't lie.
+      var group = row.closest('.contact-group');
+      if (group) {
+        var firstChild = group.querySelector('.contact-children .job-row');
+        if (firstChild === row) {
+          group.dataset.rep = slug || '';
+          var label = group.querySelector('.contact-row > div:nth-of-type(2)');
+          if (label) {
+            var rep = _SALES_REPS_BY_SLUG[slug || ''];
+            label.textContent = rep ? rep.display_name : '—';
+          }
+        }
+      }
       applyFilters(); // re-evaluate rep-pill filter
     }
   })
@@ -869,9 +899,25 @@ function filterSearch(val) {
 }
 
 function applyFilters() {
-  var rows = document.querySelectorAll('.job-row');
+  // Two render modes coexist:
+  //   - Grouped: .contact-group wrappers with .job-row children (production data)
+  //   - Flat:    bare .job-row entries (the static demo rows still in the HTML)
+  // Filter both so the rep pills + search box behave the same either way.
   var anyVisible = false;
-  rows.forEach(function(row) {
+  var groups = document.querySelectorAll('.contact-group');
+  groups.forEach(function(group) {
+    var repMatch = activeRep === 'all' || group.dataset.rep === activeRep;
+    var searchMatch = activeSearch === '' ||
+      (group.dataset.email   && group.dataset.email.indexOf(activeSearch)   !== -1) ||
+      (group.dataset.name    && group.dataset.name.indexOf(activeSearch)    !== -1) ||
+      (group.dataset.company && group.dataset.company.indexOf(activeSearch) !== -1);
+    var show = repMatch && searchMatch;
+    group.style.display = show ? 'block' : 'none';
+    if (show) anyVisible = true;
+  });
+  // Bare job rows (only the demo seed rows hit this path).
+  document.querySelectorAll('.job-row').forEach(function(row) {
+    if (row.closest('.contact-group')) return; // grouped — handled above
     var repMatch = activeRep === 'all' || row.dataset.rep === activeRep;
     var searchMatch = activeSearch === '' ||
       row.dataset.name.indexOf(activeSearch) !== -1 ||
@@ -880,7 +926,8 @@ function applyFilters() {
     row.style.display = show ? 'flex' : 'none';
     if (show) anyVisible = true;
   });
-  document.getElementById('no-results').style.display = anyVisible ? 'none' : 'block';
+  var nr = document.getElementById('no-results');
+  if (nr) nr.style.display = anyVisible ? 'none' : 'block';
 }
 
 // ─── NEW JOB MODAL ───────────────────────────────────
@@ -1434,24 +1481,10 @@ function njGenerate() {
     var dateStr = today.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
     var displayName = contactName || email;
 
-    // Inject row immediately (processing state)
-    var jobRows = document.getElementById('job-rows');
-    if (jobRows) {
-      var rowHtml = '<div class="row-item job-row" data-rep="' + rep + '" data-name="' + displayName.toLowerCase() + '" data-company="' + displayCompany.toLowerCase() + '" onclick="window.open(\'' + editPortalUrl + '\',\'_blank\')" style="display:flex;align-items:center;padding:15px 20px;">'
-        + '<div style="flex:1;">'
-        + '<div style="font-size:13px;font-weight:500;color:#ffffff;">' + displayCompany + '</div>'
-        + '<div style="font-size:12px;color:#71717a;margin-top:1px;">' + displayName + '</div>'
-        + '</div>'
-        + '<div style="width:110px;font-size:12px;color:#71717a;">' + repName + '</div>'
-        + '<div style="width:100px;display:flex;align-items:center;gap:6px;">'
-        + '<span class="status-dot dot-purple"></span>'
-        + '<span style="font-size:12px;color:#71717a;">Processing</span>'
-        + '</div>'
-        + '<div style="width:60px;text-align:right;font-size:12px;color:#52525b;">' + dateStr + '</div>'
-        + '<button onclick="event.stopPropagation();deleteJob(\'' + data.job_id + '\',this)" title="Delete job" style="background:none;border:none;cursor:pointer;color:#52525b;padding:4px 6px;margin-left:6px;border-radius:4px;display:flex;align-items:center;" onmouseover="this.style.color=\'#ef4444\'" onmouseout="this.style.color=\'#52525b\'">' + trashIcon + '</button>'
-        + '</div>';
-      jobRows.insertAdjacentHTML('afterbegin', rowHtml);
-    }
+    // Re-fetch so the new job lands in its contact group (creating one if this
+    // is the first job for the email). Cheaper than re-implementing the
+    // grouped insertion path optimistically.
+    loadJobsFromServer();
 
     njClose();
     window.open(editPortalUrl, '_blank');
@@ -1514,6 +1547,79 @@ function deleteJob(jobId, btn) {
 
 var trashIcon = '<svg style="width:13px;height:13px;" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>';
 
+function _fmtCompany(job) {
+  var c = job.prospect_company || (job.prospect_email || '').split('@')[1] || 'Unknown';
+  // For domain fallbacks like "turnyellow.com" → "Turnyellow". Real company
+  // names from the brief are left untouched (no .split('.')[0] mutation).
+  if (!job.prospect_company && c.indexOf('.') !== -1) {
+    c = c.split('.')[0];
+    c = c.charAt(0).toUpperCase() + c.slice(1);
+  }
+  return c;
+}
+function _fmtDate(d) {
+  return d ? new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '';
+}
+function _renderJobRow(job) {
+  var company = _fmtCompany(job);
+  var name = job.prospect_name || job.prospect_email || '';
+  var portalUrl     = job.portal_url || ('/?job=' + job.job_id);
+  var editPortalUrl = portalUrl + (portalUrl.includes('?') ? '&' : '?') + 'edit=true';
+  var date = _fmtDate(job.created_at);
+  var jobId = job.job_id || '';
+  var repSlug = job.assigned_rep || '';
+  var repOpts = '<option value="">—</option>'
+    + _SALES_REPS.map(function(r) {
+        return '<option value="' + r.slug + '"' + (r.slug === repSlug ? ' selected' : '') + '>' + r.display_name + '</option>';
+      }).join('');
+  return '<div class="row-item job-row" data-job-id="' + jobId + '" data-rep="' + repSlug + '" data-name="' + name.toLowerCase() + '" data-company="' + company.toLowerCase() + '" onclick="window.open(\'' + editPortalUrl + '\',\'_blank\')" style="display:flex;align-items:center;">'
+    + '<div style="flex:1;">'
+    +   '<div style="font-size:13px;font-weight:500;color:#ffffff;">' + company + '</div>'
+    +   '<div style="font-size:12px;color:#71717a;margin-top:1px;">' + (job.prospect_email || name) + '</div>'
+    + '</div>'
+    + '<div style="width:110px;">'
+    +   '<select class="row-rep-select" data-job-id="' + jobId + '" onclick="event.stopPropagation()" onchange="changeRowRep(this)" style="background:transparent;border:1px solid rgba(255,255,255,0.08);color:#a1a1aa;font-size:12px;padding:3px 6px;border-radius:6px;font-family:inherit;cursor:pointer;width:100%">' + repOpts + '</select>'
+    + '</div>'
+    + '<div style="width:100px;display:flex;align-items:center;gap:6px;">' + statusDot(job.status) + '</div>'
+    + '<div style="width:60px;text-align:right;font-size:12px;color:#52525b;">' + date + '</div>'
+    + '<button onclick="event.stopPropagation();deleteJob(\'' + jobId + '\',this)" title="Delete job" style="background:none;border:none;cursor:pointer;color:#52525b;padding:4px 6px;margin-left:6px;border-radius:4px;display:flex;align-items:center;" onmouseover="this.style.color=\'#ef4444\'" onmouseout="this.style.color=\'#52525b\'">' + trashIcon + '</button>'
+    + '</div>';
+}
+function _renderContactGroup(g) {
+  var latest      = g.jobs[0];
+  var company     = _fmtCompany(latest);
+  var name        = latest.prospect_name || '';
+  var repSlug     = latest.assigned_rep || '';
+  var count       = g.jobs.length;
+  var latestDate  = _fmtDate(latest.created_at);
+  // Auto-expand single-job contacts so the rep sees the job immediately.
+  // Collapsed by default when there are 2+ jobs to keep the list scannable.
+  var openClass   = count === 1 ? ' open' : '';
+  return '<div class="contact-group' + openClass + '" data-email="' + g.email + '" data-rep="' + repSlug + '" data-name="' + name.toLowerCase() + '" data-company="' + company.toLowerCase() + '">'
+    + '<div class="contact-row" onclick="toggleContactGroup(this.parentNode)">'
+    +   '<span class="chev">▶</span>'
+    +   '<div style="flex:1;padding-left:14px;">'
+    +     '<div style="font-size:13px;font-weight:600;color:#ffffff;display:flex;align-items:center;">'
+    +       company
+    +       '<span class="job-count-badge">' + count + ' job' + (count === 1 ? '' : 's') + '</span>'
+    +     '</div>'
+    +     '<div style="font-size:12px;color:#71717a;margin-top:2px;">' + g.email + (name ? ' · ' + name : '') + '</div>'
+    +   '</div>'
+    +   '<div style="width:110px;font-size:11px;color:#71717a;">' + (_SALES_REPS_BY_SLUG[repSlug] && _SALES_REPS_BY_SLUG[repSlug].display_name || '—') + '</div>'
+    +   '<div style="width:100px;display:flex;align-items:center;gap:6px;">' + statusDot(latest.status) + '</div>'
+    +   '<div style="width:60px;text-align:right;font-size:12px;color:#52525b;">' + latestDate + '</div>'
+    +   '<div style="width:30px;"></div>'
+    + '</div>'
+    + '<div class="contact-children">'
+    +   g.jobs.map(_renderJobRow).join('')
+    + '</div>'
+  + '</div>';
+}
+function toggleContactGroup(groupEl) {
+  if (!groupEl) return;
+  groupEl.classList.toggle('open');
+}
+
 function loadJobsFromServer() {
   fetch('/api/jobs')
     .then(function(r) { return r.ok ? r.json() : []; })
@@ -1521,34 +1627,26 @@ function loadJobsFromServer() {
       if (!Array.isArray(jobs) || !jobs.length) return;
       var jobRows = document.getElementById('job-rows');
       if (!jobRows) return;
-      jobRows.innerHTML = '';
-      jobs.forEach(function(job) {
-        var company = job.prospect_company || (job.prospect_email || '').split('@')[1] || 'Unknown';
-        company = company.split('.')[0].charAt(0).toUpperCase() + company.split('.')[0].slice(1);
-        var name = job.prospect_name || job.prospect_email || '';
-        var portalUrl     = job.portal_url || ('/?job=' + job.job_id);
-        var editPortalUrl = portalUrl + (portalUrl.includes('?') ? '&' : '?') + 'edit=true';
-        var date = job.created_at ? new Date(job.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '';
-        var jobId = job.job_id || '';
-        var repSlug = job.assigned_rep || '';
-        var repOpts = '<option value="">—</option>'
-          + _SALES_REPS.map(function(r) {
-              return '<option value="' + r.slug + '"' + (r.slug === repSlug ? ' selected' : '') + '>' + r.display_name + '</option>';
-            }).join('');
-        var rowHtml = '<div class="row-item job-row" data-job-id="' + jobId + '" data-rep="' + repSlug + '" data-name="' + name.toLowerCase() + '" data-company="' + company.toLowerCase() + '" onclick="window.open(\'' + editPortalUrl + '\',\'_blank\')" style="display:flex;align-items:center;padding:15px 20px;">'
-          + '<div style="flex:1;">'
-          + '<div style="font-size:13px;font-weight:500;color:#ffffff;">' + company + '</div>'
-          + '<div style="font-size:12px;color:#71717a;margin-top:1px;">' + name + '</div>'
-          + '</div>'
-          + '<div style="width:110px;">'
-          +   '<select class="row-rep-select" data-job-id="' + jobId + '" onclick="event.stopPropagation()" onchange="changeRowRep(this)" style="background:transparent;border:1px solid rgba(255,255,255,0.08);color:#a1a1aa;font-size:12px;padding:3px 6px;border-radius:6px;font-family:inherit;cursor:pointer;width:100%">' + repOpts + '</select>'
-          + '</div>'
-          + '<div style="width:100px;display:flex;align-items:center;gap:6px;">' + statusDot(job.status) + '</div>'
-          + '<div style="width:60px;text-align:right;font-size:12px;color:#52525b;">' + date + '</div>'
-          + '<button onclick="event.stopPropagation();deleteJob(\'' + jobId + '\',this)" title="Delete job" style="background:none;border:none;cursor:pointer;color:#52525b;padding:4px 6px;margin-left:6px;border-radius:4px;display:flex;align-items:center;" onmouseover="this.style.color=\'#ef4444\'" onmouseout="this.style.color=\'#52525b\'">' + trashIcon + '</button>'
-          + '</div>';
-        jobRows.insertAdjacentHTML('beforeend', rowHtml);
+
+      // Group by prospect_email. The dashboard wants one row per contact;
+      // each contact expands to show its individual jobs.
+      var byEmail = {};
+      jobs.forEach(function(j) {
+        var key = (j.prospect_email || '').toLowerCase();
+        (byEmail[key] = byEmail[key] || []).push(j);
       });
+      // Jobs within a contact: newest first.
+      Object.keys(byEmail).forEach(function(k) {
+        byEmail[k].sort(function(a, b) { return new Date(b.created_at || 0) - new Date(a.created_at || 0); });
+      });
+      // Contacts overall: ordered by their latest job's date, newest first.
+      var groups = Object.keys(byEmail).map(function(email) {
+        return { email: email, jobs: byEmail[email] };
+      }).sort(function(a, b) {
+        return new Date(b.jobs[0].created_at || 0) - new Date(a.jobs[0].created_at || 0);
+      });
+
+      jobRows.innerHTML = groups.map(_renderContactGroup).join('');
       applyFilters();
     })
     .catch(function(err) { console.warn('[Dashboard] Could not load jobs:', err.message); });
