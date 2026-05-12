@@ -954,9 +954,13 @@ async function scrapeWebsite(domain) {
     } catch(e) { return ''; }
   };
 
-  // ── Path B: Raw fetch — needed for HTML metadata (og:image, theme-color, etc.) ─
-  // brand_scrape depends on raw HTML for logo/color regex extraction.
-  const rawFetch = async () => {
+  // ── Path B: Raw HTML — needed for <title>, og:image, theme-color, and the
+  // logo/color regex extraction in brand_scrape. Try the site directly first;
+  // if the host blocks our outbound IP or returns < 500 chars (typical of WAF
+  // block pages and JS-only SPAs), fall back to corsproxy.io which rotates
+  // the outbound IP. The proxy is best-effort: if CORSPROXY_API_KEY isn't
+  // configured, we skip it silently.
+  const directHtml = async () => {
     try {
       const res = await fetch(baseUrl, {
         headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36' },
@@ -965,9 +969,30 @@ async function scrapeWebsite(domain) {
       return res.ok ? await res.text() : '';
     } catch(e) { return ''; }
   };
+  const proxyHtml = async () => {
+    const proxyKey = process.env.CORSPROXY_API_KEY;
+    if (!proxyKey) return '';
+    try {
+      const url = 'https://corsproxy.io/?key=' + encodeURIComponent(proxyKey)
+                + '&url=' + encodeURIComponent(baseUrl);
+      const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
+      return res.ok ? await res.text() : '';
+    } catch(e) { return ''; }
+  };
 
-  // Run both in parallel — no speed penalty
-  const [jinaText, html] = await Promise.all([jinaFetch(baseUrl), rawFetch()]);
+  // Run Jina (text path) and direct HTML in parallel — typical-case latency.
+  const [jinaText, directHtmlText] = await Promise.all([jinaFetch(baseUrl), directHtml()]);
+  let html = directHtmlText;
+  let htmlSource = directHtmlText.length >= 500 ? 'direct' : null;
+  // If the direct fetch was empty or suspiciously short (block page / SPA shell),
+  // retry via the proxy. This is the "Direct fetch, fallback proxy fetch" path.
+  if (!htmlSource) {
+    const proxied = await proxyHtml();
+    if (proxied.length >= 500) { html = proxied; htmlSource = 'proxy'; }
+    else if (proxied.length > html.length) { html = proxied; htmlSource = 'proxy_short'; }
+    else if (!html) { htmlSource = 'none'; }
+    else { htmlSource = 'direct_short'; }
+  }
 
   // If Jina homepage is thin (<250 chars), try /about page for richer content
   let bodyText = jinaText;
@@ -985,8 +1010,8 @@ async function scrapeWebsite(domain) {
     html.match(/<meta[^>]+content=["']([^"']{10,})["'][^>]+name=["']description["']/i)
   )?.[1]?.trim() || '';
 
-  console.log(`[scrape] ${cleanDomain} — Jina:${jinaText.length}chars, HTML:${html.length}chars, title:"${title.slice(0,60)}"`);
-  return { html, title, metaDesc, bodyText };
+  console.log(`[scrape] ${cleanDomain} — Jina:${jinaText.length}chars, HTML:${html.length}chars (${htmlSource}), title:"${title.slice(0,60)}"`);
+  return { html, title, metaDesc, bodyText, html_source: htmlSource };
 }
 
 // ── Brief extraction from transcript + website ────────────────────────────────
@@ -1029,7 +1054,8 @@ Return this exact JSON (null for anything not found):
     "company":       "string — the prospect's LEGAL EMPLOYER / business entity. NOT their product, methodology, framework, or offering. CRITICAL DISTINCTION: a company is who they work for (the entity on their LinkedIn 'Experience' section, the entity that owns their website). An offering/product is what they sell ('our system X', 'we built X', 'X helps clients'). Examples — if the prospect says 'I'm Jake, founder of 4FP Agency, and we built Fiddle Link AI for RIAs': company='4FP Agency', NOT 'Fiddle Link AI'. If they say 'I run Acme Consulting and we use the Devoted Client Method': company='Acme Consulting', NOT 'Devoted Client Method'. Resolution rules: (1) Strongest signal is the verified known value (from CRM / website). Trust it unless the transcript provides clear evidence the person works at a different entity. (2) Override the known value only when the transcript explicitly states a different employer ('I'm the CEO of X', 'I founded X', 'I work at X'). Phrases like 'we built X', 'our X', 'X is our system' point to an offering and DO NOT override company. (3) When the transcript is silent on employer name, use the known value. (4) Never invent a name that appears in neither source. (5) If the call mentions BOTH a company AND an offering, put the legal entity here and the product/methodology in 'offering_name'.",
     "contact_name":  "string | null — full name of person on the call",
     "contact_title": "string | null — their job title. Extract verbatim if stated. Otherwise apply the contact_title inference exception from the rules above (default to 'Founder & Owner' when ownership is clear, set _provenance.\"prospect.contact_title\" = \"inferred\").",
-    "offering_name": "string | null — the name of the product, service, app, framework, or methodology the prospect is building/selling, IF separate from the company name. NOT the company itself. Examples: 'Fiddle Link AI', 'The Revenue Engine', 'Devoted Client Attraction Method'. Extract verbatim from the call. Null if (a) no specific named offering is mentioned, or (b) the offering and the company share the same name."
+    "offering_name": "string | null — the name of the product, service, app, framework, or methodology the prospect is building/selling, IF separate from the company name. NOT the company itself. Examples: 'Fiddle Link AI', 'The Revenue Engine', 'Devoted Client Attraction Method'. Extract verbatim from the call. Null if (a) no specific named offering is mentioned, or (b) the offering and the company share the same name.",
+    "offer_description": "string | null — a 1-3 sentence description of WHAT THE PROSPECT'S BUSINESS DOES / SELLS, written so a downstream copywriter can use it verbatim in calendar-invite copy. Plain English, no marketing fluff: who they help, what they deliver, and (if mentioned) the headline outcome. Sources in priority order: (1) the prospect's own description of their service from the call, (2) the website's hero / about-page summary, (3) the company name + offering_name + angle.result rolled into a sentence. Examples — Good: 'Helps independent financial advisors win HNW clients through a 90-day done-with-you marketing program that replaces cold outreach with referral-quality inbound leads.' Bad: 'A revolutionary platform empowering professionals to unlock their full potential.' Always produce something usable — only null if there is literally zero signal in the transcript or website."
   },
   "icp": {
     "role":          "string | null — human-readable description of their target buyers (used for display only)",
@@ -1080,6 +1106,7 @@ Return this exact JSON (null for anything not found):
     "prospect.contact_name":   "one of: transcript | inferred | missing",
     "prospect.contact_title":  "one of: transcript | inferred | missing — use 'inferred' when ownership is clear but title not stated verbatim",
     "prospect.offering_name":  "one of: transcript | missing",
+    "prospect.offer_description": "one of: transcript | website | inferred | missing — 'website' if drawn from the scraped site copy, 'inferred' if synthesized from company + offering + angle.result, 'transcript' if quoted",
     "icp.role":                "one of: transcript | missing",
     "icp.industry":            "one of: transcript | missing",
     "icp.company_size":        "one of: transcript | missing",
@@ -1116,7 +1143,7 @@ function emptyBrief(contactInfo) {
   const name    = contactInfo.name    || null;
   const title   = contactInfo.title   || null;
   return {
-    prospect:  { company, contact_name: name, contact_title: title, offering_name: null },
+    prospect:  { company, contact_name: name, contact_title: title, offering_name: null, offer_description: null },
     icp:       { role: null, target_audience_type: 'b2b', apollo_titles: null, apollo_keyword: null, industry: null, company_size: null, apollo_employee_ranges: null, geography: null, apollo_geography: null, person_seniorities: null, company_revenue: null, kpis: null },
     metrics:   { ltv: null, close_rate: null, show_rate: null },
     angle:     { pain: null, result: null, methodology: null, proof: null },
@@ -3490,21 +3517,11 @@ const server = http.createServer(async (req, res) => {
           const dbApproved = await findApprovedCallsFromDB(email);
           const approvedCallCount = dbApproved.length;
 
-          setProgress(id, { progress: 50, step: 'Searching Fireflies (parallel) + scraping website…' });
-          const [candidates, website] = await Promise.all([
-            findFirefliesTranscripts(email, contactInfo),
-            contactInfo.website ? scrapeWebsite(contactInfo.website) : Promise.resolve(null)
-          ]);
-
-          // Website-title fallback for company (only when nothing else filled it)
-          if (!contactInfo.company && website?.title) {
-            const fromTitle = companyFromWebsiteTitle(website.title);
-            if (fromTitle) {
-              contactInfo.company = fromTitle;
-              contactSources.company = 'website_title';
-              console.log(`[prefetch ${id.slice(0,8)}] Fell back to website title for company: "${fromTitle}"`);
-            }
-          }
+          // Phase 1 only does Fireflies search. The website scrape moves to
+          // extract-brief so the rep can confirm/edit the URL first — no point
+          // burning a fetch + JS render if they're going to change it.
+          setProgress(id, { progress: 60, step: 'Searching Fireflies (parallel)…' });
+          const candidates = await findFirefliesTranscripts(email, contactInfo);
 
           // Public candidate list — strip the heavy `sentences` blob and the
           // internal `_match_kind` tag, surfacing match_kind as a clean field.
@@ -3530,13 +3547,13 @@ const server = http.createServer(async (req, res) => {
             }
           });
 
-          // Side-cache for phase 2 — extract-brief needs the website body and
-          // the historical brief but they're too heavy to ship to the client.
+          // Side-cache for phase 2 — extract-brief needs the historical brief
+          // and the raw candidate map (for sentences). webBody is filled by
+          // extract-brief itself once the rep has confirmed the URL.
           _progressJobs.get(id)._extras = {
             email,
             contactInfo,
             contactSources,
-            webBody:         website?.bodyText || '',
             historicalBrief: historicalContext?.brief || null,
             candidatesById:  new Map((candidates || []).map(t => [t.id, t]))
           };
@@ -3600,15 +3617,48 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(202, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ extract_id: id }));
 
+      // Rep-confirmed website (Step 1 input). Falls back to whatever phase 1
+      // proposed if the input is empty. Stripped to host segment, no protocol.
+      const confirmedWebsite = (function() {
+        const raw = (body.website_url || body.websiteUrl || '').trim();
+        const src = raw || extras.contactInfo.website || '';
+        return src.replace(/^https?:\/\//, '').split('/')[0] || '';
+      })();
+
       (async () => {
         try {
           const contactInfo    = { ...extras.contactInfo };
           const contactSources = { ...extras.contactSources };
-          const webBody        = extras.webBody;
+          if (confirmedWebsite && confirmedWebsite !== contactInfo.website) {
+            contactInfo.website = confirmedWebsite;
+            contactSources.website = 'rep_input';
+          }
           let   brief           = null;
           let   transcriptFound = false;
           let   transcriptTitle = null;
           let   transcriptDate  = null;
+
+          // Scrape the rep-confirmed website now (direct → corsproxy fallback,
+          // see scrapeWebsite). Produces bodyText for Claude + raw HTML that
+          // brand_scrape will mine for logo/colors/images later. Best-effort:
+          // if scrape fails we still extract the brief from the transcript.
+          let website = null;
+          let webBody = '';
+          if (confirmedWebsite) {
+            setProgress(id, { progress: 10, step: 'Scraping website…' });
+            try { website = await scrapeWebsite(confirmedWebsite); webBody = website?.bodyText || ''; }
+            catch (e) { console.warn(`[extract-brief ${id.slice(0,8)}] scrape failed:`, e.message); }
+            // Company-from-website-title fallback (moved here from prefetch so
+            // it runs against the rep-confirmed URL, not the initial guess).
+            if (!contactInfo.company && website?.title) {
+              const fromTitle = companyFromWebsiteTitle(website.title);
+              if (fromTitle) {
+                contactInfo.company = fromTitle;
+                contactSources.company = 'website_title';
+                console.log(`[extract-brief ${id.slice(0,8)}] company from website title: "${fromTitle}"`);
+              }
+            }
+          }
 
           if (transcriptId) {
             const candidate = extras.candidatesById.get(transcriptId);
@@ -3675,6 +3725,12 @@ const server = http.createServer(async (req, res) => {
               transcript_id:       transcriptId,
               contact:             contactInfo,
               contact_sources:     contactSources,
+              website_scrape:      website ? {
+                title:       website.title || null,
+                meta_desc:   website.metaDesc || null,
+                bytes:       (website.html || '').length,
+                html_source: website.html_source || 'none'
+              } : null,
               brief:               brief || emptyBrief(contactInfo)
             }
           });

@@ -473,6 +473,7 @@ option{background:#111116;color:#e4e4e7}
             <div><div class="brief-label">Company Name</div><input id="bf-company" class="brief-input" placeholder="Acme Corp"></div>
             <div><div class="brief-label">Contact Name</div><input id="bf-contact-name" class="brief-input" placeholder="Jane Smith"></div>
             <div class="brief-full"><div class="brief-label">Contact Title</div><input id="bf-contact-title" class="brief-input" placeholder="Founder & CEO"></div>
+            <div class="brief-full"><div class="brief-label">Offer — what their business does</div><textarea id="bf-offer" class="brief-input" rows="2" placeholder="Helps independent financial advisors win HNW clients through a 90-day done-with-you marketing program…"></textarea></div>
           </div>
 
           <div class="brief-section-label">ICP — Who They Sell To</div>
@@ -978,7 +979,7 @@ function _createNewJob(email) {
   briefSetProgress(0, 'Starting…');
 
   // Clear all brief fields
-  ['bf-company','bf-contact-name','bf-contact-title','bf-apollo-titles',
+  ['bf-company','bf-contact-name','bf-contact-title','bf-offer','bf-apollo-titles',
    'bf-industry','bf-company-size','bf-geography','bf-ltv','bf-close-rate','bf-show-rate',
    'bf-pain','bf-result','bf-methodology','bf-proof','bf-goals','bf-why',
    'bf-title-a','bf-title-b','bf-lead-gen','bf-revenue','bf-team-size','bf-challenge',
@@ -1180,10 +1181,17 @@ function briefShowStep2() {
   briefSetProgress(10, 'Submitting transcript pick…');
   _briefPollLastPct = -1; _briefPollStuck = 0;
 
+  // Pass the rep-confirmed website URL through to phase 2 so the scrape uses
+  // exactly what the rep saw on Step 1 (not the GHL/email-domain guess).
+  var websiteUrl = (document.getElementById('brief-website-url').value || '').trim();
   fetch('/api/extract-brief', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ prefetch_id: _briefPrefetchId, transcript_id: _briefSelectedTranscriptId })
+    body: JSON.stringify({
+      prefetch_id:   _briefPrefetchId,
+      transcript_id: _briefSelectedTranscriptId,
+      website_url:   websiteUrl || undefined
+    })
   })
   .then(function(r) { return r.json(); })
   .then(function(data) {
@@ -1235,6 +1243,7 @@ function briefPopulateStep2(extract) {
   setVal('bf-company',       prospect.company);
   setVal('bf-contact-name',  prospect.contact_name);
   setVal('bf-contact-title', prospect.contact_title);
+  setVal('bf-offer',         prospect.offer_description);
   setVal('bf-apollo-titles', Array.isArray(icp.apollo_titles) ? icp.apollo_titles.join(', ') : (icp.apollo_titles || ''));
   // apollo_keyword is the new single-phrase industry field. Fall back to the legacy
   // apollo_industries array (first value) for previously created jobs.
@@ -1298,11 +1307,17 @@ function briefConfirmAndCreate() {
     ? geoRaw.split(',').map(function(s){ return s.trim(); }).filter(function(s){ return s.length > 0; })
     : null;
 
+  // Preserve fields Step 2 doesn't surface for direct editing but that downstream
+  // tasks (webinar_titles, etc.) want — e.g. offering_name from the extract.
+  var extractedProspect = (_briefExtractResult && _briefExtractResult.brief && _briefExtractResult.brief.prospect) || {};
+
   var brief = {
     prospect: {
-      company:       getVal('bf-company'),
-      contact_name:  getVal('bf-contact-name'),
-      contact_title: getVal('bf-contact-title')
+      company:           getVal('bf-company'),
+      contact_name:      getVal('bf-contact-name'),
+      contact_title:     getVal('bf-contact-title'),
+      offer_description: getVal('bf-offer'),
+      offering_name:     extractedProspect.offering_name || null
     },
     icp: {
       role:                  apolloTitlesArr ? apolloTitlesArr.join(', ') : null,
