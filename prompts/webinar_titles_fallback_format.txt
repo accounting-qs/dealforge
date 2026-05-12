@@ -11,11 +11,21 @@ Max 300 words total. Each part is one tight sentence or short paragraph.
    Structure: [Name] → [before state] → [used the system] → [result with verbatim numbers].
    Never fabricate numbers. If no case study, skip to Part 3.
 
-3. CONTRAST FRAME — "Instead of [what they stopped doing], [name] built [new system] —
-   [what that system does]." Names the old way vs. the new way. Crystallises the value prop.
+3. CONTRAST FRAME — ADAPTS to host business_model.
+   • Educational hosts (consulting / coaching / agency): "Instead of [what they stopped
+     doing], [name] built [new system] — [what that system does]." Names old vs. new.
+   • Delivery hosts (managed_service / lead_gen / saas / platform / product / unknown):
+     "Instead of [running X yourself / building it in-house], [host] delivers [outcome]
+     for you." The attendee does NOT build the new thing — the host does.
 
-4. SESSION PROMISE — "[Prospect company] will show you exactly how [they/client name] did
-   this." Commits to a specific mechanism. Educational framing, not a pitch.
+4. SESSION PROMISE — ADAPTS to host business_model.
+   • Educational: "[Prospect company] will show you exactly how [they/client name] did
+     this." Commits to a teachable mechanism.
+   • Delivery: "[Prospect company] delivered [outcome] for [segment] — here's how that
+     same engine can produce results for you." OR for SaaS/Product: "[Prospect company]
+     will show you what's possible inside [product] for [segment]."
+   • Never a pitch. Never frame the attendee as someone who will "build" anything when
+     business_model is delivery.
 
 5. YES / MAYBE / UNSUBSCRIBE / REGISTRATION LINK (non-negotiable) — Comes BEFORE bullets.
    Include all three elements:
@@ -24,15 +34,27 @@ Max 300 words total. Each part is one tight sentence or short paragraph.
    YES/MAYBE = low-friction conversion (one click, no form). Unsubscribe = compliance +
    trust signal. Registration page = second pathway for standard funnel tracking.
 
-6. DISCOVERY BULLETS — 4–5 bullets. Each is a transformation promise, not a topic.
-   Wrong: "Webinar structure" (topic). Right: "Structure your webinar so prospects show up
-   already convinced and ready to buy" (transformation). Prefix with 💥 or 🚀.
+6. DISCOVERY BULLETS — 4–5 bullets. Each is a SPECIFIC PROMISE, not a topic.
+   The verb set adapts to host business_model:
+   • Educational hosts → TRANSFORMATION promises the attendee will achieve.
+     Wrong: "Webinar structure" (topic). Right: "Structure your webinar so prospects show
+     up already convinced and ready to buy" (transformation). Verbs: Build, Structure,
+     Master, Create, Develop, Implement.
+   • Delivery hosts → OUTCOME promises the host delivers; attendee just receives.
+     Wrong: "Build a lead generation system" (delivery host attendee doesn't build).
+     Right: "Receive 50+ qualified leads per month at $X CPL without managing the funnel."
+     Verbs: Receive, Hit, Cut, Stop, Eliminate, Unlock, Get, Automate, See, Free up.
+   Prefix with 💥 or 🚀 either way.
 
 7. REFRAME LINE — "Most [segment] don't have a [obvious problem] — they have a [real
    underlying problem]." Pattern interrupt. Repositions the host as a diagnostician.
 
-8. COMPETITIVE URGENCY CLOSE — "The [segment] winning in 2026 aren't doing [old approach]…
-   They're building [new system] that generates [result] on repeat." No false scarcity.
+8. COMPETITIVE URGENCY CLOSE — ADAPTS to host business_model.
+   • Educational: "The [segment] winning in 2026 aren't doing [old approach]… They're
+     building [new system] that generates [result] on repeat."
+   • Delivery: "The [segment] winning in 2026 aren't running [X] in-house anymore…
+     They're using [host] / handing it to [host] / plugging into [host] for [outcome]."
+   No false scarcity in either shape.
 
 9. P.S. REPLAY HOOK — "P.S. Want the replay? Just register through the official page."
    Removes FOMO friction. Increases total registrations.

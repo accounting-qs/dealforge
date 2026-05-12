@@ -34,6 +34,33 @@ Self-check before finalizing every variant:
 3. Would a real customer of the host (not the host themselves) find this invite useful? If no, you've inverted the audience.
 ═══════════════════════════════════════════════════════════════
 
+═══════════════════════════════════════════════════════════════
+## BUSINESS MODEL FRAMING (CRITICAL — read this before writing any variant)
+
+The Per-Job Context contains a line beginning `*** HOST BUSINESS MODEL:` with one of nine values. This value gates the SHAPE of every variant — not just word choices, but the fundamental promise the webinar makes to the attendee. Mis-applying the wrong shape is the #1 cause of "the copy doesn't match what the host actually sells."
+
+| business_model | What the host sells | Attendee experience | session_promise frame | contrast_frame | urgency_close | bullet verbs |
+|---|---|---|---|---|---|---|
+| consulting | Advice / strategy work | Attendee learns & implements alongside host | "[host] will show you exactly how [client] did this." | "Instead of [old], [host] built [new system]…" | "[Segment] winning aren't [old] — they're building [new system]." | Build, Structure, Master, Create, Develop |
+| coaching | 1:1 / group coaching programs | Attendee learns & implements (long-term) | Same as consulting | Same as consulting | Same as consulting | Build, Structure, Master, Develop, Learn |
+| agency | Done-WITH-you execution | Attendee owns outcome, agency executes alongside | "[host] will walk through how they partner with [segment] to deliver [outcome]." | "Instead of [building X in-house], top brands partner with [host] to deliver [X]." | "[Segment] winning aren't building [X] in-house — they're partnering with [host]." | Achieve, Unlock, Hit, Accelerate (mixed — some build, some receive) |
+| managed_service | Done-FOR-you operational service | Attendee outsources entirely; receives outcome | "[host] delivered [outcome] for [segment] — here's how they can do the same for you." | "Instead of [running X yourself], [host] handles it end-to-end so you can focus on [core work]." | "[Segment] winning aren't running [X] in-house — they're handing it to [host]." | Receive, Hit, Stop spending, Eliminate, Cut, Free up |
+| lead_gen | Pay-per-lead / CPL / CPA / CPC delivery | Attendee buys leads as commodity, doesn't build | "[host] generated [N] qualified leads for [segment] last [period] — here's how that pipeline reaches your team." | "Instead of [running paid acquisition yourself], [host] delivers [type] leads on [CPL/CPA] — you only pay for results." | "[Segment] winning aren't grinding their own funnels — they're using [host] for pay-for-performance leads." | Receive, Hit [CAC], Get [N leads], Stop spending, Skip the [in-house process] |
+| saas | Self-serve software product | Attendee uses the product; product produces outcome | "[host] will show you what's possible inside [product] for [segment]." | "Instead of [manual / disconnected process], [product] gives you [capability] in one place." | "[Segment] winning aren't doing [manual X] anymore — they're using [product] to [outcome]." | Cut [time], Automate, See [data] in real-time, Stop juggling, Get [view] of [thing] |
+| platform | Multi-sided marketplace / platform | Attendee accesses a network/marketplace | "[host] connects [segment] to [the other side] — here's how that translates to [outcome] for you." | "Instead of [building network yourself], [host] gives you [Nx] reach instantly." | "[Segment] winning aren't building from scratch — they're plugging into [host]." | Reach, Tap into, Plug into, Access, Match with |
+| product | Physical / digital one-time product | Attendee buys & uses the product | "[host] will show you how [product] [does the thing] for [segment]." | "Instead of [legacy alternative], [product] [unique mechanism]." | "[Segment] choosing [host] over [alternative]…" | Use, Get, Own, Solve [problem] with [product] |
+| unknown | Indeterminate | Default to DELIVERY framing (safer) | Use managed_service template | Use managed_service template | Use managed_service template | Use delivery verbs |
+
+**Hard rule:** for `managed_service` / `lead_gen` / `saas` / `platform` / `product` / `unknown` hosts, you MUST NOT use the consulting/coaching "build a system" / "structure your X" / "master the framework" verbs anywhere in title, bullets, session_promise, contrast_frame, urgency_close, or reframe_line. The attendee for these hosts is NOT building anything — they are receiving an outcome. Using build-language is a direct copy quality failure.
+
+**How to apply this:** when you read the variant schema below and see template phrases like "[host] built [new system]" or "they're building [new system]", treat those as the CONSULTING/COACHING shape only. Substitute the right shape from the table above for the host's actual business_model.
+
+Self-check before finalizing each variant (in addition to the host-offer self-check above):
+4. Does the bullet shape match the business_model? (Educational → Build/Structure verbs. Delivery → Receive/Hit/Stop verbs.)
+5. Does session_promise commit to the right thing? (Educational → "show you exactly how to do X." Delivery → "deliver X / show what's possible with X.")
+6. Does contrast_frame avoid implying the attendee built or will build anything? (Only educational hosts have attendees who build.)
+═══════════════════════════════════════════════════════════════
+
 ## Prospect's Business Context
 {{business_context_block}}
 
@@ -185,12 +212,12 @@ Each variant has the 12 content fields below plus a `_score` object. Fill every 
       "title": "max 60 chars — front-load attendee role or core outcome in first 40 chars. NO emojis. NO 'Revealed:'/'Exposed:'/'The Secret' framing.",
       "conditional_opener": "ONE sentence — 'If you run [segment] and your growth still depends on [painful current state] — this will fix it.' Qualifies the reader by self-identification.",
       "proof_story": "ONE specific client story with VERBATIM numbers from the brief. Null if no proof numbers in brief — never fabricate.",
-      "contrast_frame": "ONE sentence — 'Instead of [what they stopped doing], [host] built [new system] — [what that system does].'",
-      "session_promise": "ONE sentence — '[{{prospect_company_name}}] will show you exactly how [client name or 'they'] did this.' Educational framing.",
+      "contrast_frame": "ONE sentence. ADAPT shape to business_model (see BUSINESS MODEL FRAMING table above). Educational (consulting/coaching): 'Instead of [old], [host] built [new system] — [what that system does].' Delivery (managed_service/lead_gen): 'Instead of [running X yourself], [host] delivers [outcome] for you.' SaaS/Platform/Product: 'Instead of [manual/legacy alternative], [product] gives you [capability].'",
+      "session_promise": "ONE sentence — the host's commitment to the attendee. ADAPT to business_model: Educational → '[host] will show you exactly how [client] did this.' Delivery → '[host] delivered [outcome] for [segment] — here's how they can do the same for you.' SaaS/Product → '[host] will show you what's possible inside [product] for [segment].'",
       "rsvp_block": "Two short lines — 'Click YES or MAYBE to confirm your attendance. Click Unsubscribe and we won't reach out again. Or visit the official registration page to sign up there.'",
-      "bullets": ["4-5 bullets — each a SPECIFIC TRANSFORMATION promise, never a topic. Prefix with 💥 or 🚀."],
+      "bullets": ["4-5 bullets — each a SPECIFIC PROMISE, never a topic. ADAPT verb set to business_model: Educational hosts use TRANSFORMATION verbs (Build, Structure, Master, Create). Delivery hosts (managed_service / lead_gen / saas / platform / product / unknown) use OUTCOME verbs (Receive, Hit, Cut, Stop, Unlock, Get, Automate) and MUST NOT use Build/Structure/Master/Create — attendees of delivery hosts don't build anything themselves. Prefix with 💥 or 🚀."],
       "reframe_line": "ONE sentence — 'Most [attendee segment] don't have a [obvious problem] — they have a [real underlying problem].'",
-      "urgency_close": "ONE sentence — 'The [attendee segment] winning in 2026 aren't doing [old approach]… They're building [new system] that generates [outcome] on repeat.' No false scarcity.",
+      "urgency_close": "ONE sentence. ADAPT to business_model: Educational → 'The [segment] winning in 2026 aren't doing [old] — they're building [new system] that generates [outcome] on repeat.' Delivery → 'The [segment] winning aren't running [X] in-house — they're handing it to [host] / using [product] for [outcome].' No false scarcity.",
       "ps_replay": "Exact line — 'P.S. Want the replay? Just register through the official page.'",
       "for_line": "ONE sentence — who specifically should attend (segment + size/stage + geography if relevant).",
       "_score": {
@@ -211,25 +238,25 @@ Each variant has the 12 content fields below plus a `_score` object. Fill every 
       "contrast_frame": "ONE sentence — old way vs new way.",
       "session_promise": "ONE sentence.",
       "rsvp_block": "Same exact format as variant A.",
-      "bullets": ["4-5 transformation bullets."],
+      "bullets": ["4-5 bullets. Verb set follows business_model — see variant A bullets description."],
       "reframe_line": "ONE sentence — pattern interrupt.",
-      "urgency_close": "ONE sentence.",
+      "urgency_close": "ONE sentence. Same business_model adaptation as variant A.",
       "ps_replay": "Same exact line.",
       "for_line": "ONE sentence.",
       "_score": { "icp_accuracy": 0-30, "pain_relevance": 0-25, "outcome_clarity": 0-20, "compliance_safety": 0-15, "curiosity_appeal": 0-10, "total": 0-100 }
     },
     {
       "variant": "C",
-      "style": "Mechanism-first (Kennedy style)",
-      "title": "max 60 chars — lead with the system or mechanism. NO emojis.",
-      "conditional_opener": "ONE sentence — mechanism-anchored opener.",
+      "style": "Mechanism-first (Kennedy style) — for Educational hosts only. For Delivery hosts (managed_service / lead_gen / saas / platform / product), reinterpret as 'Process-transparency style' — show HOW the host produces the outcome (their internal process), but DO NOT prescribe the attendee build anything.",
+      "title": "max 60 chars — Educational: lead with the system or mechanism. Delivery: lead with the host's process or proprietary engine that produces the outcome. NO emojis.",
+      "conditional_opener": "ONE sentence — Educational: mechanism-anchored opener. Delivery: a teaser of how the host's engine produces the result for the attendee.",
       "proof_story": "Same rules — verbatim numbers or null.",
-      "contrast_frame": "ONE sentence.",
-      "session_promise": "ONE sentence.",
+      "contrast_frame": "ONE sentence. Same business_model adaptation as variant A.",
+      "session_promise": "ONE sentence. Same business_model adaptation as variant A.",
       "rsvp_block": "Same exact format.",
-      "bullets": ["4-5 transformation bullets."],
+      "bullets": ["4-5 bullets. Same business_model adaptation as variant A."],
       "reframe_line": "ONE sentence.",
-      "urgency_close": "ONE sentence.",
+      "urgency_close": "ONE sentence. Same business_model adaptation as variant A.",
       "ps_replay": "Same exact line.",
       "for_line": "ONE sentence.",
       "_score": { "icp_accuracy": 0-30, "pain_relevance": 0-25, "outcome_clarity": 0-20, "compliance_safety": 0-15, "curiosity_appeal": 0-10, "total": 0-100 }

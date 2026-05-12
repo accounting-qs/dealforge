@@ -214,7 +214,15 @@ async function loadCopyBrain() {
     const examples = Array.isArray(er.body) ? er.body : [];
     const principlesBlock = principles.length
       ? principles.map(p => `- ${p.text}`).join('\n')
-      : '- Write as the prospect company hosting, never Quantum Scaling\n- Front-load ICP role in title first 40 chars\n- Every bullet is a transformation promise, not a topic';
+      : [
+          '- Write as the prospect company hosting, never Quantum Scaling.',
+          '- Front-load ICP role or core outcome in title first 40 chars.',
+          '- Bullets are SPECIFIC PROMISES, not topics. Shape adapts to host business_model:',
+          '    • Educational hosts (consulting / coaching / agency) → TRANSFORMATION promises (verbs: Build, Structure, Master, Create).',
+          '    • Delivery hosts (managed_service / lead_gen / saas / platform / product / unknown) → OUTCOME promises (verbs: Receive, Hit, Cut, Stop, Unlock, Get, Automate). Never use Build/Structure/Master for delivery hosts — their attendees do NOT build a system themselves.',
+          '- The reader of the calendar invite is the prospect\'s CUSTOMER, not the prospect. Never frame the attendee as a sales target or describe their business model as if pitching them.',
+          '- Anchor every claim and number to the brief. If unsupported, return null rather than fabricating.'
+        ].join('\n');
     // Render Calendar Examples as numbered sections with explicit Title/Description
     // so Claude sees the same shape it must produce: a calendar title + description.
     // Description is converted from HTML (WYSIWYG editor output) to clean markdown.
@@ -1247,6 +1255,7 @@ Return this exact JSON (null for anything not found):
     "contact_title": "string | null — their job title. Extract verbatim if stated. Otherwise apply the contact_title inference exception from the rules above (default to 'Founder & Owner' when ownership is clear, set _provenance.\"prospect.contact_title\" = \"inferred\").",
     "offering_name": "string | null — the name of the product, service, app, framework, or methodology the prospect is building/selling, IF separate from the company name. NOT the company itself. Examples: 'Fiddle Link AI', 'The Revenue Engine', 'Devoted Client Attraction Method'. Extract verbatim from the call. Null if (a) no specific named offering is mentioned, or (b) the offering and the company share the same name.",
     "offer_description": "string | null — a 1-3 sentence description of WHAT THE PROSPECT'S BUSINESS DOES / SELLS, written so a downstream copywriter can use it verbatim in calendar-invite copy. Plain English, no marketing fluff: who they help, what they deliver, and (if mentioned) the headline outcome. Sources in priority order: (1) the prospect's own description of their service from the call, (2) the website's hero / about-page summary, (3) the company name + offering_name + angle.result rolled into a sentence. Examples — Good: 'Helps independent financial advisors win HNW clients through a 90-day done-with-you marketing program that replaces cold outreach with referral-quality inbound leads.' Bad: 'A revolutionary platform empowering professionals to unlock their full potential.' Always produce something usable — only null if there is literally zero signal in the transcript or website.",
+    "business_model": "string — REQUIRED. One of: 'consulting' | 'coaching' | 'agency' | 'managed_service' | 'lead_gen' | 'saas' | 'platform' | 'product' | 'unknown'. Determines whether the downstream webinar should be framed as EDUCATIONAL (host teaches the attendee a system to implement) or DELIVERY-FOCUSED (host produces an outcome the attendee just receives). Definitions: consulting = sells advice/expertise/strategy work, deliverable is recommendations or done-with-you implementation; coaching = sells 1:1 or group coaching/programs, attendee learns and implements; agency = done-WITH-you (attendee still owns the outcome, agency executes alongside); managed_service = done-FOR-you operational service (attendee outsources entirely — e.g. fractional CFO, virtual assistant team, fulfillment); lead_gen = pay-per-lead / pay-per-call / CPL / CPA / CPC vendor that delivers qualified leads as a commodity; saas = self-serve software product the customer uses themselves; platform = multi-sided marketplace or platform connecting parties; product = physical product, app, hardware, or one-time digital product; unknown = genuinely indeterminate from the transcript AND website. CRITICAL: this controls the entire webinar copy shape downstream — a consulting host gets 'we teach you how to build X' framing, a lead_gen host gets 'we deliver X leads to you' framing. Mis-classifying as 'consulting' when host is 'lead_gen' or 'managed_service' produces copy that frames the attendee as having to 'build a system' when in reality the host builds/runs it for them — that's the single most common quality failure of this generator. When in doubt between consulting/agency vs managed_service/lead_gen, ask: does the host's customer have to learn/implement anything, or do they just pay and receive an outcome? If they receive an outcome with no implementation work, it's managed_service or lead_gen, NOT consulting.",
     "website":       "string | null — the prospect's company website, ONLY if explicitly spoken on the call ('our site is turnyellow.com', 'check us out at mfundvc.com', 'we're at quantum-scaling.com'). Strip protocol, www, and trailing slashes — return the bare host like 'turnyellow.com'. NEVER infer from company name. NEVER guess from email domain. Null if no URL is mentioned verbatim."
   },
   "icp": {
@@ -1299,6 +1308,7 @@ Return this exact JSON (null for anything not found):
     "prospect.contact_title":  "one of: transcript | inferred | missing — use 'inferred' when ownership is clear but title not stated verbatim",
     "prospect.offering_name":  "one of: transcript | missing",
     "prospect.offer_description": "one of: transcript | website | inferred | missing — 'website' if drawn from the scraped site copy, 'inferred' if synthesized from company + offering + angle.result, 'transcript' if quoted",
+    "prospect.business_model":    "one of: transcript | website | inferred | unknown — 'transcript' if the prospect explicitly described their delivery model, 'website' if classified from the scraped site copy (look for 'pay-per-lead', 'done-for-you', 'self-serve', 'we generate / deliver / handle', etc.), 'inferred' if synthesized from offering_name + offer_description, 'unknown' if genuinely indeterminate",
     "prospect.website":           "one of: transcript | missing — 'transcript' if the prospect spoke their URL on the call, 'missing' otherwise",
     "icp.role":                "one of: transcript | missing",
     "icp.industry":            "one of: transcript | missing",
@@ -2288,6 +2298,21 @@ async function generateWebinarTitles(extracted, companyName, job = null, customI
                      || (brand.website_summary ? brand.website_summary.slice(0, 400) : null)
                      || null;
   const offerName  = extracted.prospect?.offering_name || null;
+  // Business model — gates the webinar framing. Consulting/coaching/agency hosts
+  // get "educational" copy (we teach you how to build X). managed_service /
+  // lead_gen / saas / platform / product hosts get "delivery" copy (we produce
+  // X; you receive it). Mis-classifying a lead-gen vendor as a consultant is
+  // the #1 cause of "the copy doesn't match what they actually sell" — the
+  // model writes 'Build a performance marketing system' for a pay-per-lead
+  // vendor whose actual pitch is 'We deliver leads on CPA.'
+  const businessModel = String(extracted.prospect?.business_model || 'unknown').toLowerCase();
+  const EDUCATIONAL_MODELS = new Set(['consulting', 'coaching', 'agency']);
+  const DELIVERY_MODELS    = new Set(['managed_service', 'lead_gen', 'saas', 'platform', 'product']);
+  const modelFramingHint = EDUCATIONAL_MODELS.has(businessModel)
+    ? `EDUCATIONAL host (${businessModel}) — webinar teaches attendees a system they will implement. Bullets = transformation promises ("Build X", "Structure Y", "Master Z"). session_promise = "[host] will show you exactly how [client] did this." contrast_frame / urgency_close = "[X] built [new system]" / "They're building [new system]".`
+    : DELIVERY_MODELS.has(businessModel)
+      ? `DELIVERY host (${businessModel}) — webinar describes outcomes the HOST produces; attendees receive results, they do NOT build a system themselves. Bullets = outcome promises ("Receive X", "Hit Y CAC", "Stop spending on Z", "Cut X by 30%", "Unlock Y without managing Z"). session_promise = "[host] delivered [outcome] for [segment] — here's how they can do the same for you" / "[host] will show you what's possible with [product]." contrast_frame = "Instead of [building/managing X yourself], [host] handles it for you." urgency_close = "[Segment] winning aren't building [X] in-house — they're using [host] / outsourcing to [host]." FORBIDDEN for this model: "Build a system", "Structure your X", "Create the framework", "you'll learn how to build", "the X-step process to construct" — those describe what the HOST does internally, not what the attendee experiences.`
+      : `UNKNOWN business model — default to DELIVERY framing (safer for non-consulting hosts). Avoid "build a system" / "structure your X" bullets unless the host's offer_description clearly describes a teachable framework.`;
   // Pull richer brief fields for the accuracy-first generation prompt. These
   // drive the specificity hierarchy (Step 5 of webinar_titles_system.txt) so
   // verbatim language wins over generic industry assumptions.
@@ -2306,7 +2331,12 @@ async function generateWebinarTitles(extracted, companyName, job = null, customI
     return 'other';
   }
   const geoClassHint = classifyGeo(geo);
-  const outputSchema = `\nRuntime rules: write as ${companyName} hosting — NEVER as Quantum Scaling • titles HARD LIMIT 60 chars, NO emojis in titles • bullets = specific transformations, not topics • ${cs?.numbers ? 'proof numbers verbatim: ' + cs.numbers : 'no fabricated proof numbers — set proof_story to null if no numbers in brief'} • return ALL 12 fields per variant + _score per variant + top-level _analysis and _recommended_index\nReturn valid JSON only matching the Output Format schema above.`;
+  const bulletShapeRule = EDUCATIONAL_MODELS.has(businessModel)
+    ? "bullets = specific TRANSFORMATION promises (attendee will Build/Structure/Master something)"
+    : DELIVERY_MODELS.has(businessModel)
+      ? "bullets = specific OUTCOME promises the host delivers (attendee will Receive/Hit/Cut/Stop/Unlock — never Build/Structure/Create)"
+      : "bullets = specific promises (default to OUTCOME framing — Receive/Hit/Cut — unless the host's offer_description clearly describes a teachable framework)";
+  const outputSchema = `\nRuntime rules: write as ${companyName} hosting — NEVER as Quantum Scaling • titles HARD LIMIT 60 chars, NO emojis in titles • ${bulletShapeRule} • ${cs?.numbers ? 'proof numbers verbatim: ' + cs.numbers : 'no fabricated proof numbers — set proof_story to null if no numbers in brief'} • return ALL 12 fields per variant + _score per variant + top-level _analysis and _recommended_index\nReturn valid JSON only matching the Output Format schema above.`;
   let systemPrompt, userPrompt;
   let brainMeta = null;
   if (WEBINAR_SYSTEM_TEMPLATE) {
@@ -2322,6 +2352,11 @@ async function generateWebinarTitles(extracted, companyName, job = null, customI
       // offer_description is filled, the webinar topic MUST orbit it.
       offerDesc ? `- *** WHAT THE HOST ACTUALLY SELLS (anchor the webinar topic here — this overrides any 'pain' or 'result' field that contradicts it): ${offerDesc}` : null,
       offerName ? `- Host's product/methodology name: ${offerName}` : null,
+      // Business model gates the entire copy SHAPE. Without this, the model
+      // defaults to "consultant teaches audience to build a system" framing,
+      // which is wrong for managed-service / lead-gen / SaaS hosts whose
+      // actual pitch is "we deliver outcomes; you don't build anything."
+      `- *** HOST BUSINESS MODEL: ${businessModel} — ${modelFramingHint}`,
       tagline    ? `- Host tagline: ${tagline}` : null,
       hostName   ? `- Host founder: ${hostName}${hostBio ? ' — ' + hostBio : ''}` : null,
       `- Attendee (host's ICP — the reader of this calendar invite): ${role}${size ? ' at ' + size + ' companies' : ''}${industry ? ' in ' + industry : ''}`,
@@ -2341,7 +2376,12 @@ async function generateWebinarTitles(extracted, companyName, job = null, customI
       // Hard anti-pattern fence — written here (not just in the system prompt)
       // because the strongest place to prevent contamination is right next to
       // the prospect's actual offer description.
-      `- AUDIENCE FENCE: The reader of this invite is the PROSPECT'S CUSTOMER, not the prospect themselves. NEVER describe the host's product as "webinar acquisition", "lead-gen system", "pipeline management", "cold outbound replacement", "9-15 week onboarding", "HubSpot integration", "$500M+ revenue", or "1,400+ clients" — those phrases describe Quantum Scaling's pitch to the prospect, NOT what the prospect sells. If you find yourself writing them in the hook, bullets, or proof, you have inverted the audience and must rewrite using ONLY the "WHAT THE HOST ACTUALLY SELLS" line above.`
+      `- AUDIENCE FENCE: The reader of this invite is the PROSPECT'S CUSTOMER, not the prospect themselves. NEVER describe the host's product as "webinar acquisition", "lead-gen system", "pipeline management", "cold outbound replacement", "9-15 week onboarding", "HubSpot integration", "$500M+ revenue", or "1,400+ clients" — those phrases describe Quantum Scaling's pitch to the prospect, NOT what the prospect sells. If you find yourself writing them in the hook, bullets, or proof, you have inverted the audience and must rewrite using ONLY the "WHAT THE HOST ACTUALLY SELLS" line above.`,
+      // Business-model fence — prevents the second-order failure mode: copy
+      // that's no longer QS-pitch contaminated, but still wrong-shaped (e.g.
+      // pitching a managed-service vendor as if they were a consultant
+      // teaching their ICP how to build a system).
+      DELIVERY_MODELS.has(businessModel) ? `- BUSINESS-MODEL FENCE: This host is a ${businessModel} (delivery model — they produce outcomes, attendees receive them). FORBIDDEN bullet/title verbs: Build, Structure, Construct, Create the framework, Master the X-step process, Develop the system. ALLOWED verbs: Receive, Hit, Reach, Cut, Stop, Eliminate, Unlock, Get [outcome] without [work the host does for them]. session_promise must commit to delivering an outcome, NOT to revealing a teachable system.` : null
     ].filter(Boolean).join('\n');
     var brain = await loadCopyBrain();
     brainMeta = brain._meta;
