@@ -4216,6 +4216,54 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // ── GET /api/diag/rep-resolve?email=… — walk the whole resolve chain and ──
+  // return JSON. Useful when the New Job dropdown stays blank — you can see
+  // exactly which step fell through (no contact, no opp, opp without owner,
+  // owner without a sales_reps mapping, etc.). Returns ghl_user_id but no
+  // secrets, so safe to leave un-gated.
+  if (req.method === 'GET' && urlPath === '/api/diag/rep-resolve') {
+    setCors(res);
+    const qs = new URLSearchParams(req.url.split('?')[1] || '');
+    const email = (qs.get('email') || '').trim().toLowerCase();
+    if (!email || !email.includes('@')) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'pass ?email=…' })); return;
+    }
+    try {
+      const contact = await lookupGHLContact(email);
+      const oppOwner = contact?.id ? await lookupGHLOpportunityOwner(contact.id) : null;
+      const candidateUserId = oppOwner?.ghl_user_id || contact?.ghl_user_id || null;
+      const repRow = candidateUserId ? await getRepByGhlUserId(candidateUserId) : null;
+      const reps = await loadActiveReps();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        email,
+        steps: {
+          ghl_contact: contact ? {
+            id: contact.id, name: contact.name, company: contact.company,
+            contact_owner_user_id: contact.ghl_user_id || null
+          } : null,
+          ghl_opportunity: oppOwner ? {
+            opportunity_id:   oppOwner.opportunity_id,
+            opportunity_name: oppOwner.opportunity_name,
+            opp_owner_user_id: oppOwner.ghl_user_id
+          } : null,
+          candidate_user_id: candidateUserId,
+          candidate_source: oppOwner ? 'opportunity' : (contact?.ghl_user_id ? 'contact' : null),
+          rep_lookup_result: repRow ? { slug: repRow.slug, display_name: repRow.display_name, active: repRow.active } : null
+        },
+        sales_reps_table: reps.map(r => ({
+          slug: r.slug, display_name: r.display_name, ghl_user_id: r.ghl_user_id, active: r.active
+        }))
+      }));
+    } catch(e) {
+      console.error('[GET /api/diag/rep-resolve]', e.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
   // ── PATCH /api/jobs/:id/rep — override sales rep on an existing job ────────
   // Body: { slug: 'melissa' | 'ryan' | 'armando' | null }
   // Validates against sales_reps to keep rep_name from drifting away from the
