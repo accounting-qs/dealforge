@@ -161,6 +161,17 @@ html[data-mode="prospect"] .rep-only { display: none !important; }
 .cal-desc-case { font-size: 12px; color: #3c4043; padding: 7px 0; border-bottom: 1px solid #f1f3f4; line-height: 1.5; }
 .cal-desc-case:last-child { border-bottom: none; }
 .cal-desc-case strong { color: #1a1a1a; }
+/* Rich-editor mode for the calendar description. Inherits all .cal-desc-* styling so
+   the rep edits in the same visual frame the prospect will see. Override the .cal-desc
+   border/padding because we wrap the editor in a thicker purple border. */
+.cal-desc-editing { border: 2px solid #a78bfa !important; padding: 14px !important; margin-bottom: 0 !important; background: #fff; }
+.cal-desc-editing:focus { outline: none; border-color: #8b5cf6 !important; }
+.cal-desc-editing h3 { font-size: 14px; font-weight: 700; color: #1a1a1a; margin: 10px 0 6px; }
+.cal-desc-editing p  { margin: 0 0 8px; }
+.cal-desc-editing ul, .cal-desc-editing ol { margin: 6px 0 10px; padding-left: 22px; }
+.cal-desc-editing ul li, .cal-desc-editing ol li { font-size: 13px; color: #3c4043; line-height: 1.5; padding: 0; position: static; }
+.cal-desc-editing ul li::before { content: none; }
+.cal-desc-editing a { color: #1a73e8; }
 
 .rsvp-label { font-size: 12px; color: #70757a; margin-bottom: 10px; font-weight: 500; }
 .rsvp-buttons { display: flex; gap: 8px; }
@@ -1894,12 +1905,17 @@ function switchVariant(i) {
   resetRsvp();
 }
 
-// Render a rep-edited description override. Treated as plain text (escaped) so
-// reps can paste freely without worrying about HTML — line breaks become <br>.
-// Keeps the visual frame of the calendar invite ("cal-desc-custom" wrapper) so
-// padding/typography matches the rendered AI version.
-function _calRenderDescOverride(text) {
-  const esc = String(text || '')
+// Render a rep-edited description override. Rich editor saves sanitized HTML,
+// which we drop in directly to preserve the calendar invite's nested styling
+// (cal-desc-hook / cal-desc-cases / cal-desc-bullets / cal-desc-meta, lists,
+// links, etc). Legacy overrides saved as plain text (before the rich editor
+// existed) are escaped and rendered with line breaks preserved.
+function _calRenderDescOverride(value) {
+  if (value == null || value === '') return '';
+  // Heuristic: if the saved value contains any HTML tag, treat it as rich
+  // editor output and trust it (already sanitized at save time).
+  if (/<[a-zA-Z][^>]*>/.test(value)) return value;
+  const esc = String(value)
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
@@ -4867,41 +4883,86 @@ function calEditDesc() {
   var el = document.getElementById('cal-desc');
   if (!el || el.dataset.editing === '1') return;
   el.dataset.editing = '1';
-  // Seed the textarea: prefer existing override (raw text), else the visible
-  // text content of the rendered description (drops HTML structure — rep can
-  // re-add line breaks as needed).
-  var overrides = (typeof SESSION !== 'undefined' && SESSION?.extracted?._overrides) || {};
-  var seed = overrides['webinar_desc_' + i];
-  if (seed == null || seed === '') {
-    seed = (el.innerText || el.textContent || '').replace(/\n{3,}/g, '\n\n').trim();
-  }
+  // Seed with the current rendered HTML — this preserves the nested calendar
+  // styling (cal-desc-hook / cases / bullets / meta / etc.) so the rep edits
+  // inline with the same visual structure they see in the calendar invite.
   var originalHtml = el.innerHTML;
-  var ta = document.createElement('textarea');
-  ta.value = seed;
-  ta.maxLength = 4000;
-  ta.style.cssText = 'width:100%;box-sizing:border-box;min-height:240px;font-size:13px;line-height:1.6;padding:10px;border:2px solid #a78bfa;border-radius:6px;background:#fff;color:#202124;font-family:inherit;resize:vertical;';
+
+  // Wrapper: toolbar on top, contenteditable body below.
   var wrap = document.createElement('div');
   wrap.style.cssText = 'display:flex;flex-direction:column;gap:8px;width:100%;';
-  wrap.appendChild(ta);
-  var btnRow = document.createElement('div');
-  btnRow.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;align-items:center;';
-  var hint = document.createElement('span');
-  hint.style.cssText = 'font-size:11px;color:#9aa0a6;margin-right:auto;';
-  hint.textContent = 'Plain text — line breaks preserved. Replaces the AI-rendered description for variant ' + String.fromCharCode(65 + i) + '.';
-  btnRow.appendChild(hint);
-  var cancel = document.createElement('button');
-  cancel.type = 'button';
-  cancel.textContent = 'Cancel';
-  cancel.style.cssText = 'background:#f1f3f4;border:1px solid #dadce0;border-radius:6px;color:#5f6368;font-size:12px;font-weight:600;padding:7px 14px;cursor:pointer;font-family:inherit;';
-  var save = document.createElement('button');
-  save.type = 'button';
-  save.textContent = '✓ Save description';
-  save.style.cssText = 'background:#22c55e;border:none;border-radius:6px;color:#052e16;font-size:12px;font-weight:600;padding:7px 14px;cursor:pointer;font-family:inherit;';
-  btnRow.appendChild(cancel);
-  btnRow.appendChild(save);
-  wrap.appendChild(btnRow);
+
+  var toolbar = document.createElement('div');
+  toolbar.style.cssText = 'display:flex;gap:4px;flex-wrap:wrap;align-items:center;padding:6px 8px;background:#f8f9fa;border:1px solid #dadce0;border-radius:6px;';
+
+  function tbBtn(html, title, action) {
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.title = title;
+    b.innerHTML = html;
+    b.style.cssText = 'background:#fff;border:1px solid #dadce0;border-radius:4px;padding:4px 8px;font-size:12px;font-weight:600;color:#202124;cursor:pointer;font-family:inherit;min-width:28px;line-height:1;';
+    // Prevent mousedown from stealing focus from the editor — execCommand needs
+    // the editor's selection to remain active.
+    b.addEventListener('mousedown', function(e){ e.preventDefault(); });
+    b.addEventListener('click', function(){ action(); editor.focus(); });
+    toolbar.appendChild(b);
+    return b;
+  }
+  function tbSep() {
+    var s = document.createElement('span');
+    s.style.cssText = 'width:1px;height:18px;background:#dadce0;margin:0 4px;';
+    toolbar.appendChild(s);
+  }
+
+  tbBtn('<b>B</b>',  'Bold (Ctrl+B)',      function(){ document.execCommand('bold'); });
+  tbBtn('<i>I</i>',  'Italic (Ctrl+I)',    function(){ document.execCommand('italic'); });
+  tbBtn('<u>U</u>',  'Underline (Ctrl+U)', function(){ document.execCommand('underline'); });
+  tbSep();
+  tbBtn('H',         'Section heading',    function(){ document.execCommand('formatBlock', false, 'h3'); });
+  tbBtn('¶',         'Paragraph',          function(){ document.execCommand('formatBlock', false, 'p'); });
+  tbSep();
+  tbBtn('• List',    'Bullet list',        function(){ document.execCommand('insertUnorderedList'); });
+  tbBtn('1. List',   'Numbered list',      function(){ document.execCommand('insertOrderedList'); });
+  tbSep();
+  tbBtn('🔗',        'Insert link',        function(){
+    var url = window.prompt('Enter URL (include https://):');
+    if (url) document.execCommand('createLink', false, url);
+  });
+  tbBtn('✂️',        'Clear formatting',   function(){ document.execCommand('removeFormat'); });
+  tbBtn('↶',         'Undo',               function(){ document.execCommand('undo'); });
+  tbBtn('↷',         'Redo',               function(){ document.execCommand('redo'); });
+
+  // Right-aligned save/cancel.
+  var spacer = document.createElement('div');
+  spacer.style.cssText = 'flex:1;';
+  toolbar.appendChild(spacer);
+
+  var saveBtn = document.createElement('button');
+  saveBtn.type = 'button';
+  saveBtn.textContent = '✓ Save';
+  saveBtn.style.cssText = 'background:#22c55e;border:none;border-radius:4px;color:#052e16;font-size:12px;font-weight:600;padding:6px 14px;cursor:pointer;font-family:inherit;';
+  var cancelBtn = document.createElement('button');
+  cancelBtn.type = 'button';
+  cancelBtn.textContent = 'Cancel';
+  cancelBtn.style.cssText = 'background:#f1f3f4;border:1px solid #dadce0;border-radius:4px;color:#5f6368;font-size:12px;font-weight:600;padding:6px 14px;cursor:pointer;font-family:inherit;margin-left:6px;';
+  toolbar.appendChild(cancelBtn);
+  toolbar.appendChild(saveBtn);
+
+  // The editor itself — keep the .cal-desc class so all the nested
+  // .cal-desc-* selectors continue to style it identically; add a purple
+  // border + padding to signal "you're editing".
+  var editor = document.createElement('div');
+  editor.className = 'cal-desc cal-desc-editing';
+  editor.contentEditable = 'true';
+  editor.spellcheck = true;
+  editor.innerHTML = originalHtml;
+  editor.style.cssText = 'min-height:240px;padding:14px;border:2px solid #a78bfa;border-radius:6px;background:#fff;outline:none;border-top-color:#a78bfa;border-bottom-color:#a78bfa;';
+
+  wrap.appendChild(toolbar);
+  wrap.appendChild(editor);
   el.replaceWith(wrap);
-  setTimeout(function(){ ta.focus(); }, 10);
+  setTimeout(function(){ editor.focus(); }, 10);
+
   function restore(html) {
     var newEl = document.createElement('div');
     newEl.className = 'cal-desc';
@@ -4909,19 +4970,50 @@ function calEditDesc() {
     newEl.innerHTML = html;
     wrap.replaceWith(newEl);
   }
-  save.onclick = async function() {
-    var v = ta.value;
-    save.disabled = true; cancel.disabled = true;
+
+  saveBtn.onclick = async function() {
+    var clean = _calSanitizeHtml(editor.innerHTML);
+    var hasContent = clean.replace(/<[^>]+>/g, '').trim().length > 0;
+    saveBtn.disabled = true; cancelBtn.disabled = true;
     try {
-      await _calSaveVariantOverride('webinar_desc_' + i, v);
-      restore(v.trim() ? _calRenderDescOverride(v) : variants[i].desc);
-      _calSetEditStatus(v.trim() ? '✓ Description saved' : '✓ Description cleared (revert to AI copy)', '#4ade80');
+      await _calSaveVariantOverride('webinar_desc_' + i, hasContent ? clean : '');
+      restore(hasContent ? clean : variants[i].desc);
+      _calSetEditStatus(hasContent ? '✓ Description saved' : '✓ Description cleared (revert to AI copy)', '#4ade80');
     } catch (e) {
       restore(originalHtml);
       _calSetEditStatus('✗ ' + (e.message || 'Save failed'), '#f87171');
     }
   };
-  cancel.onclick = function() { restore(originalHtml); };
+  cancelBtn.onclick = function() { restore(originalHtml); };
+}
+
+// Drop dangerous tags/attributes from rich editor output before saving.
+// The rep is authenticated, but copy/paste from external sources can bring in
+// <script>, on* handlers, javascript: URLs, etc. This is a minimal allow-pass
+// sanitizer — not a full DOMPurify, but enough for an internal portal.
+function _calSanitizeHtml(html) {
+  if (!html) return '';
+  var doc = document.implementation.createHTMLDocument('');
+  doc.body.innerHTML = html;
+  var BAD_TAGS = ['SCRIPT','STYLE','IFRAME','OBJECT','EMBED','META','LINK','BASE','FORM','INPUT','BUTTON','TEXTAREA','SELECT'];
+  // Collect bad nodes first; mutating during the walk skips siblings.
+  var bad = [];
+  var walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_ELEMENT, null);
+  while (walker.nextNode()) {
+    var node = walker.currentNode;
+    if (BAD_TAGS.indexOf(node.tagName) !== -1) { bad.push(node); continue; }
+    for (var j = node.attributes.length - 1; j >= 0; j--) {
+      var attr = node.attributes[j];
+      var name = attr.name.toLowerCase();
+      var val  = attr.value || '';
+      if (name.indexOf('on') === 0) { node.removeAttribute(attr.name); continue; }
+      if ((name === 'href' || name === 'src' || name === 'xlink:href') && /^\s*(javascript|data|vbscript):/i.test(val)) {
+        node.removeAttribute(attr.name);
+      }
+    }
+  }
+  bad.forEach(function(n){ if (n.parentNode) n.parentNode.removeChild(n); });
+  return doc.body.innerHTML;
 }
 async function calResetVariantOverrides() {
   var i = (typeof window._currentVariantIdx === 'number') ? window._currentVariantIdx : 0;
