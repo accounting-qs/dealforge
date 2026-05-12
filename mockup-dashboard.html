@@ -254,7 +254,7 @@
     <!-- ══ STEP 2: BRIEF REVIEW ══════════════════════════════════════════ -->
     <div id="nj-step2" style="display:none;">
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:24px;">
-        <button onclick="njBack()" style="background:none;border:1px solid rgba(255,255,255,0.1);color:#71717a;font-size:12px;padding:5px 12px;border-radius:6px;cursor:pointer;font-family:inherit;">← Back</button>
+        <button onclick="njBack()" style="background:rgba(139,92,246,0.08);border:1px solid rgba(139,92,246,0.3);color:#c4b5fd;font-size:13px;font-weight:500;padding:7px 14px;border-radius:7px;cursor:pointer;font-family:inherit;transition:background 100ms;" onmouseover="this.style.background='rgba(139,92,246,0.16)'" onmouseout="this.style.background='rgba(139,92,246,0.08)'">← Back to Step 1</button>
         <div>
           <div style="font-size:15px;font-weight:600;color:#ffffff;">Prospect Brief</div>
           <div style="font-size:11px;color:#52525b;margin-top:1px;">Review and correct — this drives every asset</div>
@@ -273,6 +273,7 @@
               <div><div class="nj-label">Company Name</div><input id="bf-company" class="nj-input" placeholder="Acme Corp"></div>
               <div><div class="nj-label">Contact Name</div><input id="bf-contact-name" class="nj-input" placeholder="Jane Smith"></div>
               <div class="brief-full"><div class="nj-label">Contact Title</div><input id="bf-contact-title" class="nj-input" placeholder="Founder & CEO"></div>
+              <div class="brief-full"><div class="nj-label">Website</div><input id="bf-website" type="url" class="nj-input" placeholder="turnyellow.com"></div>
               <div class="brief-full"><div class="nj-label">Offer — what their business does</div><textarea id="bf-offer" class="nj-input" rows="2" placeholder="Helps independent financial advisors win HNW clients through a 90-day done-with-you marketing program…"></textarea></div>
             </div>
           </div>
@@ -931,7 +932,7 @@ function njReset() {
   document.getElementById('nj-step2').style.display = 'none';
   njSetProgress(0, 'Starting…');
   // Clear all brief fields
-  ['bf-company','bf-contact-name','bf-contact-title','bf-offer','bf-apollo-titles',
+  ['bf-company','bf-contact-name','bf-contact-title','bf-website','bf-offer','bf-apollo-titles',
    'bf-industry','bf-company-size','bf-geography','bf-ltv','bf-close-rate','bf-show-rate',
    'bf-pain','bf-result','bf-methodology','bf-proof','bf-goals','bf-why',
    'bf-title-a','bf-title-b',
@@ -1193,6 +1194,10 @@ function njPopulateStep2(extract) {
   setVal('bf-company',      prospect.company);
   setVal('bf-contact-name', prospect.contact_name);
   setVal('bf-contact-title',prospect.contact_title);
+  // Server already promotes transcript-extracted website into extract.contact.website
+  // before populating the brief, so prefer that resolved value over the raw brief one.
+  var njExtractContact = (extract && extract.contact) || {};
+  setVal('bf-website',      njExtractContact.website || prospect.website);
   setVal('bf-offer',        prospect.offer_description);
   setVal('bf-apollo-titles', Array.isArray(icp.apollo_titles) ? icp.apollo_titles.join(', ') : (icp.apollo_titles || ''));
   // Industry: apollo_keyword (single free-text phrase, e.g. "property management").
@@ -1267,6 +1272,7 @@ function njPopulateStep2(extract) {
   tagSource('bf-company',       sources.company);
   tagSource('bf-contact-name',  sources.name);
   tagSource('bf-contact-title', sources.title || provenance['prospect.contact_title']);
+  tagSource('bf-website',       sources.website || provenance['prospect.website']);
   tagSource('bf-offer',         provenance['prospect.offer_description']);
   // Brief fields — driven by the extract _provenance map. Each maps an input id
   // to the corresponding _provenance key. Missing → small dim "missing" chip so
@@ -1335,6 +1341,7 @@ function njGenerate() {
       company:           getVal('bf-company'),
       contact_name:      getVal('bf-contact-name'),
       contact_title:     getVal('bf-contact-title'),
+      website:           getVal('bf-website'),
       offer_description: getVal('bf-offer'),
       offering_name:     njExtractedProspect.offering_name || null
     },
@@ -1393,7 +1400,9 @@ function njGenerate() {
   btn.disabled = true;
   btn.innerHTML = '<span style="display:flex;align-items:center;justify-content:center;gap:8px;"><svg class="spinner" style="width:14px;height:14px;" fill="none" viewBox="0 0 24 24"><circle style="opacity:0.2" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3"></circle><path style="opacity:0.9" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg> Building lead list...</span>';
 
-  var websiteUrl = (document.getElementById('nj-website-url').value || '').trim();
+  // Step 2 input wins (rep's final confirmation), Step 1 is the fallback.
+  var websiteUrl = (document.getElementById('bf-website').value || '').trim()
+                || (document.getElementById('nj-website-url').value || '').trim();
   var contactName = brief.prospect.contact_name || document.getElementById('nj-name').textContent || '';
   var displayCompany = brief.prospect.company || (email.split('@')[1] ? email.split('@')[1].split('.')[0] : email);
   displayCompany = displayCompany.charAt(0).toUpperCase() + displayCompany.slice(1);

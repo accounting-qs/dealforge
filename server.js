@@ -1106,7 +1106,8 @@ Return this exact JSON (null for anything not found):
     "contact_name":  "string | null — full name of person on the call",
     "contact_title": "string | null — their job title. Extract verbatim if stated. Otherwise apply the contact_title inference exception from the rules above (default to 'Founder & Owner' when ownership is clear, set _provenance.\"prospect.contact_title\" = \"inferred\").",
     "offering_name": "string | null — the name of the product, service, app, framework, or methodology the prospect is building/selling, IF separate from the company name. NOT the company itself. Examples: 'Fiddle Link AI', 'The Revenue Engine', 'Devoted Client Attraction Method'. Extract verbatim from the call. Null if (a) no specific named offering is mentioned, or (b) the offering and the company share the same name.",
-    "offer_description": "string | null — a 1-3 sentence description of WHAT THE PROSPECT'S BUSINESS DOES / SELLS, written so a downstream copywriter can use it verbatim in calendar-invite copy. Plain English, no marketing fluff: who they help, what they deliver, and (if mentioned) the headline outcome. Sources in priority order: (1) the prospect's own description of their service from the call, (2) the website's hero / about-page summary, (3) the company name + offering_name + angle.result rolled into a sentence. Examples — Good: 'Helps independent financial advisors win HNW clients through a 90-day done-with-you marketing program that replaces cold outreach with referral-quality inbound leads.' Bad: 'A revolutionary platform empowering professionals to unlock their full potential.' Always produce something usable — only null if there is literally zero signal in the transcript or website."
+    "offer_description": "string | null — a 1-3 sentence description of WHAT THE PROSPECT'S BUSINESS DOES / SELLS, written so a downstream copywriter can use it verbatim in calendar-invite copy. Plain English, no marketing fluff: who they help, what they deliver, and (if mentioned) the headline outcome. Sources in priority order: (1) the prospect's own description of their service from the call, (2) the website's hero / about-page summary, (3) the company name + offering_name + angle.result rolled into a sentence. Examples — Good: 'Helps independent financial advisors win HNW clients through a 90-day done-with-you marketing program that replaces cold outreach with referral-quality inbound leads.' Bad: 'A revolutionary platform empowering professionals to unlock their full potential.' Always produce something usable — only null if there is literally zero signal in the transcript or website.",
+    "website":       "string | null — the prospect's company website, ONLY if explicitly spoken on the call ('our site is turnyellow.com', 'check us out at mfundvc.com', 'we're at quantum-scaling.com'). Strip protocol, www, and trailing slashes — return the bare host like 'turnyellow.com'. NEVER infer from company name. NEVER guess from email domain. Null if no URL is mentioned verbatim."
   },
   "icp": {
     "role":          "string | null — human-readable description of their target buyers (used for display only)",
@@ -1158,6 +1159,7 @@ Return this exact JSON (null for anything not found):
     "prospect.contact_title":  "one of: transcript | inferred | missing — use 'inferred' when ownership is clear but title not stated verbatim",
     "prospect.offering_name":  "one of: transcript | missing",
     "prospect.offer_description": "one of: transcript | website | inferred | missing — 'website' if drawn from the scraped site copy, 'inferred' if synthesized from company + offering + angle.result, 'transcript' if quoted",
+    "prospect.website":           "one of: transcript | missing — 'transcript' if the prospect spoke their URL on the call, 'missing' otherwise",
     "icp.role":                "one of: transcript | missing",
     "icp.industry":            "one of: transcript | missing",
     "icp.company_size":        "one of: transcript | missing",
@@ -1194,7 +1196,7 @@ function emptyBrief(contactInfo) {
   const name    = contactInfo.name    || null;
   const title   = contactInfo.title   || null;
   return {
-    prospect:  { company, contact_name: name, contact_title: title, offering_name: null, offer_description: null },
+    prospect:  { company, contact_name: name, contact_title: title, offering_name: null, offer_description: null, website: null },
     icp:       { role: null, target_audience_type: 'b2b', apollo_titles: null, apollo_keyword: null, industry: null, company_size: null, apollo_employee_ranges: null, geography: null, apollo_geography: null, person_seniorities: null, company_revenue: null, kpis: null },
     metrics:   { ltv: null, close_rate: null, show_rate: null },
     angle:     { pain: null, result: null, methodology: null, proof: null },
@@ -3789,6 +3791,17 @@ const server = http.createServer(async (req, res) => {
             if (brief?.prospect?.contact_title) {
               contactInfo.title = brief.prospect.contact_title;
               contactSources.title = 'transcript';
+            }
+            // Promote a transcript-extracted website over weak Step-1 sources.
+            // We trust the rep's typed URL above everything; otherwise transcript
+            // beats GHL / history / email_domain / website_title (those can be
+            // stale or wrong, but a URL the prospect spoke on the call won't be).
+            const briefWebsite = (brief?.prospect?.website || '').trim().toLowerCase().replace(/^https?:\/\//, '').replace(/^www\./, '').split('/')[0];
+            const cleanBriefWebsite = cleanWebsiteCandidate(briefWebsite);
+            if (cleanBriefWebsite && contactSources.website !== 'rep_input') {
+              contactInfo.website = cleanBriefWebsite;
+              contactSources.website = 'transcript';
+              if (brief._provenance) brief._provenance['prospect.website'] = 'transcript';
             }
           } else if (extras.historicalBrief) {
             // Rep chose Skip but a previous job already produced a brief — reuse it.

@@ -153,8 +153,8 @@ option{background:#111116;color:#e4e4e7}
 .brief-gen-btn{width:100%;padding:11px 0;border-radius:10px;border:none;font-size:14px;font-weight:600;cursor:pointer;font-family:inherit;background:linear-gradient(135deg,#7c3aed,#6d28d9);color:#fff;transition:opacity 150ms}
 .brief-gen-btn:hover{opacity:0.92}
 .brief-gen-btn:disabled{opacity:0.45;cursor:not-allowed}
-.brief-back-btn{background:none;border:1px solid rgba(255,255,255,0.1);color:#71717a;font-size:12px;padding:5px 12px;border-radius:6px;cursor:pointer;font-family:inherit}
-.brief-back-btn:hover{border-color:rgba(255,255,255,0.2);color:#e4e4e7}
+.brief-back-btn{background:rgba(139,92,246,0.08);border:1px solid rgba(139,92,246,0.3);color:#c4b5fd;font-size:13px;font-weight:500;padding:7px 14px;border-radius:7px;cursor:pointer;font-family:inherit;transition:background 100ms}
+.brief-back-btn:hover{background:rgba(139,92,246,0.16);border-color:rgba(139,92,246,0.5);color:#fff}
 @keyframes spin{to{transform:rotate(360deg)}}
 .spinner{animation:spin 1s linear infinite}
 </style>
@@ -473,6 +473,7 @@ option{background:#111116;color:#e4e4e7}
             <div><div class="brief-label">Company Name</div><input id="bf-company" class="brief-input" placeholder="Acme Corp"></div>
             <div><div class="brief-label">Contact Name</div><input id="bf-contact-name" class="brief-input" placeholder="Jane Smith"></div>
             <div class="brief-full"><div class="brief-label">Contact Title</div><input id="bf-contact-title" class="brief-input" placeholder="Founder & CEO"></div>
+            <div class="brief-full"><div class="brief-label">Website</div><input id="bf-website" type="url" class="brief-input" placeholder="turnyellow.com"></div>
             <div class="brief-full"><div class="brief-label">Offer — what their business does</div><textarea id="bf-offer" class="brief-input" rows="2" placeholder="Helps independent financial advisors win HNW clients through a 90-day done-with-you marketing program…"></textarea></div>
           </div>
 
@@ -979,7 +980,7 @@ function _createNewJob(email) {
   briefSetProgress(0, 'Starting…');
 
   // Clear all brief fields
-  ['bf-company','bf-contact-name','bf-contact-title','bf-offer','bf-apollo-titles',
+  ['bf-company','bf-contact-name','bf-contact-title','bf-website','bf-offer','bf-apollo-titles',
    'bf-industry','bf-company-size','bf-geography','bf-ltv','bf-close-rate','bf-show-rate',
    'bf-pain','bf-result','bf-methodology','bf-proof','bf-goals','bf-why',
    'bf-title-a','bf-title-b','bf-lead-gen','bf-revenue','bf-team-size','bf-challenge',
@@ -1241,6 +1242,11 @@ function briefPopulateStep2(extract) {
   setVal('bf-company',       prospect.company);
   setVal('bf-contact-name',  prospect.contact_name);
   setVal('bf-contact-title', prospect.contact_title);
+  // Prefer the contactInfo.website server resolved (which already promotes a
+  // transcript-extracted URL over weak sources). Falls back to the raw brief
+  // field if for any reason contact isn't included.
+  var extractContact = (extract && extract.contact) || {};
+  setVal('bf-website',       extractContact.website || prospect.website);
   setVal('bf-offer',         prospect.offer_description);
   setVal('bf-apollo-titles', Array.isArray(icp.apollo_titles) ? icp.apollo_titles.join(', ') : (icp.apollo_titles || ''));
   // apollo_keyword is the new single-phrase industry field. Fall back to the legacy
@@ -1314,6 +1320,7 @@ function briefConfirmAndCreate() {
       company:           getVal('bf-company'),
       contact_name:      getVal('bf-contact-name'),
       contact_title:     getVal('bf-contact-title'),
+      website:           getVal('bf-website'),
       offer_description: getVal('bf-offer'),
       offering_name:     extractedProspect.offering_name || null
     },
@@ -1365,7 +1372,11 @@ function briefConfirmAndCreate() {
   btn.disabled = true;
   btn.innerHTML = '<span style="display:flex;align-items:center;justify-content:center;gap:8px"><svg class="spinner" style="width:14px;height:14px" fill="none" viewBox="0 0 24 24"><circle style="opacity:0.2" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3"></circle><path style="opacity:0.9" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg> Creating job…</span>';
 
-  var websiteUrl = (document.getElementById('brief-website-url').value || '').trim();
+  // Prefer the Step-2 website input if the rep edited it there; otherwise
+  // fall back to the Step-1 input. Step 2 is the rep's final confirmation,
+  // so its value wins.
+  var websiteUrl = (document.getElementById('bf-website').value || '').trim()
+                || (document.getElementById('brief-website-url').value || '').trim();
 
   // Persist the rep-confirmed Fireflies transcript_id on the brief — drives
   // brief._source = { fireflies_transcript_id, picked_by } on the server.
