@@ -790,18 +790,31 @@ async function syncRepEmailsFromGHL() {
     // Refresh display_name only when GHL has a non-empty name AND it differs.
     if (ghlName && rep.display_name !== ghlName) patch.display_name = ghlName;
     if (Object.keys(patch).length === 0) continue;
+    // PATCH by whichever primary-key-shaped column the row actually has. If a
+    // deployment ever changes the PK we surface the actual Supabase error body
+    // through the response so the cause is debuggable from the curl output
+    // instead of being hidden behind a generic message.
     try {
-      const pr = await supabaseRequest('PATCH', `/rest/v1/sales_reps?id=eq.${encodeURIComponent(rep.id)}`,
+      const pkColumn = rep.id ? 'id' : (rep.ghl_user_id ? 'ghl_user_id' : 'slug');
+      const pkValue  = rep[pkColumn];
+      const pr = await supabaseRequest('PATCH', `/rest/v1/sales_reps?${pkColumn}=eq.${encodeURIComponent(pkValue)}`,
         patch, { 'Prefer': 'return=minimal' });
       if (pr.status >= 400) {
-        // Most likely: the `email` column doesn't exist yet. Fail soft so the
-        // first-time setup hint comes back in the response.
-        console.warn(`[sync-reps] PATCH failed status=${pr.status} body=${JSON.stringify(pr.body).slice(0, 200)} — did you add the email column?`);
-        return { ok: false, error: `Supabase PATCH ${pr.status} — likely missing column. Run: ALTER TABLE sales_reps ADD COLUMN IF NOT EXISTS email TEXT;`, synced, missing };
+        const bodyStr = (typeof pr.body === 'string') ? pr.body : JSON.stringify(pr.body);
+        console.warn(`[sync-reps] PATCH failed rep=${rep.slug || rep.id} pk=${pkColumn}=${pkValue} status=${pr.status} body=${bodyStr.slice(0, 500)}`);
+        return {
+          ok: false,
+          error: `Supabase PATCH ${pr.status} for rep ${rep.slug || pkValue}: ${bodyStr.slice(0, 400)}`,
+          patch_payload: patch,
+          pk_used: { column: pkColumn, value: pkValue },
+          rep_columns_seen: Object.keys(rep),
+          synced,
+          missing
+        };
       }
       synced++;
     } catch (e) {
-      console.warn(`[sync-reps] PATCH error for rep ${rep.slug}: ${e.message}`);
+      console.warn(`[sync-reps] PATCH error for rep ${rep.slug || rep.id}: ${e.message}`);
     }
   }
 
