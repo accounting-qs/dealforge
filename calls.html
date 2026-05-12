@@ -1075,23 +1075,16 @@ function briefRenderPhase1(result) {
   var candidates = Array.isArray(result.candidates) ? result.candidates : [];
   _briefSelectedTranscriptId = result.suggested_candidate_id || (candidates[0] && candidates[0].id) || null;
 
+  // Always render the picker when at least one Fireflies call matched, so
+  // the rep can explicitly confirm or swap or skip — even when only one
+  // candidate came back. The static "transcript found / miss" boxes only
+  // show in the zero-candidate path (where there's nothing to pick).
+  document.getElementById('brief-transcript-ok').style.display   = 'none';
+  document.getElementById('brief-transcript-miss').style.display = 'none';
   if (candidates.length === 0) {
-    // No transcript at all — show miss state, hide picker.
-    document.getElementById('brief-transcript-ok').style.display   = 'none';
     document.getElementById('brief-transcript-miss').style.display = 'flex';
     document.getElementById('brief-picker').style.display = 'none';
-  } else if (candidates.length === 1) {
-    // One match — show the OK status, picker collapsed by default.
-    var only = candidates[0];
-    document.getElementById('brief-transcript-title').textContent = only.title || 'Call transcript found';
-    document.getElementById('brief-transcript-date').textContent  = briefFormatCandidateMeta(only);
-    document.getElementById('brief-transcript-ok').style.display   = 'flex';
-    document.getElementById('brief-transcript-miss').style.display = 'none';
-    document.getElementById('brief-picker').style.display = 'none';
   } else {
-    // 2+ — show the expanded picker so the rep confirms which call is right.
-    document.getElementById('brief-transcript-ok').style.display   = 'none';
-    document.getElementById('brief-transcript-miss').style.display = 'none';
     briefRenderPicker(candidates, _briefSelectedTranscriptId);
   }
 
@@ -1121,7 +1114,12 @@ function briefMatchKindBadge(kind) {
 
 function briefRenderPicker(candidates, selectedId) {
   var listEl = document.getElementById('brief-picker-list');
-  document.getElementById('brief-picker-count').textContent = candidates.length;
+  var headerEl = document.querySelector('#brief-picker > div > div');
+  if (headerEl) {
+    headerEl.textContent = candidates.length === 1
+      ? '1 Fireflies call — confirm it’s the right one'
+      : candidates.length + ' Fireflies calls — pick the right one';
+  }
   document.getElementById('brief-picker').style.display = 'block';
   var html = candidates.map(function(c) {
     var sel = c.id === selectedId;

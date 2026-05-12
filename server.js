@@ -694,6 +694,19 @@ function isFreeMailDomain(domain) {
   return FREE_MAIL_DOMAINS.has(String(domain || '').toLowerCase().trim());
 }
 
+// Normalize a website candidate from any source (GHL, history, email_domain,
+// rep input). Returns null if the value is empty, a protocol-only string, or
+// a free-mail domain — those are never the prospect's actual website. We saw
+// GHL records auto-fill `website = outlook.com` from the contact's email,
+// which then propagated through Step 1 as a misleading suggestion.
+function cleanWebsiteCandidate(raw) {
+  if (!raw) return null;
+  const host = String(raw).trim().replace(/^https?:\/\//i, '').split('/')[0].toLowerCase();
+  if (!host || host === 'http:' || host === 'https:') return null;
+  if (isFreeMailDomain(host)) return null;
+  return host;
+}
+
 // "Does this work-email domain match this company name?" — used to validate or
 // fill the Website column from a contact's email when the proxy scrape didn't
 // find a good URL (or returned something off-target like fca.org.uk for
@@ -3465,7 +3478,6 @@ const server = http.createServer(async (req, res) => {
             : null;
 
           const emailDomain = email.split('@')[1] || '';
-          const websiteFallback = isFreeMailDomain(emailDomain) ? '' : emailDomain;
           const contactSources = {};
           const pick = (field, ...candidates) => {
             for (const [src, val] of candidates) {
@@ -3474,6 +3486,10 @@ const server = http.createServer(async (req, res) => {
             contactSources[field] = null;
             return null;
           };
+          // Filter free-mail domains out of every website source. GHL records
+          // occasionally store `website=outlook.com` when the email domain was
+          // auto-synced — that propagates a bogus suggestion to the rep. We
+          // never want to scrape outlook.com / gmail.com / yahoo.com.
           const contactInfo = {
             name:         pick('name',
                               ['rep_input', body.name],
@@ -3486,10 +3502,10 @@ const server = http.createServer(async (req, res) => {
             title:        pick('title',
                               ['ghl',       ghlContact?.title]),
             website:      pick('website',
-                              ['rep_input', body.website],
-                              ['ghl',       ghlContact?.website],
-                              ['history',   historicalContext?.website],
-                              ['email_domain', websiteFallback]),
+                              ['rep_input',    cleanWebsiteCandidate(body.website)],
+                              ['ghl',          cleanWebsiteCandidate(ghlContact?.website)],
+                              ['history',      cleanWebsiteCandidate(historicalContext?.website)],
+                              ['email_domain', cleanWebsiteCandidate(emailDomain)]),
             linkedin_url: pick('linkedin_url',
                               ['rep_input', body.linkedin_url],
                               ['ghl',       ghlContact?.linkedin_url],

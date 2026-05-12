@@ -1032,20 +1032,14 @@ function njRenderPhase1(result) {
   // Fireflies candidates → picker / status
   var candidates = Array.isArray(result.candidates) ? result.candidates : [];
   _njSelectedTranscriptId = result.suggested_candidate_id || (candidates[0] && candidates[0].id) || null;
+  // Always render the picker when at least one Fireflies call matched, so
+  // the rep can confirm/swap/skip even when only one came back.
+  document.getElementById('nj-transcript-found').style.display = 'none';
+  document.getElementById('nj-transcript-missing').style.display = 'none';
   if (candidates.length === 0) {
-    document.getElementById('nj-transcript-found').style.display = 'none';
     document.getElementById('nj-transcript-missing').style.display = 'flex';
     document.getElementById('nj-picker').style.display = 'none';
-  } else if (candidates.length === 1) {
-    var only = candidates[0];
-    document.getElementById('nj-transcript-title').textContent = only.title || 'Call transcript found';
-    document.getElementById('nj-transcript-date').textContent  = njFormatCandidateMeta(only);
-    document.getElementById('nj-transcript-found').style.display = 'flex';
-    document.getElementById('nj-transcript-missing').style.display = 'none';
-    document.getElementById('nj-picker').style.display = 'none';
   } else {
-    document.getElementById('nj-transcript-found').style.display = 'none';
-    document.getElementById('nj-transcript-missing').style.display = 'none';
     njRenderPicker(candidates, _njSelectedTranscriptId);
   }
 
@@ -1086,7 +1080,12 @@ function njMatchKindBadge(kind) {
 }
 
 function njRenderPicker(candidates, selectedId) {
-  document.getElementById('nj-picker-count').textContent = candidates.length;
+  var headerEl = document.querySelector('#nj-picker > div > div');
+  if (headerEl) {
+    headerEl.textContent = candidates.length === 1
+      ? '1 Fireflies call — confirm it’s the right one'
+      : candidates.length + ' Fireflies calls — pick the right one';
+  }
   document.getElementById('nj-picker').style.display = 'block';
   var listEl = document.getElementById('nj-picker-list');
   var html = candidates.map(function(c) {
