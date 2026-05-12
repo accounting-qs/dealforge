@@ -397,6 +397,44 @@ async function updateJobExtractedData(jobId, extractedData) {
   });
 }
 
+// Merge a worker-produced brief into a rep-confirmed one. Existing values
+// (the brief the rep submitted via Step 2) WIN over fresh extraction for
+// every field — the rep already confirmed those values, the worker shouldn't
+// quietly clobber them when Claude happens to return null this pass.
+//
+// Exceptions:
+//   - _meta: always fresh (worker stamps transcript + website source info).
+//   - _provenance: union with existing winning per key — preserves the
+//     transcript|inferred|missing tags the rep saw, but lets the worker fill
+//     in tags for fields that didn't exist before.
+//   - _generated, _overrides: untouched (those are managed elsewhere).
+//
+// Arrays are not deep-merged — existing wins entirely. Mixing arrays gets
+// dicey (think apollo_titles, apollo_geography) and we'd rather keep the
+// rep's curated list than auto-merge a Claude rerun into it.
+function mergeBrief(existing, fresh) {
+  if (!existing || typeof existing !== 'object') return fresh;
+  if (!fresh    || typeof fresh    !== 'object') return existing;
+  const out = { ...existing };
+  for (const key of Object.keys(fresh)) {
+    if (key === '_meta') { out[key] = fresh[key]; continue; }
+    if (key === '_provenance') {
+      out[key] = { ...(fresh[key] || {}), ...(existing[key] || {}) };
+      continue;
+    }
+    if (key === '_generated' || key === '_overrides' || key === '_source') continue;
+    const ev = existing[key];
+    const fv = fresh[key];
+    const isPlainObj = (v) => v != null && typeof v === 'object' && !Array.isArray(v);
+    if (ev == null || ev === '') {
+      out[key] = fv;
+    } else if (isPlainObj(ev) && isPlainObj(fv)) {
+      out[key] = mergeBrief(ev, fv);
+    } // else: existing scalar/array wins — keep it
+  }
+  return out;
+}
+
 async function updateJobBrandData(jobId, brandData) {
   await supabaseRequest('PATCH', `/rest/v1/jobs?id=eq.${jobId}`, {
     brand_data: brandData,
@@ -2475,16 +2513,25 @@ async function handleExtract(task, job) {
     website: { domain: defaultDomain, title: website.title, scraped: !!(website.bodyText) }
   };
 
-  // Update prospect_company on the job row
-  const company = extracted.prospect?.company || contactInfo.company || defaultDomain;
+  // Merge the fresh extraction into the rep-confirmed brief so Step 2 edits
+  // survive the worker pass. Without this, a Claude rerun that returns null
+  // for contact_title / offer_description / ICP / metrics / etc. silently
+  // clobbers values the rep just confirmed (B6 fix — Prospect Infos was
+  // showing blank Contact title because this re-extract overwrote it).
+  const existingBrief = job.extracted_data || null;
+  const merged        = mergeBrief(existingBrief, extracted);
+
+  // Update prospect_company on the job row. Use merged values so the row
+  // mirrors what's in the brief (and what the rep saw).
+  const company = merged.prospect?.company || contactInfo.company || defaultDomain;
   await supabaseRequest('PATCH', `/rest/v1/jobs?id=eq.${job.id}`, {
     prospect_company: company,
-    prospect_name:    extracted.prospect?.contact_name || contactInfo.name || null,
+    prospect_name:    merged.prospect?.contact_name || contactInfo.name || null,
     updated_at:       new Date().toISOString()
   });
-  await updateJobExtractedData(job.id, extracted);
+  await updateJobExtractedData(job.id, merged);
 
-  return { extracted, transcriptFound, transcriptSource, websiteScraped: !!(website.bodyText), company };
+  return { extracted: merged, transcriptFound, transcriptSource, websiteScraped: !!(website.bodyText), company };
 }
 
 async function handleProspectResearch(task, job) {
