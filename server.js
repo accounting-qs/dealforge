@@ -4216,6 +4216,41 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // ── GET /api/diag/ghl-users — list every GHL user in the location so the ──
+  // seed SQL can be populated with real IDs. Quick one-off helper for first
+  // setup; output is name + id + email pairs we can paste into UPDATEs.
+  if (req.method === 'GET' && urlPath === '/api/diag/ghl-users') {
+    setCors(res);
+    if (!GHL_API_KEY || !GHL_LOCATION_ID) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'GHL_API_KEY / GHL_LOCATION_ID not set' })); return;
+    }
+    try {
+      const url = `https://services.leadconnectorhq.com/users/?locationId=${GHL_LOCATION_ID}`;
+      const r = await fetch(url, {
+        headers: { 'Authorization': `Bearer ${GHL_API_KEY}`, 'Version': '2021-07-28' },
+        signal: AbortSignal.timeout(5000)
+      });
+      if (!r.ok) {
+        res.writeHead(r.status, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: `GHL /users returned ${r.status}`, body: await r.text() })); return;
+      }
+      const data = await r.json();
+      const users = (data.users || []).map(u => ({
+        id:    u.id,
+        name:  [u.firstName, u.lastName].filter(Boolean).join(' ').trim() || u.name || null,
+        email: u.email || null
+      }));
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ count: users.length, users }));
+    } catch(e) {
+      console.error('[GET /api/diag/ghl-users]', e.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
   // ── GET /api/diag/rep-resolve?email=… — walk the whole resolve chain and ──
   // return JSON. Useful when the New Job dropdown stays blank — you can see
   // exactly which step fell through (no contact, no opp, opp without owner,
