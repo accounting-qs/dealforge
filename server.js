@@ -2090,6 +2090,36 @@ async function fetchLeadsFromApollo(icp, progressCb) {
 
   console.log(`[Apollo] v3 Search Complete: ${result.leads.length} leads returned. TAM: ${result.totalAvailable}. Was relaxed: ${result.wasRelaxed}`);
 
+  // Adjacent-TAM probe — one extra mixed_people/api_search (free) with the
+  // industry-keyword filter stripped. Empirical test showed the keyword tag is
+  // typically the single biggest TAM-killer (9× shrink on Ifficient: 12K → 115K
+  // without it). Surfacing both numbers lets the rep see what the keyword
+  // filter is costing and decide whether to broaden. Best-effort: any failure
+  // here is logged but doesn't block the main search result.
+  let adjacentTotal = null;
+  try {
+    const adjacentPayload = { ...(result.finalPayload || sanitizedPayload), per_page: 1 };
+    delete adjacentPayload.q_organization_keyword_tags;
+    delete adjacentPayload.q_keywords;
+    // Only run if the keyword filter actually was applied — otherwise adjacent == strict.
+    const stripsKeyword = (result.finalPayload?.q_organization_keyword_tags?.length || result.finalPayload?.q_keywords);
+    if (stripsKeyword) {
+      const adjRes = await fetch('https://api.apollo.io/api/v1/mixed_people/api_search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-key': APOLLO_KEY },
+        body: JSON.stringify(adjacentPayload),
+        signal: AbortSignal.timeout(10000)
+      });
+      if (adjRes.ok) {
+        const adjData = await adjRes.json();
+        adjacentTotal = adjData.total_entries ?? null;
+        console.log(`[Apollo] Adjacent TAM (no keyword): ${adjacentTotal}`);
+      }
+    }
+  } catch (e) {
+    console.warn('[Apollo] adjacent-TAM probe failed:', e.message);
+  }
+
   // Hydrate website + company LinkedIn via mixed_companies/search (no credit cost).
   // People search strips these fields on this plan tier — without this step the UI
   // shows "—" in the Website and LinkedIn columns even when the data exists in Apollo.
@@ -2103,6 +2133,7 @@ async function fetchLeadsFromApollo(icp, progressCb) {
   return {
     leads: result.leads,
     total: result.totalAvailable,
+    adjacent_total: adjacentTotal,
     tamSource: 'apollo',
     wasRelaxed: result.wasRelaxed,
     relaxationLog: result.relaxationLog,
@@ -2110,7 +2141,8 @@ async function fetchLeadsFromApollo(icp, progressCb) {
     diagnostics: {
       wasRelaxed: result.wasRelaxed,
       relaxationLog: result.relaxationLog,
-      finalPayload: result.finalPayload
+      finalPayload: result.finalPayload,
+      adjacent_total: adjacentTotal
     }
   };
 }
@@ -2959,15 +2991,17 @@ async function handleLeadList(task, job) {
       jobId: task?.job_id || null
     });
   }
-  return { 
-    leads, 
-    total: tam, 
-    recommendedOutreach, 
+  return {
+    leads,
+    total: tam,
+    adjacent_total: result?.adjacent_total ?? null,    // industry-keyword-stripped TAM, surfaced in the UI as "Adjacent"
+    recommendedOutreach,
     tamSource: 'apollo_api_live',
     apollo_diagnostics: {
       wasRelaxed: result?.wasRelaxed || false,
       relaxationLog: result?.relaxationLog || [],
-      finalPayload: result?.finalPayload || {}
+      finalPayload: result?.finalPayload || {},
+      adjacent_total: result?.adjacent_total ?? null
     }
   };
 }
@@ -4509,6 +4543,7 @@ const server = http.createServer(async (req, res) => {
                 ...(existingData._generated || {}),
                 leads:                finalizedLeads,
                 tam_total:            tam,
+                adjacent_tam_total:   result.adjacent_total ?? null,
                 tam_source:           result.tamSource,
                 recommendedOutreach:  recommendedOutreach,
                 leadsTaskStatus:     'completed',

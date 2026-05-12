@@ -2417,6 +2417,7 @@ function buildCompatSession(job) {
     webinarTitles:        (tasks.webinar_titles && tasks.webinar_titles.output) || existingGen.webinarTitles || null,
     leads:                existingGen.leads || tasks.lead_list?.output?.leads || [],
     apolloTotal:          existingGen.tam_total || tasks.lead_list?.output?.total || null,
+    adjacentTotal:        existingGen.adjacent_tam_total ?? tasks.lead_list?.output?.adjacent_total ?? null,
     recommendedOutreach:  existingGen.recommendedOutreach || tasks.lead_list?.output?.recommendedOutreach || null,
     tamSource:            existingGen.tam_source || tasks.lead_list?.output?.tamSource || null,
     leadsTaskStatus:      tasks.lead_list?.status || existingGen.leadsTaskStatus || null,
@@ -3220,6 +3221,22 @@ function runPersonalization(session) {
           badge.style.cssText = 'margin-left:8px;font-size:11px;font-weight:600;color:#f59e0b;background:rgba(245,158,11,0.15);padding:2px 6px;border-radius:4px;vertical-align:middle;cursor:help;';
           badge.textContent = '⚠ Estimated';
           tamEl.parentNode.appendChild(badge);
+        }
+        // Edit-mode-only: show the "Adjacent TAM" (same filters minus industry
+        // keyword) so reps can see what their keyword filter is costing them.
+        // Hidden from prospect view via the rep-only mode flag. Only shows when
+        // adjacent is meaningfully larger (≥1.5× the strict TAM).
+        if (IS_EDIT_MODE && Number.isFinite(gen.adjacentTotal) && gen.adjacentTotal >= tamTotal * 1.5) {
+          var adjFmt = gen.adjacentTotal >= 1000000
+            ? (Math.round(gen.adjacentTotal / 100000) / 10) + 'M'
+            : gen.adjacentTotal >= 1000
+              ? Math.round(gen.adjacentTotal / 1000) + 'K'
+              : gen.adjacentTotal.toLocaleString();
+          var adjEl = document.createElement('div');
+          adjEl.title = 'TAM with the industry keyword filter dropped. Reps: if this is much larger than the strict TAM, your keyword filter is the biggest narrowing factor — consider broadening or removing it.';
+          adjEl.style.cssText = 'font-size:11px;color:#71717a;margin-top:4px;font-weight:500;cursor:help;';
+          adjEl.textContent = '+' + adjFmt + ' without industry keyword';
+          tamEl.parentNode.appendChild(adjEl);
         }
       }
       // Lloyd's rep-proof outreach formula:
