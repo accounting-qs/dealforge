@@ -560,13 +560,57 @@ async function lookupGHLContact(email) {
         break;
       }
     }
-    console.log(`[GHL] Found contact: ${name} @ ${company}${linkedinUrl ? ' (LinkedIn ✓)' : ''}`);
-    return { name, company, website, title: null, linkedin_url: linkedinUrl };
+    // assignedTo carries the GHL user ID of the rep who owns this contact.
+    // Some GHL tenants only surface it on GET /contacts/:id, so accept a
+    // second-level fallback by reading `assigned` (older shape) too.
+    const ghlUserId = contact.assignedTo || contact.assigned_to || contact.assigned || null;
+    console.log(`[GHL] Found contact: ${name} @ ${company}${linkedinUrl ? ' (LinkedIn ✓)' : ''}${ghlUserId ? ` (assignedTo=${ghlUserId})` : ''}`);
+    return { name, company, website, title: null, linkedin_url: linkedinUrl, ghl_user_id: ghlUserId };
   } catch(e) {
     console.warn('[GHL] Lookup error:', e.message);
     return null;
   }
 }
+
+// ── Sales rep lookup (GHL user ID → app rep slug) ────────────────────────────
+// sales_assets.sales_reps maps GHL `assignedTo` IDs to the rep slugs the app
+// already uses ('melissa' | 'ryan' | 'armando'). Cached for 5 minutes so the
+// prefetch flow doesn't pay a Supabase round-trip per request.
+let _repCache = { rows: null, fetchedAt: 0 };
+const REP_CACHE_TTL = 5 * 60 * 1000;
+
+async function loadActiveReps() {
+  const fresh = _repCache.rows && (Date.now() - _repCache.fetchedAt < REP_CACHE_TTL);
+  if (fresh) return _repCache.rows;
+  try {
+    const r = await supabaseRequest('GET',
+      '/rest/v1/sales_reps?select=ghl_user_id,slug,display_name,active');
+    if (r.status === 200 && Array.isArray(r.body)) {
+      _repCache = { rows: r.body, fetchedAt: Date.now() };
+    } else {
+      console.warn('[sales_reps] load failed:', r.status, JSON.stringify(r.body).slice(0, 200));
+      _repCache = { rows: [], fetchedAt: Date.now() };
+    }
+  } catch(e) {
+    console.warn('[sales_reps] load error:', e.message);
+    _repCache = { rows: [], fetchedAt: Date.now() };
+  }
+  return _repCache.rows;
+}
+
+async function getRepByGhlUserId(ghlUserId) {
+  if (!ghlUserId) return null;
+  const rows = await loadActiveReps();
+  return rows.find(r => r.active && r.ghl_user_id === ghlUserId) || null;
+}
+
+async function getRepBySlug(slug) {
+  if (!slug) return null;
+  const rows = await loadActiveReps();
+  return rows.find(r => r.active && r.slug === slug) || null;
+}
+
+function invalidateRepCache() { _repCache = { rows: null, fetchedAt: 0 }; }
 
 // Apollo people/match by email — used as a fallback when GHL has no contact data.
 // Returns { linkedin_url, headshot_url, title, name, company } or null. Best-effort,
@@ -793,44 +837,44 @@ async function findFirefliesTranscripts(email, contactInfo = {}) {
     });
   }
 
-  // ── Passes 1–5: keyword searches ──────────────────────────────────────────
+  // ── Passes 1–6b: fan out all 7 Fireflies queries in parallel ──────────────
+  // The previous sequential loop spent ~3-5s on Fireflies because each pass
+  // awaited the network round-trip before starting the next. The picker UI
+  // wants to render candidates as fast as possible — Promise.allSettled keeps
+  // a single slow pass from blocking everyone else, and a per-pass try/catch
+  // is no longer needed since allSettled wraps each rejection.
   const searchGql = `query Search($keyword: String) { transcripts(keyword: $keyword, limit: 30) { ${TRANSCRIPT_LIST_FIELDS} } }`;
-  const searched  = new Set();
-
-  for (const { keyword, source, acceptLoose } of terms) {
-    if (searched.has(keyword)) continue;
-    searched.add(keyword);
-    try {
-      const data = await firefliesQuery(searchGql, { keyword });
-      collectMatches(data?.transcripts || [], acceptLoose, source);
-    } catch(e) { console.warn(`[FF] Pass ${source} error:`, e.message); }
+  const seen = new Set();
+  const passes = [];
+  for (const t of terms) {
+    if (seen.has(t.keyword)) continue;
+    seen.add(t.keyword);
+    passes.push({ source: t.source, acceptLoose: t.acceptLoose, promise: firefliesQuery(searchGql, { keyword: t.keyword }) });
   }
+  passes.push({
+    source: 'recent_scan_6a', acceptLoose: false,
+    promise: firefliesQuery(`{ transcripts(limit: 50) { ${TRANSCRIPT_LIST_FIELDS} } }`, {})
+  });
+  passes.push({
+    source: 'recent_scan_6b', acceptLoose: false,
+    promise: firefliesQuery(`{ transcripts(limit: 50, skip: 50) { ${TRANSCRIPT_LIST_FIELDS} } }`, {})
+  });
 
-  // ── Pass 6a: recent scan — page 1 ─────────────────────────────────────────
-  console.log('[FF] Scanning recent transcripts pass 6a (limit 50)...');
-  try {
-    const data = await firefliesQuery(`{ transcripts(limit: 50) { ${TRANSCRIPT_LIST_FIELDS} } }`, {});
-    const transcripts = data?.transcripts || [];
-    console.log(`[FF] Pass 6a: ${transcripts.length} transcripts`);
-    transcripts.forEach(t => {
-      const emails = (t.meeting_attendees || []).map(a => a.email).filter(Boolean);
-      if (emails.length) console.log(`[FF]   "${t.title}": ${emails.join(', ')}`);
-    });
-    collectMatches(transcripts, false, 'recent_scan_6a');
-  } catch(e) { console.warn('[FF] Pass 6a scan error:', e.message); }
-
-  // ── Pass 6b: recent scan — page 2 ─────────────────────────────────────────
-  console.log('[FF] Scanning recent transcripts pass 6b (skip 50)...');
-  try {
-    const data2 = await firefliesQuery(`{ transcripts(limit: 50, skip: 50) { ${TRANSCRIPT_LIST_FIELDS} } }`, {});
-    const transcripts2 = data2?.transcripts || [];
-    console.log(`[FF] Pass 6b: ${transcripts2.length} transcripts`);
-    transcripts2.forEach(t => {
-      const emails = (t.meeting_attendees || []).map(a => a.email).filter(Boolean);
-      if (emails.length) console.log(`[FF]   "${t.title}": ${emails.join(', ')}`);
-    });
-    collectMatches(transcripts2, false, 'recent_scan_6b');
-  } catch(e) { console.warn('[FF] Pass 6b scan error:', e.message); }
+  const settled = await Promise.allSettled(passes.map(p => p.promise));
+  settled.forEach((r, i) => {
+    const p = passes[i];
+    if (r.status === 'fulfilled') {
+      const transcripts = r.value?.transcripts || [];
+      if (p.source.startsWith('recent_scan_')) {
+        console.log(`[FF] ${p.source}: ${transcripts.length} transcripts`);
+      }
+      collectMatches(transcripts, p.acceptLoose, p.source);
+    } else {
+      console.warn(`[FF] Pass ${p.source} error:`, r.reason?.message || r.reason);
+    }
+  });
+  // Keep the `searched` log shape the empty-match branch expects below.
+  const searched = seen;
 
   // ── Sort and return all matches ────────────────────────────────────────────
   const matches = [...allMatches.values()];
@@ -3491,6 +3535,15 @@ const server = http.createServer(async (req, res) => {
         console.log(`[prefetch] Reusing historical brief from job ${historicalContext.jobId || 'unknown'} for ${email}`);
       }
 
+      // Resolve the GHL contact owner → app rep slug. Surfaces as data.rep on
+      // the client so the New Job dropdown can auto-fill without the legacy
+      // email-hash guess. Null when there's no GHL contact, no assignedTo,
+      // or no sales_reps row for that user ID.
+      const repRow = await getRepByGhlUserId(ghlContact?.ghl_user_id);
+      const rep = repRow
+        ? { slug: repRow.slug, display_name: repRow.display_name, source: 'ghl' }
+        : null;
+
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
         transcript_found:    transcriptFound,
@@ -3498,6 +3551,7 @@ const server = http.createServer(async (req, res) => {
         approved_call_count: approvedCallCount,
         contact:             contactInfo,
         contact_sources:     contactSources,
+        rep:                 rep,
         brief:               brief || emptyBrief(contactInfo)
       }));
     } catch(e) {
@@ -3846,6 +3900,58 @@ const server = http.createServer(async (req, res) => {
       res.end(JSON.stringify({ ok: true, icp: updatedIcp }));
     } catch(e) {
       console.error('[PATCH /api/jobs/icp]', e.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  // ── GET /api/sales-reps — list active reps (drives dashboard + portal UIs) ─
+  if (req.method === 'GET' && urlPath === '/api/sales-reps') {
+    setCors(res);
+    try {
+      const rows = await loadActiveReps();
+      const reps = rows
+        .filter(r => r.active)
+        .map(r => ({ slug: r.slug, display_name: r.display_name }));
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ reps }));
+    } catch(e) {
+      console.error('[GET /api/sales-reps]', e.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  // ── PATCH /api/jobs/:id/rep — override sales rep on an existing job ────────
+  // Body: { slug: 'melissa' | 'ryan' | 'armando' | null }
+  // Validates against sales_reps to keep rep_name from drifting away from the
+  // canonical slug set. Pass slug=null/empty to clear the assignment.
+  if (req.method === 'PATCH' && urlPath.match(/^\/api\/jobs\/[^/]+\/rep$/)) {
+    setCors(res);
+    const jobId = urlPath.split('/')[3];
+    try {
+      const body = await parseBody(req);
+      const slug = (body.slug == null ? '' : String(body.slug)).trim().toLowerCase() || null;
+      if (slug) {
+        const rep = await getRepBySlug(slug);
+        if (!rep) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: `Unknown rep slug: ${slug}` }));
+          return;
+        }
+      }
+      const r = await supabaseRequest('PATCH', `/rest/v1/jobs?id=eq.${jobId}`,
+        { rep_name: slug, updated_at: new Date().toISOString() },
+        { 'Prefer': 'return=minimal' }
+      );
+      if (r.status >= 400) throw new Error(`Supabase PATCH failed: ${r.status}`);
+      console.log(`[PATCH /api/jobs/${jobId}/rep] rep_name → ${slug || 'NULL'}`);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, slug }));
+    } catch(e) {
+      console.error('[PATCH /api/jobs/:id/rep]', e.message);
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: e.message }));
     }
