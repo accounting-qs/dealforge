@@ -1597,7 +1597,16 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
           <label class="pi-label"><span>Company</span><input id="pi-company" class="pi-input" type="text" data-col="prospect_company" data-brief="prospect.company" placeholder="Laraby"></label>
           <label class="pi-label"><span>Website (no protocol)</span><input id="pi-website" class="pi-input" type="text" data-col="prospect_website" placeholder="4fp.co"></label>
           <label class="pi-label"><span>LinkedIn URL</span><input id="pi-linkedin" class="pi-input" type="url" data-col="prospect_linkedin_url" placeholder="https://www.linkedin.com/in/jake-wagner"></label>
+          <!-- Sales rep — auto-filled from GHL assignedTo via /api/prefetch, but
+               rep-editable here when GHL has the wrong owner. PATCHes the
+               job row (column: rep_name) via /api/jobs/:id/rep. -->
+          <label class="pi-label"><span>Sales rep</span>
+            <select id="pi-rep" class="pi-input" onchange="portalSaveRep(this.value)" style="appearance:none;-webkit-appearance:none;cursor:pointer;background-image:url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='none' stroke='%2352525b' viewBox='0 0 24 24'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M19 9l-7 7-7-7'/%3E%3C/svg%3E\");background-repeat:no-repeat;background-position:right 12px center;padding-right:32px;">
+              <option value="">—</option>
+            </select>
+          </label>
         </div>
+        <div id="pi-rep-status" style="font-size:11px;color:#52525b;margin-top:6px;display:none;"></div>
       </div>
 
       <!-- ── ICP ── -->
@@ -2338,8 +2347,9 @@ function buildCompatSession(job) {
   const tasks = job.tasks || {};
   // Stash raw tasks on window so the Prospect Infos pipeline-status panel can render
   // them without each panel having to plumb the data through. Same precedent as
-  // window._reRunPersonalization being a global.
-  try { window._latestJobTasks = tasks; } catch(_) {}
+  // window._reRunPersonalization being a global. _latestJob is also used by the
+  // Sales-rep dropdown to know the current rep_name without a second fetch.
+  try { window._latestJobTasks = tasks; window._latestJob = job; } catch(_) {}
   const meta = ext._meta || {};
   const existingGen = ext._generated || {};
   
@@ -4256,12 +4266,68 @@ function _piSetByPath(obj, path, value) {
   cur[parts[parts.length - 1]] = value;
 }
 
+// Sales-reps fetched once and cached for the portal lifecycle. Used by the
+// Prospect Infos tab dropdown.
+var _portalRepsCache = null;
+function portalLoadSalesReps() {
+  if (_portalRepsCache) return Promise.resolve(_portalRepsCache);
+  return fetch('/api/sales-reps', { cache: 'no-store' })
+    .then(function(r) { return r.ok ? r.json() : { reps: [] }; })
+    .then(function(d) {
+      var reps = Array.isArray(d.reps) ? d.reps : [];
+      if (!reps.length) {
+        reps = [
+          { slug: 'melissa', display_name: 'Melissa F.' },
+          { slug: 'ryan',    display_name: 'Ryan Matsumori' },
+          { slug: 'armando', display_name: 'Armando' }
+        ];
+      }
+      _portalRepsCache = reps;
+      return reps;
+    })
+    .catch(function() { _portalRepsCache = []; return []; });
+}
+function portalSaveRep(slug) {
+  var jobId = new URLSearchParams(window.location.search).get('job');
+  if (!jobId) return;
+  var statusEl = document.getElementById('pi-rep-status');
+  if (statusEl) { statusEl.style.display = 'block'; statusEl.style.color = '#52525b'; statusEl.textContent = 'Saving rep…'; }
+  fetch('/api/jobs/' + encodeURIComponent(jobId) + '/rep', {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ slug: slug || null })
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(d) {
+    if (d.error) throw new Error(d.error);
+    if (statusEl) { statusEl.style.color = '#4ade80'; statusEl.textContent = '✓ Rep saved'; setTimeout(function(){ statusEl.style.display = 'none'; }, 1500); }
+    if (window._latestJob) window._latestJob.rep_name = slug || null;
+  })
+  .catch(function(e) {
+    if (statusEl) { statusEl.style.color = '#f87171'; statusEl.textContent = 'Save failed: ' + e.message; }
+  });
+}
+
 function _initProspectInfoTab(session) {
   if (typeof IS_EDIT_MODE === 'undefined' || !IS_EDIT_MODE) return;
   const tabBtn = document.getElementById('tab-btn-prospect-info');
   if (tabBtn) tabBtn.style.display = '';
   const info  = (session && session.prospectInfo) || {};
   const brief = (session && session.extracted)    || {};
+  const repSlug = (session && session.job && session.job.rep_name)
+               || (window._latestJob && window._latestJob.rep_name)
+               || '';
+
+  // Populate the Sales rep dropdown from /api/sales-reps and select the
+  // current rep_name. Saving is wired via portalSaveRep on <select> change.
+  portalLoadSalesReps().then(function(reps) {
+    const sel = document.getElementById('pi-rep');
+    if (!sel) return;
+    const opts = ['<option value="">—</option>'].concat(reps.map(function(r) {
+      return '<option value="' + r.slug + '"' + (r.slug === repSlug ? ' selected' : '') + '>' + r.display_name + '</option>';
+    }));
+    sel.innerHTML = opts.join('');
+  });
 
   document.querySelectorAll('#prospect-info-form [data-col],#prospect-info-form [data-brief]').forEach(el => {
     let v = '';
