@@ -724,14 +724,102 @@ async function getRepBySlug(slug) {
   return rows.find(r => r.active && r.slug === slug) || null;
 }
 
+// ── Sync sales_reps.email from GHL ────────────────────────────────────────────
+// Source of truth for QS rep emails is GHL — each rep already has a
+// ghl_user_id in sales_reps. This pulls the corresponding email (and refreshes
+// display_name) from GHL's /users/ endpoint and writes it back. Used by the
+// /api/admin/sync-rep-emails admin endpoint AND fired automatically at boot
+// when any active rep is missing an email. The synced email then flows into
+// getRepEmails() → _annotateTranscript() so Fireflies transcript turns get
+// labeled [REP] vs [PROSPECT] correctly.
+//
+// Requires a one-time schema migration (Supabase SQL editor):
+//   ALTER TABLE sales_reps ADD COLUMN IF NOT EXISTS email TEXT;
+async function syncRepEmailsFromGHL() {
+  if (!GHL_API_KEY || !GHL_LOCATION_ID) {
+    return { ok: false, error: 'GHL_API_KEY / GHL_LOCATION_ID not set', synced: 0, missing: 0 };
+  }
+  // 1. Fetch all GHL users in this location.
+  let ghlUsers = [];
+  try {
+    const r = await fetch(`https://services.leadconnectorhq.com/users/?locationId=${GHL_LOCATION_ID}`, {
+      headers: { 'Authorization': `Bearer ${GHL_API_KEY}`, 'Version': '2021-07-28' },
+      signal: AbortSignal.timeout(8000)
+    });
+    if (!r.ok) {
+      return { ok: false, error: `GHL /users returned ${r.status}`, synced: 0, missing: 0 };
+    }
+    const data = await r.json();
+    ghlUsers = data.users || [];
+  } catch (e) {
+    return { ok: false, error: 'GHL /users fetch failed: ' + e.message, synced: 0, missing: 0 };
+  }
+  const byId = new Map(ghlUsers.map(u => [u.id, u]));
+
+  // 2. Load every sales_rep row (active and inactive — we want to keep
+  // historical rep records in sync too in case they're reactivated).
+  const repsResp = await supabaseRequest('GET', '/rest/v1/sales_reps?select=*');
+  if (repsResp.status !== 200 || !Array.isArray(repsResp.body)) {
+    return { ok: false, error: `Supabase load failed: ${repsResp.status}`, synced: 0, missing: 0 };
+  }
+  const reps = repsResp.body;
+
+  // 3. For each rep with a ghl_user_id, compare the cached email to GHL's
+  // current email. PATCH only when there's a real diff to avoid noisy writes.
+  let synced = 0;
+  let missing = 0;
+  const stillMissing = [];
+  for (const rep of reps) {
+    if (!rep.ghl_user_id) continue;
+    const ghlUser = byId.get(rep.ghl_user_id);
+    if (!ghlUser) {
+      // Rep linked to a GHL user that no longer exists in this location.
+      if (!rep.email) { missing++; stillMissing.push({ slug: rep.slug, ghl_user_id: rep.ghl_user_id, reason: 'ghl_user_not_found' }); }
+      continue;
+    }
+    const ghlEmail = String(ghlUser.email || '').trim().toLowerCase();
+    if (!ghlEmail) {
+      if (!rep.email) { missing++; stillMissing.push({ slug: rep.slug, ghl_user_id: rep.ghl_user_id, reason: 'ghl_user_has_no_email' }); }
+      continue;
+    }
+    const ghlName = [ghlUser.firstName, ghlUser.lastName].filter(Boolean).join(' ').trim()
+                    || ghlUser.name || rep.display_name || null;
+    const currentEmail = String(rep.email || '').trim().toLowerCase();
+    const patch = {};
+    if (currentEmail !== ghlEmail) patch.email = ghlEmail;
+    // Refresh display_name only when GHL has a non-empty name AND it differs.
+    if (ghlName && rep.display_name !== ghlName) patch.display_name = ghlName;
+    if (Object.keys(patch).length === 0) continue;
+    try {
+      const pr = await supabaseRequest('PATCH', `/rest/v1/sales_reps?id=eq.${encodeURIComponent(rep.id)}`,
+        patch, { 'Prefer': 'return=minimal' });
+      if (pr.status >= 400) {
+        // Most likely: the `email` column doesn't exist yet. Fail soft so the
+        // first-time setup hint comes back in the response.
+        console.warn(`[sync-reps] PATCH failed status=${pr.status} body=${JSON.stringify(pr.body).slice(0, 200)} — did you add the email column?`);
+        return { ok: false, error: `Supabase PATCH ${pr.status} — likely missing column. Run: ALTER TABLE sales_reps ADD COLUMN IF NOT EXISTS email TEXT;`, synced, missing };
+      }
+      synced++;
+    } catch (e) {
+      console.warn(`[sync-reps] PATCH error for rep ${rep.slug}: ${e.message}`);
+    }
+  }
+
+  // 4. Bust the in-memory cache so getRepEmails() picks up the new values on
+  // its next call without waiting out the 5-minute TTL.
+  _repCache = { rows: null, fetchedAt: 0 };
+
+  console.log(`[sync-reps] Synced ${synced} rep email/name updates from GHL · ${missing} still missing`);
+  return { ok: true, synced, missing, still_missing: stillMissing, ghl_users_seen: ghlUsers.length, sales_reps_seen: reps.length };
+}
+
 // ── Speaker-role identification for Fireflies transcripts ─────────────────────
 // Returns a lowercased Set of known QS rep email addresses, used to tag each
 // transcript turn as [REP] or [PROSPECT] before the brief extractor sees it.
-// Two sources, merged:
-//   1. QS_REP_EMAILS env var (comma-separated) — zero-DB-touch fallback for
-//      ops to seed quickly without a schema change.
-//   2. sales_reps.email column (optional) — operators add it via Supabase UI;
-//      loadActiveReps() picks it up automatically because we SELECT *.
+// Primary source: sales_reps.email column — populated automatically from GHL
+// by syncRepEmailsFromGHL() (boot-time auto-sync + /api/admin/sync-rep-emails
+// endpoint). Falls back to QS_REP_EMAILS env var (comma-separated) for ops
+// who'd rather not lean on the DB sync path.
 async function getRepEmails() {
   const out = new Set();
   (process.env.QS_REP_EMAILS || '').split(',').forEach(e => {
@@ -4558,6 +4646,29 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // ── POST /api/admin/sync-rep-emails — pull sales rep emails from GHL ──────
+  // One-shot sync: for every sales_reps row that has a ghl_user_id, fetch the
+  // corresponding GHL user's email (and refresh display_name) and write back
+  // to the sales_reps table. Used to populate the email column after the
+  // one-time `ALTER TABLE sales_reps ADD COLUMN email TEXT` migration, and
+  // whenever the team roster changes. Idempotent — only writes when GHL's
+  // value differs from what's already stored. Boot-time auto-sync also calls
+  // this when any active rep is missing an email.
+  if (req.method === 'POST' && urlPath === '/api/admin/sync-rep-emails') {
+    setCors(res);
+    try {
+      const result = await syncRepEmailsFromGHL();
+      const status = result.ok ? 200 : 500;
+      res.writeHead(status, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(result));
+    } catch (e) {
+      console.error('[POST /api/admin/sync-rep-emails]', e.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
   // ── GET /api/diag/rep-resolve?email=… — walk the whole resolve chain and ──
   // return JSON. Useful when the New Job dropdown stays blank — you can see
   // exactly which step fell through (no contact, no opp, opp without owner,
@@ -5410,4 +5521,30 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`Deal Forge running on port ${PORT}`);
   console.log(`Supabase: ${USE_SUPABASE ? 'connected' : 'NOT configured — worker disabled'}`);
+  // Auto-sync sales_reps.email from GHL on boot — but only if at least one
+  // active rep is missing an email. This makes the speaker-labeling pipeline
+  // self-healing: after the one-time SQL migration the next redeploy fills in
+  // emails without any operator action. Fire-and-forget; failures are logged
+  // but never block startup or block worker tasks.
+  if (USE_SUPABASE && GHL_API_KEY && GHL_LOCATION_ID) {
+    setTimeout(async () => {
+      try {
+        const reps = await loadActiveReps();
+        const needsSync = reps.some(r => r.active && r.ghl_user_id && !r.email);
+        if (!needsSync) {
+          console.log('[boot-sync] sales_reps emails already populated; skipping GHL sync');
+          return;
+        }
+        console.log('[boot-sync] sales_reps missing email — syncing from GHL…');
+        const result = await syncRepEmailsFromGHL();
+        if (result.ok) {
+          console.log(`[boot-sync] Done — ${result.synced} updated, ${result.missing} still missing`);
+        } else {
+          console.warn('[boot-sync] Failed:', result.error);
+        }
+      } catch (e) {
+        console.warn('[boot-sync] Error:', e.message);
+      }
+    }, 3000); // Brief delay so the server is fully ready before we hit GHL.
+  }
 });
