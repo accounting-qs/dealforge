@@ -11,9 +11,9 @@
     "what": "Deal Forge is an internal sales tool for Quantum Scaling reps. After completing a Call 1 (Business Audit), the rep triggers the app with the Fireflies meeting ID. An AI pipeline extracts the prospect's ICP and business context, then generates 7 custom assets: a verified lead list, interactive Google Calendar invite visual, 3 webinar title options, an interactive ROI calculator pre-populated with their numbers, a prospect research profile, and brand-scraped visual identity. All assets are ready before Call 2. The in-portal Webinar Experience tab renders a one-slide branded hero + ICP-aware live chat at view time (no separate pipeline task).",
     "why": "QS's Call 2 show rate is 37.5% — the core constraint on revenue. Prospects feel informed after Call 1 and have no strong pull to return. Deal Forge creates a concrete bridge: assets so specific to the prospect that skipping Call 2 means walking away from something already built for them. The 'sunk cost' and perceived value dramatically increase show rate and close rate.",
     "end_state": "A polished internal rep dashboard used for every Call 2 booking. Rep selects today's calls from auto-loaded Fireflies meetings, clicks Generate, and has a full asset package ready within 20 minutes. The ROI model and reg page mock have shareable prospect-facing URLs. Eventually expands to full CRM integration and automated follow-up.",
-    "current_summary": "Phase 2 backend live on Railway. 7-task pipeline deployed (webinar_mock task removed 2026-05-12 — standalone HTML asset was unused; in-portal Webinar Experience tab now renders a single brand-colors hero + ICP-aware chat client-side). Rep portal live at deal-forge-production.up.railway.app. Key systems confirmed working: (1) Fireflies transcript lookup — 6-pass search strategy (GHL name → company → email segments → domain → recent scan p1 → p2), prefers exact email match → domain match → loose keyword. (2) GHL contact lookup — enriches contactInfo with name/company/title before Fireflies search for better matching. (3) extractBriefFromTranscript — Claude Sonnet extracts full structured brief: prospect info, ICP (apollo_titles, apollo_industries, apollo_employee_ranges, apollo_geography, person_seniorities), metrics (LTV/close/show rate), angle (pain/result/methodology/proof), verbatim quotes, situation, context, webinar title seeds. (4) /api/prefetch endpoint — runs Fireflies + GHL + website scrape + Claude extraction before job creation so rep can review the brief. (5) Task handlers wired: extract, prospect_research, brand_scrape, lead_list, webinar_titles, roi_model, calendar_visual. Main blocker: lead_list EU Apollo coverage — org search returns 0 for Baltic/EU ICPs. Latest fix deployed (commit c934325): strip 'Europe' from geo (invalid Apollo value), EU country list retry with no AND-logic industry filter, geoUsed flag tells classifier to accept EU-wide companies. Unconfirmed — stopped testing to avoid rate limit loop."
+    "current_summary": "Phase 2 backend live on Render. 7-task pipeline deployed (webinar_mock task removed 2026-05-12 — standalone HTML asset was unused; in-portal Webinar Experience tab now renders a single brand-colors hero + ICP-aware chat client-side). Rep portal live at deal-forge-angel.onrender.com. Key systems confirmed working: (1) Fireflies transcript lookup — 6-pass search strategy (GHL name → company → email segments → domain → recent scan p1 → p2), prefers exact email match → domain match → loose keyword. (2) GHL contact lookup — enriches contactInfo with name/company/title before Fireflies search for better matching. (3) extractBriefFromTranscript — Claude Sonnet extracts full structured brief: prospect info, ICP (apollo_titles, apollo_industries, apollo_employee_ranges, apollo_geography, person_seniorities), metrics (LTV/close/show rate), angle (pain/result/methodology/proof), verbatim quotes, situation, context, webinar title seeds. (4) /api/prefetch endpoint — runs Fireflies + GHL + website scrape + Claude extraction before job creation so rep can review the brief. (5) Task handlers wired: extract, prospect_research, brand_scrape, lead_list, webinar_titles, roi_model, calendar_visual. Main blocker: lead_list EU Apollo coverage — org search returns 0 for Baltic/EU ICPs. Latest fix deployed (commit c934325): strip 'Europe' from geo (invalid Apollo value), EU country list retry with no AND-logic industry filter, geoUsed flag tells classifier to accept EU-wide companies. Unconfirmed — stopped testing to avoid rate limit loop."
   },
-  "resume_here": "Phase 2 backend deployed. Full Fireflies→brief pipeline confirmed working. lead_list is the remaining blocker for EU/Baltic ICPs — returns 0 leads. Latest fix committed (c934325): EU org retry uses explicit country list with geo+size only (no AND-logic industry filter), geoUsed flag tells classifier to accept EU-wide companies. NOT yet confirmed working — stopped testing to avoid Apollo rate limit loop. Next session: (1) trigger one fresh job for rait@planpro.ee, (2) check Railway logs for which Apollo tier fires and what HTTP status/org count comes back, (3) if still 0, test people/search direct with person_locations as fallback path.",
+  "resume_here": "Phase 2 backend deployed. Full Fireflies→brief pipeline confirmed working. lead_list is the remaining blocker for EU/Baltic ICPs — returns 0 leads. Latest fix committed (c934325): EU org retry uses explicit country list with geo+size only (no AND-logic industry filter), geoUsed flag tells classifier to accept EU-wide companies. NOT yet confirmed working — stopped testing to avoid Apollo rate limit loop. Next session: (1) trigger one fresh job for rait@planpro.ee, (2) check Render logs for which Apollo tier fires and what HTTP status/org count comes back, (3) if still 0, test people/search direct with person_locations as fallback path.",
   "current_phase": {
     "name": "Phase 2 - Build & Test",
     "goal": "Debug lead_list EU Apollo coverage, confirm full pipeline end-to-end with real Call 1 transcripts, then polish rep portal UI.",
@@ -22,7 +22,7 @@
       "Everything else confirmed working: Fireflies 6-pass transcript lookup, GHL contact enrichment, website scrape, Claude brief extraction, all 7 task handlers wired"
     ],
     "immediate_next_steps": [
-      "Fresh session: trigger one real job for rait@planpro.ee, watch Railway logs — need to see which Apollo org search tier fires and what count it returns",
+      "Fresh session: trigger one real job for rait@planpro.ee, watch Render logs — need to see which Apollo org search tier fires and what count it returns",
       "If Apollo EU org search still 0: try people/search direct with person_locations (person-level geo, separate from org search) — may have better EU coverage",
       "Run end-to-end test with a US/NA-based prospect ICP to confirm pipeline works outside EU — isolates whether 0-leads issue is EU-specific",
       "Once lead_list confirmed: run full 7-task e2e on a real QS Call 1 transcript and review all asset outputs",
@@ -40,7 +40,7 @@
         "status": "fixed-unverified"
       },
       {
-        "title": "In-process job worker — jobs lost on Railway redeploy if in-flight. Jobs persist in Supabase but processing promise is killed.",
+        "title": "In-process job worker — jobs lost on Render redeploy if in-flight. Jobs persist in Supabase but processing promise is killed.",
         "severity": "medium",
         "status": "open"
       }
@@ -48,7 +48,7 @@
   },
   "next_phase": {
     "name": "Phase 2 - Build & Test",
-    "goal": "Build the Node.js worker, task handlers for all 7 tasks, and deploy to Railway. Internal test with 2-3 real Call 1 transcripts.",
+    "goal": "Build the Node.js worker, task handlers for all 7 tasks, and deploy to Render. Internal test with 2-3 real Call 1 transcripts.",
     "key_features": [
       "Job queue worker with atomic task claiming (UPDATE...RETURNING)",
       "Stage 1: extract handler, prospect_research handler",
@@ -65,7 +65,7 @@
       "Apify LinkedIn scraper (prospect_research)",
       "Apify web scraper (brand_scrape)",
       "Supabase JS client",
-      "Railway deployment"
+      "Render deployment"
     ],
     "prerequisites": "/task-spec complete for all 7 tasks. /ux-design complete. Ample Leads credentials obtained."
   },
@@ -73,7 +73,7 @@
     {
       "name": "Phase 3 - Rep Dashboard UI",
       "goal": "Build the Next.js frontend: job list, asset cards, shareable links, real-time status polling.",
-      "tools_and_apis": ["Next.js", "Supabase realtime", "Railway"],
+      "tools_and_apis": ["Next.js", "Supabase realtime", "Render"],
       "prerequisites": "Phase 2 worker deployed and tested with real transcripts"
     },
     {
@@ -149,7 +149,7 @@
       "date": "2026-04-08"
     },
     {
-      "description": "Phase 2 backend built and deployed to Railway — pipeline live, GHL webhook, Fireflies lookup, rep portal at deal-forge-production.up.railway.app",
+      "description": "Phase 2 backend built and deployed to Render — pipeline live, GHL webhook, Fireflies lookup, rep portal at deal-forge-angel.onrender.com",
       "date": "2026-04-15"
     },
     {
@@ -231,8 +231,8 @@
   ],
   "completed_phases": [],
   "links": {
-    "repo": "https://github.com/lloyd-yip/deal-forge",
-    "app_url": "https://deal-forge-production.up.railway.app",
+    "repo": "https://github.com/accounting-qs/dealforge",
+    "app_url": "https://deal-forge-angel.onrender.com",
     "docs": null
   }
 }

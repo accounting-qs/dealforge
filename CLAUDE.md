@@ -29,10 +29,10 @@ All phase tracking, decisions, milestones, and resume points live at:
 | Stage 3 | `calendar_visual` | brand_scrape + webinar_titles + prospect_research terminal |
 
 **Infrastructure:**
-- Railway project ID: `8839ef6c-015c-455e-a75a-8bb8f82c43a2`
+- Hosting: Render — https://deal-forge-angel.onrender.com/
 - Supabase project: `lcryrllxityssyamcvst` (eu-west-1, schema: `sales_assets`)
 - Supabase Storage bucket: `sales-assets` (public)
-- GitHub: `lloyd-yip/deal-forge`
+- GitHub: `accounting-qs/dealforge`
 
 **Key design decisions:**
 - `extract` writes to `jobs.extracted_data` (not tasks.output_data) — all Stage 2 tasks read from it
