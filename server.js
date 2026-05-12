@@ -2032,21 +2032,25 @@ async function fetchLeadsFromApollo(icp, progressCb) {
         ? String(icp.apollo_industries[0] || '').trim()
         : '');
 
-  // We deliberately use only the four core Apollo filters: titles, location
-  // (account HQ), employee size, and industry keyword. person_seniorities is
-  // NOT included — for ICPs with specific titles like "Chief Marketing Officer"
-  // or "VP of Marketing", the title already encodes seniority, and stacking a
-  // seniorities filter on top double-narrows the TAM unnecessarily (Apollo's
-  // seniority tagging is heuristic and misses many legitimate CEOs).
-  // contact_email_status is also not added — sanitizeApolloPayload strips it
-  // anyway, but we never set it here. Reps who want a verified-only filter can
-  // toggle it manually later; not the default.
+  // Four core Apollo filters by default: titles, location (account HQ),
+  // employee size, industry keyword. person_seniorities is OPT-IN — the
+  // extractor (handleExtract) returns null for it, so automated runs never
+  // narrow on seniorities. But if the rep manually adds seniority chips in
+  // the Edit-Filters UI and saves, those values land in icp.person_seniorities
+  // and we honor them here. This matches the chip UI's behavior: visible,
+  // editable, but only active when the rep chose to use them.
+  // contact_email_status is never added by us — sanitizeApolloPayload strips
+  // it anyway. Reps who want a verified-only filter can toggle it manually
+  // later; not the default.
   const legacyPayload = { per_page: 50 };
   if (Array.isArray(icp?.apollo_titles) && icp.apollo_titles.length) {
     legacyPayload.person_titles = icp.apollo_titles;
   }
   if (apolloGeo.length)  legacyPayload.organization_locations = apolloGeo;
   if (sizeRanges.length) legacyPayload.organization_num_employees_ranges = sizeRanges;
+  if (Array.isArray(icp?.person_seniorities) && icp.person_seniorities.length) {
+    legacyPayload.person_seniorities = icp.person_seniorities;
+  }
   // Pass the keyword as q_keywords (string). sanitizeApolloPayload normalizes
   // this to a SINGLE-TAG q_organization_keyword_tags, avoiding Apollo's AND-trap.
   if (keywordPhrase) legacyPayload.q_keywords = keywordPhrase;
