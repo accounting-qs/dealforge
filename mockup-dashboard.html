@@ -151,13 +151,15 @@
       </div>
     </div>
 
-    <!-- Loading state -->
-    <div id="nj-loading" style="display:none;text-align:center;padding:24px 0 8px;">
-      <svg class="spinner" style="width:20px;height:20px;color:#8b5cf6;display:inline-block;" fill="none" viewBox="0 0 24 24">
-        <circle style="opacity:0.2" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3"></circle>
-        <path style="opacity:0.9" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
-      </svg>
-      <div style="font-size:12px;color:#52525b;margin-top:8px;">Searching GHL & Fireflies...</div>
+    <!-- Live progress bar (driven by /api/prefetch + /api/extract-brief polling) -->
+    <div id="nj-loading" style="display:none;padding:18px 4px;">
+      <div style="display:flex;justify-content:space-between;font-size:12px;color:#a1a1aa;margin-bottom:6px;">
+        <span id="nj-progress-msg">Starting…</span>
+        <span id="nj-progress-pct">0%</span>
+      </div>
+      <div style="background:rgba(255,255,255,0.06);border-radius:4px;height:6px;overflow:hidden;">
+        <div id="nj-progress-bar" style="background:linear-gradient(90deg,#8b5cf6,#a78bfa);height:100%;width:0%;transition:width 400ms ease-out;"></div>
+      </div>
     </div>
 
     <!-- Not found state -->
@@ -205,6 +207,17 @@
           </div>
         </div>
 
+        <!-- Fireflies call picker (shown when 2+ candidates match) -->
+        <div id="nj-picker" style="display:none;margin-top:12px;padding:12px;background:rgba(139,92,246,0.04);border:1px solid rgba(139,92,246,0.18);border-radius:8px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+            <div style="font-size:12px;font-weight:600;color:#c4b5fd;letter-spacing:0.02em;">
+              <span id="nj-picker-count">0</span> Fireflies calls — pick the right one
+            </div>
+            <button type="button" id="nj-picker-toggle" onclick="njPickerToggle()" style="background:none;border:none;color:#71717a;font-size:11px;cursor:pointer;text-decoration:underline;">Hide</button>
+          </div>
+          <div id="nj-picker-list" style="display:flex;flex-direction:column;gap:6px;max-height:220px;overflow-y:auto;"></div>
+        </div>
+
         <!-- Phase 3: approved calls badge -->
         <div id="nj-approved-calls" style="display:none;font-size:12px;font-weight:500;color:#4ade80;margin-top:8px;padding:7px 10px;background:rgba(34,197,94,0.08);border:1px solid rgba(34,197,94,0.2);border-radius:7px;"></div>
       </div>
@@ -224,11 +237,11 @@
       <!-- Rep Assignment -->
       <div class="nj-section">
         <div class="nj-label">Assign Rep</div>
+        <!-- Options populated at load time from /api/sales-reps. The single
+             placeholder option lives in markup so the dropdown isn't empty
+             during the brief flash before the fetch resolves. -->
         <select id="nj-rep" class="nj-input" style="appearance:none;-webkit-appearance:none;cursor:pointer;background-image:url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='none' stroke='%2352525b' viewBox='0 0 24 24'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M19 9l-7 7-7-7'/%3E%3C/svg%3E\");background-repeat:no-repeat;background-position:right 12px center;padding-right:32px;">
           <option value="">Select rep...</option>
-          <option value="melissa">Melissa F.</option>
-          <option value="ryan">Ryan Matsumori</option>
-          <option value="armando">Armando</option>
         </select>
       </div>
 
@@ -399,12 +412,9 @@
 
     <!-- Rep Filter + Search Row -->
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap;">
-      <!-- Rep pills -->
-      <div style="display:flex;gap:6px;flex-wrap:wrap;flex:1;">
-        <button class="rep-pill active" onclick="filterRep('all',this)">All</button>
-        <button class="rep-pill" onclick="filterRep('melissa',this)">Melissa F.</button>
-        <button class="rep-pill" onclick="filterRep('ryan',this)">Ryan Matsumori</button>
-        <button class="rep-pill" onclick="filterRep('armando',this)">Armando</button>
+      <!-- Rep pills (rendered at load from /api/sales-reps; "All" stays static) -->
+      <div id="rep-pills" style="display:flex;gap:6px;flex-wrap:wrap;flex:1;">
+        <button class="rep-pill active" data-rep-slug="all" onclick="filterRep('all',this)">All</button>
       </div>
       <!-- Search -->
       <div style="position:relative;min-width:200px;">
@@ -680,6 +690,105 @@
 
 <script>
 
+// ─── Sales reps — loaded once from /api/sales-reps, used by:
+//   - New Job dropdown (Step 1 rep picker)
+//   - Rep filter pills on the dashboard
+//   - Inline rep dropdown on each job row
+//   - Display-name lookup when a job row is inserted optimistically
+// Falls back to the canonical slugs if the endpoint fails, so the UI still
+// works against an unmigrated Supabase instance.
+var _SALES_REPS = [];
+var _SALES_REPS_BY_SLUG = {};
+function loadSalesReps() {
+  return fetch('/api/sales-reps', { cache: 'no-store' })
+    .then(function(r) { return r.ok ? r.json() : { reps: [] }; })
+    .then(function(d) {
+      var reps = Array.isArray(d.reps) ? d.reps : [];
+      if (!reps.length) {
+        reps = [
+          { slug: 'melissa', display_name: 'Melissa F.' },
+          { slug: 'ryan',    display_name: 'Ryan Matsumori' },
+          { slug: 'armando', display_name: 'Armando' }
+        ];
+      }
+      _SALES_REPS = reps;
+      _SALES_REPS_BY_SLUG = {};
+      reps.forEach(function(r) { _SALES_REPS_BY_SLUG[r.slug] = r; });
+      renderRepDropdown();
+      renderRepPills();
+      decorateJobRowsWithRepDropdown();
+    })
+    .catch(function(e) { console.warn('[sales-reps]', e.message); });
+}
+function renderRepDropdown() {
+  var sel = document.getElementById('nj-rep');
+  if (!sel) return;
+  var keepValue = sel.value;
+  var html = '<option value="">Select rep...</option>'
+    + _SALES_REPS.map(function(r) {
+        return '<option value="' + r.slug + '">' + r.display_name + '</option>';
+      }).join('');
+  sel.innerHTML = html;
+  if (keepValue) sel.value = keepValue;
+}
+function renderRepPills() {
+  var box = document.getElementById('rep-pills');
+  if (!box) return;
+  var html = '<button class="rep-pill ' + (activeRep === 'all' ? 'active' : '') + '" data-rep-slug="all" onclick="filterRep(\'all\',this)">All</button>'
+    + _SALES_REPS.map(function(r) {
+        return '<button class="rep-pill ' + (activeRep === r.slug ? 'active' : '') + '" data-rep-slug="' + r.slug + '" onclick="filterRep(\'' + r.slug + '\',this)">' + r.display_name + '</button>';
+      }).join('');
+  box.innerHTML = html;
+}
+function decorateJobRowsWithRepDropdown() {
+  // Replace the static Rep column text on every existing row with a small
+  // <select> that PATCHes /api/jobs/:id/rep on change. We re-use the row's
+  // data-rep attribute as the current value.
+  document.querySelectorAll('.job-row').forEach(function(row) {
+    if (row.querySelector('.row-rep-select')) return; // idempotent
+    // Find the rep column. It's the .row-item child with width 110px containing
+    // the rep name text. We just replace it with a select.
+    var children = row.children;
+    for (var i = 0; i < children.length; i++) {
+      var c = children[i];
+      if (c.style && c.style.width === '110px' && c.tagName !== 'DIV') continue;
+      if (c.style && c.style.width === '110px' && c.querySelector && !c.querySelector('.status-dot')) {
+        var jobId = row.getAttribute('data-job-id');
+        if (!jobId) return; // demo rows don't have a real ID, skip
+        var current = row.dataset.rep || '';
+        var opts = '<option value="">—</option>'
+          + _SALES_REPS.map(function(r) {
+              return '<option value="' + r.slug + '"' + (r.slug === current ? ' selected' : '') + '>' + r.display_name + '</option>';
+            }).join('');
+        c.innerHTML = '<select class="row-rep-select" data-job-id="' + jobId + '" onclick="event.stopPropagation()" onchange="changeRowRep(this)" style="background:transparent;border:1px solid rgba(255,255,255,0.08);color:#a1a1aa;font-size:12px;padding:3px 6px;border-radius:6px;font-family:inherit;cursor:pointer">' + opts + '</select>';
+        break;
+      }
+    }
+  });
+}
+function changeRowRep(selectEl) {
+  var jobId = selectEl.getAttribute('data-job-id');
+  var slug  = selectEl.value || null;
+  fetch('/api/jobs/' + encodeURIComponent(jobId) + '/rep', {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ slug: slug })
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(d) {
+    if (d.error) throw new Error(d.error);
+    var row = selectEl.closest('.job-row');
+    if (row) {
+      row.dataset.rep = slug || '';
+      applyFilters(); // re-evaluate rep-pill filter
+    }
+  })
+  .catch(function(e) {
+    console.warn('[rep-change]', e.message);
+    alert('Failed to update rep: ' + e.message);
+  });
+}
+
 // ─── DEMO DATA — rep is GHL opp owner ───────────────
 const DEMO_GHL = {
   'sarah@acmecorp.com': {
@@ -773,7 +882,18 @@ function applyFilters() {
 }
 
 // ─── NEW JOB MODAL ───────────────────────────────────
-var _njPrefetchResult = null; // stores { contact, brief, transcript_found, transcript_title } between steps
+// Two-phase flow:
+//   phase 1: POST /api/prefetch → poll GET /api/prefetch/:id (GHL + Fireflies + scrape)
+//   phase 2: POST /api/extract-brief → poll GET /api/extract-brief/:id (Claude)
+// Both phases write progress to the same nj-progress bar.
+var _njPrefetchResult = null;
+var _njExtractResult  = null;
+var _njPrefetchId     = null;
+var _njExtractId      = null;
+var _njSelectedTranscriptId = null;
+var _njPollTimer      = null;
+var _njPollStuck      = 0;
+var _njPollLastPct    = -1;
 
 function njOpen() {
   njReset();
@@ -784,10 +904,17 @@ function njOpen() {
 function njClose() {
   document.getElementById('nj-website-url').value = '';
   document.getElementById('nj-overlay').classList.remove('open');
+  if (_njPollTimer) { clearTimeout(_njPollTimer); _njPollTimer = null; }
 }
 
 function njReset() {
   _njPrefetchResult = null;
+  _njExtractResult  = null;
+  _njPrefetchId     = null;
+  _njExtractId      = null;
+  _njSelectedTranscriptId = null;
+  _njPollLastPct = -1; _njPollStuck = 0;
+  if (_njPollTimer) { clearTimeout(_njPollTimer); _njPollTimer = null; }
   document.getElementById('nj-email').value = '';
   document.getElementById('nj-linkedin').value = '';
   document.getElementById('nj-rep').value = '';
@@ -796,7 +923,12 @@ function njReset() {
   document.getElementById('nj-results').style.display = 'none';
   document.getElementById('nj-transcript-found').style.display = 'none';
   document.getElementById('nj-transcript-missing').style.display = 'none';
+  var picker = document.getElementById('nj-picker');
+  if (picker) { picker.style.display = 'none'; }
+  var plist = document.getElementById('nj-picker-list');
+  if (plist) plist.innerHTML = '';
   document.getElementById('nj-step2').style.display = 'none';
+  njSetProgress(0, 'Starting…');
   // Clear all brief fields
   ['bf-company','bf-contact-name','bf-contact-title','bf-apollo-titles',
    'bf-industry','bf-company-size','bf-geography','bf-ltv','bf-close-rate','bf-show-rate',
@@ -811,6 +943,15 @@ function njReset() {
   if (genErr) genErr.style.display = 'none';
 }
 
+function njSetProgress(pct, msg) {
+  var bar = document.getElementById('nj-progress-bar');
+  var p   = document.getElementById('nj-progress-pct');
+  var m   = document.getElementById('nj-progress-msg');
+  if (bar) bar.style.width = (pct || 0) + '%';
+  if (p)   p.textContent = (pct || 0) + '%';
+  if (m && msg) m.textContent = msg;
+}
+
 function njSearch() {
   var email = document.getElementById('nj-email').value.trim().toLowerCase();
   if (!email || email.indexOf('@') < 0) return;
@@ -818,6 +959,8 @@ function njSearch() {
   document.getElementById('nj-not-found').style.display = 'none';
   document.getElementById('nj-results').style.display = 'none';
   document.getElementById('nj-loading').style.display = 'block';
+  njSetProgress(0, 'Starting…');
+  _njPollLastPct = -1; _njPollStuck = 0;
 
   fetch('/api/prefetch', {
     method: 'POST',
@@ -826,68 +969,150 @@ function njSearch() {
   })
   .then(function(r) { return r.json(); })
   .then(function(data) {
-    document.getElementById('nj-loading').style.display = 'none';
-
-    if (data.error || !data.contact) {
-      document.getElementById('nj-not-found').style.display = 'block';
-      return;
-    }
-
-    _njPrefetchResult = data; // { contact, brief, transcript_found, transcript_title }
-    var contact = data.contact;
-
-    // Populate contact card
-    var name = contact.name || contact.email || email;
-    var initials = name.split(' ').map(function(w){ return w[0] || ''; }).join('').toUpperCase().slice(0,2) || '?';
-    document.getElementById('nj-avatar').textContent = initials;
-    document.getElementById('nj-name').textContent = name;
-    var roleCompany = [contact.title, contact.company].filter(Boolean).join(' · ');
-    document.getElementById('nj-role-company').textContent = roleCompany || email;
-    var websiteDisplay = contact.website || contact.domain || '';
-    document.getElementById('nj-website').textContent = websiteDisplay;
-
-    // Pre-fill website URL input
-    if (websiteDisplay && !document.getElementById('nj-website-url').value) {
-      var ws = websiteDisplay.startsWith('http') ? websiteDisplay : 'https://' + websiteDisplay;
-      document.getElementById('nj-website-url').value = ws;
-    }
-
-    // Transcript status
-    if (data.transcript_found) {
-      document.getElementById('nj-transcript-title').textContent = data.transcript_title || 'Call transcript found';
-      document.getElementById('nj-transcript-date').textContent = data.transcript_date || '';
-      document.getElementById('nj-transcript-found').style.display = 'flex';
-      document.getElementById('nj-transcript-missing').style.display = 'none';
-    } else {
-      document.getElementById('nj-transcript-found').style.display = 'none';
-      document.getElementById('nj-transcript-missing').style.display = 'flex';
-    }
-
-    // Phase 3 — approved call count badge
-    var approvedCount = data.approved_call_count || 0;
-    var badge = document.getElementById('nj-approved-calls');
-    if (badge) {
-      if (approvedCount > 0) {
-        badge.textContent = '✅ ' + approvedCount + ' approved call' + (approvedCount !== 1 ? 's' : '') + ' in Call Library — brief uses reviewed data';
-        badge.style.display = 'block';
-      } else {
-        badge.style.display = 'none';
-      }
-    }
-
-    document.getElementById('nj-results').style.display = 'block';
-
-    // Auto-select rep if not already chosen (deterministic from email, same rule as portal)
-    var repEl = document.getElementById('nj-rep');
-    if (repEl && !repEl.value) {
-      repEl.value = (email.charCodeAt(0) % 2 === 0) ? 'melissa' : 'ryan';
-    }
+    if (!data.prefetch_id) throw new Error(data.error || 'No prefetch_id returned');
+    _njPrefetchId = data.prefetch_id;
+    njPollPrefetch();
   })
   .catch(function(err) {
     document.getElementById('nj-loading').style.display = 'none';
     console.warn('[Deal Forge] Prefetch error:', err.message);
     document.getElementById('nj-not-found').style.display = 'block';
   });
+}
+
+function njPollPrefetch() {
+  if (!_njPrefetchId) return;
+  fetch('/api/prefetch/' + encodeURIComponent(_njPrefetchId), { cache: 'no-store' })
+    .then(function(r) { return r.json(); })
+    .then(function(j) {
+      njSetProgress(j.progress || 0, j.step || '');
+      if ((j.progress || 0) === _njPollLastPct) _njPollStuck++;
+      else { _njPollStuck = 0; _njPollLastPct = j.progress || 0; }
+      if (_njPollStuck > 60) { return njShowNotFound('Prefetch stalled — please retry'); }
+      if (j.status === 'running') { _njPollTimer = setTimeout(njPollPrefetch, 700); return; }
+      if (j.status === 'failed')  { return njShowNotFound('Prefetch failed: ' + (j.error || 'unknown')); }
+      _njPrefetchResult = j.result;
+      njRenderPhase1(j.result);
+    })
+    .catch(function(e) {
+      _njPollTimer = setTimeout(njPollPrefetch, 1500);
+      console.warn('[nj-poll] prefetch tick error:', e.message);
+    });
+}
+
+function njShowNotFound(msg) {
+  document.getElementById('nj-loading').style.display = 'none';
+  document.getElementById('nj-not-found').style.display = 'block';
+  if (msg) {
+    var nf = document.getElementById('nj-not-found');
+    nf.innerHTML = '<div style="font-size:13px;color:#fca5a5;font-weight:500;">' + msg + '</div>';
+  }
+}
+
+function njRenderPhase1(result) {
+  document.getElementById('nj-loading').style.display = 'none';
+  var email = (document.getElementById('nj-email').value || '').trim().toLowerCase();
+  if (!result || !result.contact) { document.getElementById('nj-not-found').style.display = 'block'; return; }
+  var contact = result.contact;
+
+  // Contact card
+  var name = contact.name || contact.email || email;
+  var initials = name.split(' ').map(function(w){ return w[0] || ''; }).join('').toUpperCase().slice(0,2) || '?';
+  document.getElementById('nj-avatar').textContent = initials;
+  document.getElementById('nj-name').textContent = name;
+  document.getElementById('nj-role-company').textContent = [contact.title, contact.company].filter(Boolean).join(' · ') || email;
+  var websiteDisplay = contact.website || contact.domain || '';
+  document.getElementById('nj-website').textContent = websiteDisplay;
+  if (websiteDisplay && !document.getElementById('nj-website-url').value) {
+    var ws = websiteDisplay.startsWith('http') ? websiteDisplay : 'https://' + websiteDisplay;
+    document.getElementById('nj-website-url').value = ws;
+  }
+
+  // Fireflies candidates → picker / status
+  var candidates = Array.isArray(result.candidates) ? result.candidates : [];
+  _njSelectedTranscriptId = result.suggested_candidate_id || (candidates[0] && candidates[0].id) || null;
+  if (candidates.length === 0) {
+    document.getElementById('nj-transcript-found').style.display = 'none';
+    document.getElementById('nj-transcript-missing').style.display = 'flex';
+    document.getElementById('nj-picker').style.display = 'none';
+  } else if (candidates.length === 1) {
+    var only = candidates[0];
+    document.getElementById('nj-transcript-title').textContent = only.title || 'Call transcript found';
+    document.getElementById('nj-transcript-date').textContent  = njFormatCandidateMeta(only);
+    document.getElementById('nj-transcript-found').style.display = 'flex';
+    document.getElementById('nj-transcript-missing').style.display = 'none';
+    document.getElementById('nj-picker').style.display = 'none';
+  } else {
+    document.getElementById('nj-transcript-found').style.display = 'none';
+    document.getElementById('nj-transcript-missing').style.display = 'none';
+    njRenderPicker(candidates, _njSelectedTranscriptId);
+  }
+
+  // Approved call badge
+  var approvedCount = result.approved_call_count || 0;
+  var badge = document.getElementById('nj-approved-calls');
+  if (badge) {
+    if (approvedCount > 0) {
+      badge.textContent = '✅ ' + approvedCount + ' approved call' + (approvedCount !== 1 ? 's' : '') + ' in Call Library — brief uses reviewed data';
+      badge.style.display = 'block';
+    } else { badge.style.display = 'none'; }
+  }
+
+  document.getElementById('nj-results').style.display = 'block';
+
+  // GHL-driven rep auto-fill (replaces the email-hash fallback).
+  var repEl = document.getElementById('nj-rep');
+  if (repEl && !repEl.value && result.rep && result.rep.slug) {
+    repEl.value = result.rep.slug;
+  }
+}
+
+function njFormatCandidateMeta(c) {
+  var bits = [];
+  if (c.date) { var d = new Date(c.date); if (!isNaN(d)) bits.push(d.toLocaleDateString(undefined, { month:'short', day:'numeric', year:'numeric' })); }
+  if (c.duration) bits.push(Math.round(c.duration) + ' min');
+  return bits.join(' · ');
+}
+
+function njMatchKindBadge(kind) {
+  var styles = {
+    exact_email: { bg:'rgba(34,197,94,0.12)',  bd:'rgba(34,197,94,0.3)',  fg:'#86efac', label:'EXACT EMAIL' },
+    domain:      { bg:'rgba(59,130,246,0.12)', bd:'rgba(59,130,246,0.3)', fg:'#93c5fd', label:'DOMAIN' },
+    loose:       { bg:'rgba(245,158,11,0.12)', bd:'rgba(245,158,11,0.3)', fg:'#fcd34d', label:'LOOSE' }
+  };
+  var s = styles[kind] || styles.loose;
+  return '<span style="font-size:9px;font-weight:700;letter-spacing:0.06em;padding:2px 6px;border-radius:4px;background:' + s.bg + ';border:1px solid ' + s.bd + ';color:' + s.fg + '">' + s.label + '</span>';
+}
+
+function njRenderPicker(candidates, selectedId) {
+  document.getElementById('nj-picker-count').textContent = candidates.length;
+  document.getElementById('nj-picker').style.display = 'block';
+  var listEl = document.getElementById('nj-picker-list');
+  var html = candidates.map(function(c) {
+    var sel = c.id === selectedId;
+    var attendeesStr = (c.attendees || []).slice(0, 2).map(function(a) { return a.email || a.name; }).filter(Boolean).join(', ');
+    return '<label style="display:flex;align-items:flex-start;gap:10px;padding:8px;border-radius:6px;cursor:pointer;background:' + (sel ? 'rgba(139,92,246,0.10)' : 'transparent') + ';border:1px solid ' + (sel ? 'rgba(139,92,246,0.35)' : 'rgba(255,255,255,0.04)') + '">'
+      +   '<input type="radio" name="nj-transcript-pick" value="' + c.id + '"' + (sel ? ' checked' : '') + ' onchange="njSelectTranscript(\'' + c.id + '\')" style="margin-top:3px">'
+      +   '<div style="flex:1;min-width:0">'
+      +     '<div style="font-size:12.5px;color:#e4e4e7;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + (c.title || 'Untitled') + '</div>'
+      +     '<div style="font-size:11px;color:#71717a;margin-top:2px">' + njFormatCandidateMeta(c) + (attendeesStr ? ' · ' + attendeesStr : '') + '</div>'
+      +   '</div>'
+      +   '<div style="flex-shrink:0">' + njMatchKindBadge(c.match_kind) + '</div>'
+      + '</label>';
+  }).join('') + '<label style="display:flex;align-items:center;gap:10px;padding:8px;border-radius:6px;cursor:pointer;border:1px dashed rgba(255,255,255,0.10);margin-top:4px">'
+      + '<input type="radio" name="nj-transcript-pick" value="" onchange="njSelectTranscript(null)">'
+      + '<div style="font-size:12px;color:#a1a1aa">Skip — build the brief without a transcript</div>'
+    + '</label>';
+  listEl.innerHTML = html;
+}
+
+function njSelectTranscript(id) { _njSelectedTranscriptId = id || null; }
+
+function njPickerToggle() {
+  var list = document.getElementById('nj-picker-list');
+  var btn  = document.getElementById('nj-picker-toggle');
+  if (list.style.display === 'none') { list.style.display = 'flex'; btn.textContent = 'Hide'; }
+  else                                { list.style.display = 'none'; btn.textContent = 'Show'; }
 }
 
 function njShowBrief() {
@@ -898,9 +1123,51 @@ function njShowBrief() {
     setTimeout(function(){ document.getElementById('nj-rep').style.borderColor = ''; }, 1500);
     return;
   }
+  if (!_njPrefetchId) return;
 
-  // Populate Step 2 brief fields from prefetch result
-  var brief = (_njPrefetchResult && _njPrefetchResult.brief) || {};
+  // Phase 2 — fire /api/extract-brief with the rep-confirmed transcript_id.
+  document.getElementById('nj-results').style.display = 'none';
+  document.getElementById('nj-loading').style.display = 'block';
+  njSetProgress(10, 'Submitting transcript pick…');
+  _njPollLastPct = -1; _njPollStuck = 0;
+
+  fetch('/api/extract-brief', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ prefetch_id: _njPrefetchId, transcript_id: _njSelectedTranscriptId })
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(data) {
+    if (!data.extract_id) throw new Error(data.error || 'No extract_id returned');
+    _njExtractId = data.extract_id;
+    njPollExtract();
+  })
+  .catch(function(err) { njShowNotFound('Brief extraction failed: ' + err.message); });
+}
+
+function njPollExtract() {
+  if (!_njExtractId) return;
+  fetch('/api/extract-brief/' + encodeURIComponent(_njExtractId), { cache: 'no-store' })
+    .then(function(r) { return r.json(); })
+    .then(function(j) {
+      njSetProgress(j.progress || 0, j.step || '');
+      if ((j.progress || 0) === _njPollLastPct) _njPollStuck++;
+      else { _njPollStuck = 0; _njPollLastPct = j.progress || 0; }
+      if (_njPollStuck > 60) return njShowNotFound('Brief extraction stalled — please retry');
+      if (j.status === 'running') { _njPollTimer = setTimeout(njPollExtract, 700); return; }
+      if (j.status === 'failed')  return njShowNotFound('Brief extraction failed: ' + (j.error || 'unknown'));
+      _njExtractResult = j.result;
+      njPopulateStep2(j.result);
+    })
+    .catch(function(e) {
+      _njPollTimer = setTimeout(njPollExtract, 1500);
+      console.warn('[nj-poll] extract tick error:', e.message);
+    });
+}
+
+function njPopulateStep2(extract) {
+  document.getElementById('nj-loading').style.display = 'none';
+  var brief = (extract && extract.brief) || {};
   var prospect = brief.prospect || {};
   var icp = brief.icp || {};
   var metrics = brief.metrics || {};
@@ -955,9 +1222,11 @@ function njShowBrief() {
 
   // Source badges — tag each pre-filled brief field with where its value came from
   // so reps can spot stale CRM values, inferred guesses, or missing data before
-  // confirming the brief.
-  var sources = (_njPrefetchResult && _njPrefetchResult.contact_sources) || {};
-  var provenance = (_njPrefetchResult && _njPrefetchResult.brief && _njPrefetchResult.brief._provenance) || {};
+  // confirming the brief. contact_sources comes from phase-1 (prefetch); the brief
+  // _provenance map is stamped during phase-2 (extract-brief).
+  var sources = (extract && extract.contact_sources)
+             || (_njPrefetchResult && _njPrefetchResult.contact_sources) || {};
+  var provenance = (brief && brief._provenance) || {};
   var srcLabel = {
     transcript:    'from Fireflies',
     rep_input:     'from rep input',
@@ -1025,7 +1294,11 @@ function njShowBrief() {
 
 function njBack() {
   document.getElementById('nj-step2').style.display = 'none';
+  document.getElementById('nj-loading').style.display = 'none';
   document.getElementById('nj-results').style.display = 'block';
+  // Cancel any in-flight extract poll so the rep can pick a different
+  // transcript and re-trigger phase 2 cleanly.
+  if (_njPollTimer) { clearTimeout(_njPollTimer); _njPollTimer = null; }
 }
 
 function njGenerate() {
@@ -1110,10 +1383,21 @@ function njGenerate() {
   var displayCompany = brief.prospect.company || (email.split('@')[1] ? email.split('@')[1].split('.')[0] : email);
   displayCompany = displayCompany.charAt(0).toUpperCase() + displayCompany.slice(1);
 
+  // Track auto vs. rep pick so brief._source captures the choice on the server.
+  var suggested = (_njPrefetchResult && _njPrefetchResult.suggested_candidate_id) || null;
+  var pickedBy = (_njSelectedTranscriptId && _njSelectedTranscriptId === suggested) ? 'auto' : 'rep';
+
   fetch('/api/jobs', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email: email, websiteUrl: websiteUrl || undefined, brief: brief })
+    body: JSON.stringify({
+      email: email,
+      websiteUrl: websiteUrl || undefined,
+      brief: brief,
+      repName: rep || undefined,
+      transcript_id: _njSelectedTranscriptId || undefined,
+      transcript_picked_by: pickedBy
+    })
   })
   .then(function(r) { return r.json(); })
   .then(function(data) {
@@ -1121,10 +1405,7 @@ function njGenerate() {
 
     var portalUrl     = data.portal_url || ('/?job=' + data.job_id);
     var editPortalUrl = portalUrl + (portalUrl.includes('?') ? '&' : '?') + 'edit=true';
-    var repName = rep === 'melissa' ? 'Melissa F.'
-                : rep === 'ryan'    ? 'Ryan Matsumori'
-                : rep === 'armando' ? 'Armando'
-                : (rep || '');
+    var repName = (_SALES_REPS_BY_SLUG[rep] && _SALES_REPS_BY_SLUG[rep].display_name) || rep || '';
     var today = new Date();
     var dateStr = today.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
     var displayName = contactName || email;
@@ -1216,7 +1497,6 @@ function loadJobsFromServer() {
       if (!Array.isArray(jobs) || !jobs.length) return;
       var jobRows = document.getElementById('job-rows');
       if (!jobRows) return;
-      // Clear demo rows, replace with real data
       jobRows.innerHTML = '';
       jobs.forEach(function(job) {
         var company = job.prospect_company || (job.prospect_email || '').split('@')[1] || 'Unknown';
@@ -1226,25 +1506,34 @@ function loadJobsFromServer() {
         var editPortalUrl = portalUrl + (portalUrl.includes('?') ? '&' : '?') + 'edit=true';
         var date = job.created_at ? new Date(job.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '';
         var jobId = job.job_id || '';
-        var rowHtml = '<div class="row-item job-row" data-rep="all" data-name="' + name.toLowerCase() + '" data-company="' + company.toLowerCase() + '" onclick="window.open(\'' + editPortalUrl + '\',\'_blank\')" style="display:flex;align-items:center;padding:15px 20px;">'
+        var repSlug = job.assigned_rep || '';
+        var repOpts = '<option value="">—</option>'
+          + _SALES_REPS.map(function(r) {
+              return '<option value="' + r.slug + '"' + (r.slug === repSlug ? ' selected' : '') + '>' + r.display_name + '</option>';
+            }).join('');
+        var rowHtml = '<div class="row-item job-row" data-job-id="' + jobId + '" data-rep="' + repSlug + '" data-name="' + name.toLowerCase() + '" data-company="' + company.toLowerCase() + '" onclick="window.open(\'' + editPortalUrl + '\',\'_blank\')" style="display:flex;align-items:center;padding:15px 20px;">'
           + '<div style="flex:1;">'
           + '<div style="font-size:13px;font-weight:500;color:#ffffff;">' + company + '</div>'
           + '<div style="font-size:12px;color:#71717a;margin-top:1px;">' + name + '</div>'
           + '</div>'
-          + '<div style="width:110px;font-size:12px;color:#71717a;">—</div>'
+          + '<div style="width:110px;">'
+          +   '<select class="row-rep-select" data-job-id="' + jobId + '" onclick="event.stopPropagation()" onchange="changeRowRep(this)" style="background:transparent;border:1px solid rgba(255,255,255,0.08);color:#a1a1aa;font-size:12px;padding:3px 6px;border-radius:6px;font-family:inherit;cursor:pointer;width:100%">' + repOpts + '</select>'
+          + '</div>'
           + '<div style="width:100px;display:flex;align-items:center;gap:6px;">' + statusDot(job.status) + '</div>'
           + '<div style="width:60px;text-align:right;font-size:12px;color:#52525b;">' + date + '</div>'
           + '<button onclick="event.stopPropagation();deleteJob(\'' + jobId + '\',this)" title="Delete job" style="background:none;border:none;cursor:pointer;color:#52525b;padding:4px 6px;margin-left:6px;border-radius:4px;display:flex;align-items:center;" onmouseover="this.style.color=\'#ef4444\'" onmouseout="this.style.color=\'#52525b\'">' + trashIcon + '</button>'
           + '</div>';
         jobRows.insertAdjacentHTML('beforeend', rowHtml);
       });
+      applyFilters();
     })
     .catch(function(err) { console.warn('[Dashboard] Could not load jobs:', err.message); });
 }
 
 // Default screen
 showScreen('list');
-loadJobsFromServer();
+// Load reps FIRST so rows can render their inline dropdowns correctly.
+loadSalesReps().then(loadJobsFromServer);
 
 // Phase 3 — if opened with ?newjob=email (from Call Library "Create Job" button)
 // auto-open the New Job modal and pre-fill the email
