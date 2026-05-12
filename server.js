@@ -1157,7 +1157,7 @@ Return this exact JSON (null for anything not found):
     "apollo_employee_ranges": "array of strings | null — Apollo API employee range codes for their TARGET clients. Choose ONLY from these exact strings: '1,10', '11,50', '51,200', '201,500', '501,1000', '1001,10000', '10001,50000', '50001+'. Match to the described size: '50+ employees, ideally 100+' → ['51,200','201,500']. 'Enterprise/large organizations' → ['501,1000','1001,10000','10001,50000']. CRITICAL RULE: if transcript mentions 'enterprise', 'large organizations', 'government agencies', 'Fortune 500', 'enterprise clients', or any equivalent → you MUST include '1001,10000' in the ranges. Government agencies and large enterprises are typically 1000+ employees. 'Small businesses under 10' → ['1,10']. Select 1-4 contiguous ranges that bracket the target. Null if no size mentioned.",
     "geography":     "string | null — target geography narrative, only if explicitly mentioned",
     "apollo_geography": "array of strings | null — clean country/region names for Apollo API. ONLY extract geography that is EXPLICITLY MENTIONED IN THIS TRANSCRIPT — do NOT echo example country names from these instructions. Valid entries: country names, continent names ('Europe', 'Asia', 'North America'), US/Canadian/Australian states or provinces, major cities. STRICT RULES: (1) NEVER include language names (e.g. a language name is not a location — extract the country instead). (2) NEVER write 'European Union' — expand to the specific member countries the transcript actually names. If the transcript says 'EU' with no specifics, use ['Europe']. (3) NEVER include narrative phrases. (4) Extract ONLY location nouns the transcript states. (5) If the transcript mentions a region grouping (e.g. 'Baltic states', 'DACH', 'Nordics', 'MENA'), expand it to the standard member countries — but only when the transcript explicitly used that grouping. (6) DO NOT default to any specific country list when the transcript is silent about geography — return null. Null if no geography is mentioned at all.",
-    "person_seniorities": "array of strings | null — seniority levels of target buyers. Choose ONLY from these exact values: owner, founder, c_suite, partner, vp, head, director, manager. Infer from role/title context. Null if completely unclear.",
+    "person_seniorities": "ALWAYS return null. The Apollo search uses only titles + size + location + industry keyword. Adding a seniorities filter on top of specific titles like 'Chief Marketing Officer' double-narrows the TAM because Apollo's seniority tagging is heuristic and misses many legitimate CEOs. Do not extract seniorities from the transcript.",
     "company_revenue": "string | null — revenue range of their TARGET clients if mentioned or clearly implied (e.g. '$1M-$5M', '$500K+', '$2M ARR'). Verbatim if stated, short inference if strongly implied. Null if not determinable.",
     "kpis":          "array of 3-5 strings — the specific business performance metrics the prospect's service directly helps their ICP improve. Extract verbatim if mentioned. If not explicitly stated, INFER from the service description, promised outcomes, and problems solved — look at what their clients gain. Return short, specific metric names like 'Revenue per client', 'Customer acquisition rate', 'Client retention rate', 'Brand visibility', 'Lead conversion rate', 'Average deal size'. Never null — always infer at least 3."
   },
@@ -2032,22 +2032,29 @@ async function fetchLeadsFromApollo(icp, progressCb) {
         ? String(icp.apollo_industries[0] || '').trim()
         : '');
 
-  // Only include filter keys that have actual values. Empty arrays are stripped
-  // by sanitizeApolloPayload anyway, but it's clearer to omit them up front so
-  // the legacyPayload reads as "the set of filters we're actually using".
+  // We deliberately use only the four core Apollo filters: titles, location
+  // (account HQ), employee size, and industry keyword. person_seniorities is
+  // NOT included — for ICPs with specific titles like "Chief Marketing Officer"
+  // or "VP of Marketing", the title already encodes seniority, and stacking a
+  // seniorities filter on top double-narrows the TAM unnecessarily (Apollo's
+  // seniority tagging is heuristic and misses many legitimate CEOs).
+  // contact_email_status is also not added — sanitizeApolloPayload strips it
+  // anyway, but we never set it here. Reps who want a verified-only filter can
+  // toggle it manually later; not the default.
   const legacyPayload = { per_page: 50 };
   if (Array.isArray(icp?.apollo_titles) && icp.apollo_titles.length) {
     legacyPayload.person_titles = icp.apollo_titles;
   }
   if (apolloGeo.length)  legacyPayload.organization_locations = apolloGeo;
   if (sizeRanges.length) legacyPayload.organization_num_employees_ranges = sizeRanges;
-  if (Array.isArray(icp?.person_seniorities) && icp.person_seniorities.length) {
-    legacyPayload.person_seniorities = icp.person_seniorities;
-  }
   // Pass the keyword as q_keywords (string). sanitizeApolloPayload normalizes
   // this to a SINGLE-TAG q_organization_keyword_tags, avoiding Apollo's AND-trap.
   if (keywordPhrase) legacyPayload.q_keywords = keywordPhrase;
 
+  // Relaxation order matches the filters we actually send. person_seniorities
+  // and person_department_or_subdepartments stay listed (defensive) for jobs
+  // whose stored apollo_payload may still include them; the relax loop will
+  // simply skip them if they aren't in currentPayload.
   const defaultRelaxationOrder = [
     "revenue_range",
     "currently_using_any_of_technology_uids",
