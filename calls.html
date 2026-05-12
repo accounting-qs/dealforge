@@ -334,6 +334,16 @@ option{background:#111116;color:#e4e4e7}
         <button onclick="rerunApollo()" class="pill" style="flex:1;border-color:rgba(34,197,94,0.3);color:#4ade80;background:rgba(34,197,94,0.08);padding:8px;font-size:12px">🔄 Re-run Apollo</button>
       </div>
       <div id="icp-status" style="display:none;font-size:12px;margin-top:8px;color:#a1a1aa"></div>
+      <!-- Live Apollo re-run progress (mirrors the portal's _generated.apollo_rerun reader) -->
+      <div id="leadgen-progress" style="display:none;margin-top:10px">
+        <div style="display:flex;justify-content:space-between;font-size:12px;color:#a1a1aa;margin-bottom:4px">
+          <span id="leadgen-progress-msg">Starting…</span>
+          <span id="leadgen-progress-pct">0%</span>
+        </div>
+        <div style="background:rgba(255,255,255,0.06);border-radius:4px;height:6px;overflow:hidden">
+          <div id="leadgen-progress-bar" style="background:linear-gradient(90deg,#34d399,#86efac);height:100%;width:0%;transition:width 400ms ease-out"></div>
+        </div>
+      </div>
     </div>
 
     <!-- Phase 3: Job History Panel — shows all jobs for this prospect with actions -->
@@ -376,13 +386,15 @@ option{background:#111116;color:#e4e4e7}
         <button onclick="briefClose()" style="width:28px;height:28px;border-radius:7px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.08);color:#71717a;font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center;line-height:1">×</button>
       </div>
 
-      <!-- Loading spinner -->
-      <div id="brief-loading" style="text-align:center;padding:32px 0">
-        <svg class="spinner" style="width:24px;height:24px;color:#8b5cf6;display:inline-block" fill="none" viewBox="0 0 24 24">
-          <circle style="opacity:0.2" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3"></circle>
-          <path style="opacity:0.9" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
-        </svg>
-        <div style="font-size:13px;color:#52525b;margin-top:10px">Searching GHL & Fireflies, then extracting brief…</div>
+      <!-- Live progress bar (driven by /api/prefetch + /api/extract-brief polling) -->
+      <div id="brief-loading" style="padding:20px 4px">
+        <div style="display:flex;justify-content:space-between;font-size:12px;color:#a1a1aa;margin-bottom:6px">
+          <span id="brief-progress-msg">Starting…</span>
+          <span id="brief-progress-pct">0%</span>
+        </div>
+        <div style="background:rgba(255,255,255,0.06);border-radius:4px;height:6px;overflow:hidden">
+          <div id="brief-progress-bar" style="background:linear-gradient(90deg,#8b5cf6,#a78bfa);height:100%;width:0%;transition:width 400ms ease-out"></div>
+        </div>
       </div>
 
       <!-- Contact card (shown after prefetch) -->
@@ -411,6 +423,17 @@ option{background:#111116;color:#e4e4e7}
             <div style="font-size:13px;font-weight:500;color:#fcd34d">No transcript bound</div>
             <div style="font-size:11px;color:#71717a;margin-top:2px">No Fireflies transcript found. Assets can still be generated without a Call 1 summary.</div>
           </div>
+        </div>
+
+        <!-- Fireflies call picker (shown when 2+ candidates match) -->
+        <div id="brief-picker" style="display:none;margin-top:12px;padding:12px;background:rgba(139,92,246,0.04);border:1px solid rgba(139,92,246,0.18);border-radius:8px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+            <div style="font-size:12px;font-weight:600;color:#c4b5fd;letter-spacing:0.02em">
+              <span id="brief-picker-count">0</span> Fireflies calls — pick the right one
+            </div>
+            <button type="button" id="brief-picker-toggle" onclick="briefPickerToggle()" style="background:none;border:none;color:#71717a;font-size:11px;cursor:pointer;text-decoration:underline">Hide</button>
+          </div>
+          <div id="brief-picker-list" style="display:flex;flex-direction:column;gap:6px;max-height:240px;overflow-y:auto"></div>
         </div>
 
         <!-- Website URL input -->
@@ -923,12 +946,23 @@ function createJobFromCall() {
 }
 
 // ═══ Brief Review Onboarding Flow ═════════════════════════════════════════════
-var _briefPrefetchResult = null;
+// Two-phase flow: POST /api/prefetch (returns 202 + prefetch_id, we poll the GET)
+// pulls candidates; the rep confirms a transcript; POST /api/extract-brief then
+// runs Claude. Both phases write progress to the same brief-progress bar.
+var _briefPrefetchResult = null;       // result blob from /api/prefetch
+var _briefExtractResult  = null;       // result blob from /api/extract-brief
+var _briefPrefetchId     = null;
+var _briefExtractId      = null;
+var _briefSelectedTranscriptId = null; // null = rep chose Skip
 var _briefEmail = null;
 
 function _createNewJob(email) {
   _briefEmail = email;
   _briefPrefetchResult = null;
+  _briefExtractResult  = null;
+  _briefPrefetchId     = null;
+  _briefSelectedTranscriptId = null;
+  if (_briefPollTimer) { clearTimeout(_briefPollTimer); _briefPollTimer = null; }
 
   // Reset modal state
   document.getElementById('brief-loading').style.display = 'block';
@@ -936,7 +970,12 @@ function _createNewJob(email) {
   document.getElementById('brief-error').style.display = 'none';
   document.getElementById('brief-step1').style.display = 'block';
   document.getElementById('brief-step2').style.display = 'none';
-  document.getElementById('brief-subtitle').textContent = 'Extracting brief from transcript & website…';
+  document.getElementById('brief-subtitle').textContent = 'Looking up GHL & Fireflies…';
+  document.getElementById('brief-picker').style.display = 'none';
+  document.getElementById('brief-picker-list').innerHTML = '';
+  document.getElementById('brief-transcript-ok').style.display = 'none';
+  document.getElementById('brief-transcript-miss').style.display = 'none';
+  briefSetProgress(0, 'Starting…');
 
   // Clear all brief fields
   ['bf-company','bf-contact-name','bf-contact-title','bf-apollo-titles',
@@ -952,7 +991,7 @@ function _createNewJob(email) {
   // Open modal
   document.getElementById('brief-overlay').classList.add('open');
 
-  // Start prefetch
+  // Phase 1: POST /api/prefetch — returns 202 + prefetch_id; we poll the GET.
   fetch('/api/prefetch', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -960,52 +999,156 @@ function _createNewJob(email) {
   })
   .then(function(r) { return r.json(); })
   .then(function(data) {
-    document.getElementById('brief-loading').style.display = 'none';
-
-    if (data.error || !data.contact) {
-      document.getElementById('brief-error').style.display = 'block';
-      document.getElementById('brief-subtitle').textContent = 'Contact not found';
-      return;
-    }
-
-    _briefPrefetchResult = data;
-    var contact = data.contact;
-
-    // Populate contact card
-    var name = contact.name || contact.email || email;
-    var initials = name.split(' ').map(function(w){ return w[0] || ''; }).join('').toUpperCase().slice(0,2) || '?';
-    document.getElementById('brief-avatar').textContent = initials;
-    document.getElementById('brief-name').textContent = name;
-    var roleCompany = [contact.title, contact.company].filter(Boolean).join(' · ');
-    document.getElementById('brief-role-company').textContent = roleCompany || email;
-    var websiteDisplay = contact.website || contact.domain || '';
-    document.getElementById('brief-website-display').textContent = websiteDisplay;
-
-    // Pre-fill website URL
-    if (websiteDisplay && !document.getElementById('brief-website-url').value) {
-      var ws = websiteDisplay.startsWith('http') ? websiteDisplay : 'https://' + websiteDisplay;
-      document.getElementById('brief-website-url').value = ws;
-    }
-
-    // Transcript status
-    if (data.transcript_found) {
-      document.getElementById('brief-transcript-title').textContent = data.transcript_title || 'Call transcript found';
-      document.getElementById('brief-transcript-date').textContent = data.transcript_date || '';
-      document.getElementById('brief-transcript-ok').style.display = 'flex';
-      document.getElementById('brief-transcript-miss').style.display = 'none';
-    } else {
-      document.getElementById('brief-transcript-ok').style.display = 'none';
-      document.getElementById('brief-transcript-miss').style.display = 'flex';
-    }
-
-    document.getElementById('brief-subtitle').textContent = 'Review contact info and continue to brief';
-    document.getElementById('brief-contact').style.display = 'block';
+    if (!data.prefetch_id) throw new Error(data.error || 'No prefetch_id returned');
+    _briefPrefetchId = data.prefetch_id;
+    briefPollPrefetch();
   })
   .catch(function(err) {
-    document.getElementById('brief-loading').style.display = 'none';
-    document.getElementById('brief-error').style.display = 'block';
-    document.getElementById('brief-subtitle').textContent = 'Prefetch failed: ' + err.message;
+    briefShowError('Prefetch failed: ' + err.message);
   });
+}
+
+function briefSetProgress(pct, msg) {
+  var bar = document.getElementById('brief-progress-bar');
+  var p   = document.getElementById('brief-progress-pct');
+  var m   = document.getElementById('brief-progress-msg');
+  if (bar) bar.style.width = (pct || 0) + '%';
+  if (p)   p.textContent = (pct || 0) + '%';
+  if (m && msg) m.textContent = msg;
+}
+
+function briefShowError(msg) {
+  document.getElementById('brief-loading').style.display = 'none';
+  document.getElementById('brief-error').style.display = 'block';
+  document.getElementById('brief-subtitle').textContent = msg;
+}
+
+// Poll loop for /api/prefetch/:id. Re-uses the same brief-progress bar for
+// phase 2 (extract-brief) by handing off in briefPollExtract().
+var _briefPollTimer = null;
+var _briefPollStuck = 0;
+var _briefPollLastPct = -1;
+function briefPollPrefetch() {
+  if (!_briefPrefetchId) return;
+  fetch('/api/prefetch/' + encodeURIComponent(_briefPrefetchId), { cache: 'no-store' })
+    .then(function(r) { return r.json(); })
+    .then(function(j) {
+      briefSetProgress(j.progress || 0, j.step || '');
+      if ((j.progress || 0) === _briefPollLastPct) _briefPollStuck++;
+      else { _briefPollStuck = 0; _briefPollLastPct = j.progress || 0; }
+      if (_briefPollStuck > 60) { // ~42s with 700ms poll
+        return briefShowError('Prefetch stalled — please retry');
+      }
+      if (j.status === 'running') {
+        _briefPollTimer = setTimeout(briefPollPrefetch, 700);
+        return;
+      }
+      if (j.status === 'failed') return briefShowError('Prefetch failed: ' + (j.error || 'unknown'));
+      // status === 'completed'
+      _briefPrefetchResult = j.result;
+      briefRenderPhase1(j.result);
+    })
+    .catch(function(e) {
+      _briefPollTimer = setTimeout(briefPollPrefetch, 1500); // soft retry
+      console.warn('[brief-poll] prefetch tick error:', e.message);
+    });
+}
+
+function briefRenderPhase1(result) {
+  document.getElementById('brief-loading').style.display = 'none';
+  if (!result || !result.contact) return briefShowError('Contact not found');
+
+  var contact = result.contact;
+  var name = contact.name || contact.email || _briefEmail;
+  var initials = name.split(' ').map(function(w){ return w[0] || ''; }).join('').toUpperCase().slice(0,2) || '?';
+  document.getElementById('brief-avatar').textContent = initials;
+  document.getElementById('brief-name').textContent = name;
+  document.getElementById('brief-role-company').textContent = [contact.title, contact.company].filter(Boolean).join(' · ') || _briefEmail;
+  var websiteDisplay = contact.website || contact.domain || '';
+  document.getElementById('brief-website-display').textContent = websiteDisplay;
+  if (websiteDisplay && !document.getElementById('brief-website-url').value) {
+    var ws = websiteDisplay.startsWith('http') ? websiteDisplay : 'https://' + websiteDisplay;
+    document.getElementById('brief-website-url').value = ws;
+  }
+
+  var candidates = Array.isArray(result.candidates) ? result.candidates : [];
+  _briefSelectedTranscriptId = result.suggested_candidate_id || (candidates[0] && candidates[0].id) || null;
+
+  if (candidates.length === 0) {
+    // No transcript at all — show miss state, hide picker.
+    document.getElementById('brief-transcript-ok').style.display   = 'none';
+    document.getElementById('brief-transcript-miss').style.display = 'flex';
+    document.getElementById('brief-picker').style.display = 'none';
+  } else if (candidates.length === 1) {
+    // One match — show the OK status, picker collapsed by default.
+    var only = candidates[0];
+    document.getElementById('brief-transcript-title').textContent = only.title || 'Call transcript found';
+    document.getElementById('brief-transcript-date').textContent  = briefFormatCandidateMeta(only);
+    document.getElementById('brief-transcript-ok').style.display   = 'flex';
+    document.getElementById('brief-transcript-miss').style.display = 'none';
+    document.getElementById('brief-picker').style.display = 'none';
+  } else {
+    // 2+ — show the expanded picker so the rep confirms which call is right.
+    document.getElementById('brief-transcript-ok').style.display   = 'none';
+    document.getElementById('brief-transcript-miss').style.display = 'none';
+    briefRenderPicker(candidates, _briefSelectedTranscriptId);
+  }
+
+  document.getElementById('brief-subtitle').textContent = 'Review contact info and continue to brief';
+  document.getElementById('brief-contact').style.display = 'block';
+}
+
+function briefFormatCandidateMeta(c) {
+  var bits = [];
+  if (c.date) {
+    var d = new Date(c.date);
+    if (!isNaN(d)) bits.push(d.toLocaleDateString(undefined, { month:'short', day:'numeric', year:'numeric' }));
+  }
+  if (c.duration) bits.push(Math.round(c.duration) + ' min');
+  return bits.join(' · ');
+}
+
+function briefMatchKindBadge(kind) {
+  var styles = {
+    exact_email: { bg:'rgba(34,197,94,0.12)',  bd:'rgba(34,197,94,0.3)',  fg:'#86efac', label:'EXACT EMAIL' },
+    domain:      { bg:'rgba(59,130,246,0.12)', bd:'rgba(59,130,246,0.3)', fg:'#93c5fd', label:'DOMAIN' },
+    loose:       { bg:'rgba(245,158,11,0.12)', bd:'rgba(245,158,11,0.3)', fg:'#fcd34d', label:'LOOSE' }
+  };
+  var s = styles[kind] || styles.loose;
+  return '<span style="font-size:9px;font-weight:700;letter-spacing:0.06em;padding:2px 6px;border-radius:4px;background:' + s.bg + ';border:1px solid ' + s.bd + ';color:' + s.fg + '">' + s.label + '</span>';
+}
+
+function briefRenderPicker(candidates, selectedId) {
+  var listEl = document.getElementById('brief-picker-list');
+  document.getElementById('brief-picker-count').textContent = candidates.length;
+  document.getElementById('brief-picker').style.display = 'block';
+  var html = candidates.map(function(c) {
+    var sel = c.id === selectedId;
+    var attendeesStr = (c.attendees || []).slice(0, 2).map(function(a) { return a.email || a.name; }).filter(Boolean).join(', ');
+    return '<label style="display:flex;align-items:flex-start;gap:10px;padding:8px;border-radius:6px;cursor:pointer;background:' + (sel ? 'rgba(139,92,246,0.10)' : 'transparent') + ';border:1px solid ' + (sel ? 'rgba(139,92,246,0.35)' : 'rgba(255,255,255,0.04)') + '">'
+      +   '<input type="radio" name="brief-transcript-pick" value="' + c.id + '"' + (sel ? ' checked' : '') + ' onchange="briefSelectTranscript(\'' + c.id + '\')" style="margin-top:3px">'
+      +   '<div style="flex:1;min-width:0">'
+      +     '<div style="font-size:12.5px;color:#e4e4e7;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + (c.title || 'Untitled') + '</div>'
+      +     '<div style="font-size:11px;color:#71717a;margin-top:2px">' + briefFormatCandidateMeta(c) + (attendeesStr ? ' · ' + attendeesStr : '') + '</div>'
+      +   '</div>'
+      +   '<div style="flex-shrink:0">' + briefMatchKindBadge(c.match_kind) + '</div>'
+      + '</label>';
+  }).join('') + '<label style="display:flex;align-items:center;gap:10px;padding:8px;border-radius:6px;cursor:pointer;border:1px dashed rgba(255,255,255,0.10);margin-top:4px">'
+      + '<input type="radio" name="brief-transcript-pick" value="" onchange="briefSelectTranscript(null)">'
+      + '<div style="font-size:12px;color:#a1a1aa">Skip — build the brief without a transcript</div>'
+    + '</label>';
+  listEl.innerHTML = html;
+}
+
+function briefSelectTranscript(id) {
+  _briefSelectedTranscriptId = id || null;
+}
+
+function briefPickerToggle() {
+  var list = document.getElementById('brief-picker-list');
+  var btn  = document.getElementById('brief-picker-toggle');
+  if (list.style.display === 'none') { list.style.display = 'flex'; btn.textContent = 'Hide'; }
+  else                                { list.style.display = 'none'; btn.textContent = 'Show'; }
 }
 
 function briefClose() {
@@ -1015,11 +1158,66 @@ function briefClose() {
 function briefBackToStep1() {
   document.getElementById('brief-step2').style.display = 'none';
   document.getElementById('brief-step1').style.display = 'block';
+  // The contact card + picker should still be visible — we left them up while
+  // extract-brief was running. Make sure the progress bar is hidden so the rep
+  // doesn't see a stale value when going back to change transcript.
+  document.getElementById('brief-loading').style.display = 'none';
+  document.getElementById('brief-contact').style.display = 'block';
 }
 
 function briefShowStep2() {
-  // Populate brief fields from prefetch result
-  var brief = (_briefPrefetchResult && _briefPrefetchResult.brief) || {};
+  // Phase 2 — POST /api/extract-brief with the rep-confirmed transcript_id,
+  // then poll the GET endpoint. If the rep changes transcript and clicks
+  // "Continue" again we run another extract: cheap because GHL/Fireflies/
+  // website work doesn't repeat.
+  if (!_briefPrefetchId) return;
+
+  // Show the same progress UI on step1 while extract runs; transition to step2
+  // only after the brief lands.
+  document.getElementById('brief-contact').style.display = 'none';
+  document.getElementById('brief-loading').style.display = 'block';
+  document.getElementById('brief-subtitle').textContent = 'Extracting brief with Claude…';
+  briefSetProgress(10, 'Submitting transcript pick…');
+  _briefPollLastPct = -1; _briefPollStuck = 0;
+
+  fetch('/api/extract-brief', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ prefetch_id: _briefPrefetchId, transcript_id: _briefSelectedTranscriptId })
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(data) {
+    if (!data.extract_id) throw new Error(data.error || 'No extract_id returned');
+    _briefExtractId = data.extract_id;
+    briefPollExtract();
+  })
+  .catch(function(err) { briefShowError('Brief extraction failed: ' + err.message); });
+}
+
+function briefPollExtract() {
+  if (!_briefExtractId) return;
+  fetch('/api/extract-brief/' + encodeURIComponent(_briefExtractId), { cache: 'no-store' })
+    .then(function(r) { return r.json(); })
+    .then(function(j) {
+      briefSetProgress(j.progress || 0, j.step || '');
+      if ((j.progress || 0) === _briefPollLastPct) _briefPollStuck++;
+      else { _briefPollStuck = 0; _briefPollLastPct = j.progress || 0; }
+      if (_briefPollStuck > 60) return briefShowError('Brief extraction stalled — please retry');
+      if (j.status === 'running') { _briefPollTimer = setTimeout(briefPollExtract, 700); return; }
+      if (j.status === 'failed')  return briefShowError('Brief extraction failed: ' + (j.error || 'unknown'));
+      // status === 'completed'
+      _briefExtractResult = j.result;
+      briefPopulateStep2(j.result);
+    })
+    .catch(function(e) {
+      _briefPollTimer = setTimeout(briefPollExtract, 1500);
+      console.warn('[brief-poll] extract tick error:', e.message);
+    });
+}
+
+function briefPopulateStep2(extract) {
+  document.getElementById('brief-loading').style.display = 'none';
+  var brief = (extract && extract.brief) || {};
   var prospect = brief.prospect || {};
   var icp = brief.icp || {};
   var metrics = brief.metrics || {};
@@ -1156,10 +1354,23 @@ function briefConfirmAndCreate() {
 
   var websiteUrl = (document.getElementById('brief-website-url').value || '').trim();
 
+  // Persist the rep-confirmed Fireflies transcript_id on the brief — drives
+  // brief._source = { fireflies_transcript_id, picked_by } on the server.
+  // picked_by lets us tell later whether the rep stuck with the suggested
+  // top match or actively picked a different call.
+  var suggested = (_briefPrefetchResult && _briefPrefetchResult.suggested_candidate_id) || null;
+  var pickedBy = (_briefSelectedTranscriptId && _briefSelectedTranscriptId === suggested) ? 'auto' : 'rep';
+
   fetch('/api/jobs', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email: email, websiteUrl: websiteUrl || undefined, brief: brief })
+    body: JSON.stringify({
+      email: email,
+      websiteUrl: websiteUrl || undefined,
+      brief: brief,
+      transcript_id: _briefSelectedTranscriptId || undefined,
+      transcript_picked_by: pickedBy
+    })
   })
   .then(function(r) { return r.json(); })
   .then(function(data) {
@@ -1351,23 +1562,72 @@ function saveIcpOnly() {
 function rerunApollo() {
   var jobId = getJobIdForCall();
   if (!jobId) { showIcpStatus('⚠️ No job found for this call — create a job first', '#fbbf24'); return; }
-  showIcpStatus('Saving & starting Apollo search...', '#60a5fa');
-  // First save, then re-run
+  showIcpStatus('Saving ICP & starting Apollo search…', '#60a5fa');
+  _leadgenShowProgress(0, 'Starting…');
   fetch('/api/jobs/' + jobId + '/icp', {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(currentIcp)
   }).then(function(r) { return r.json(); })
     .then(function(d) {
-      if (!d.ok) { showIcpStatus('Save failed: ' + (d.error || 'unknown'), '#f87171'); return; }
+      if (!d.ok) { _leadgenHideProgress(); showIcpStatus('Save failed: ' + (d.error || 'unknown'), '#f87171'); return; }
       return fetch('/api/jobs/' + jobId + '/rerun-apollo', { method: 'POST' });
     })
     .then(function(r) { if (r) return r.json(); })
     .then(function(d) {
-      if (d && d.ok) showIcpStatus('🔄 Apollo search running — check job status in a few minutes', '#4ade80');
-      else if (d) showIcpStatus('Error: ' + (d.error || 'unknown'), '#f87171');
+      if (!d) return;
+      if (d.ok) { showIcpStatus('🔄 Apollo search running…', '#4ade80'); _startLeadgenPoll(jobId); }
+      else     { _leadgenHideProgress(); showIcpStatus('Error: ' + (d.error || 'unknown'), '#f87171'); }
     })
-    .catch(function(e) { showIcpStatus('Error: ' + e.message, '#f87171'); });
+    .catch(function(e) { _leadgenHideProgress(); showIcpStatus('Error: ' + e.message, '#f87171'); });
+}
+
+// ── Lead-gen progress poller (reads extracted_data._generated.apollo_rerun) ──
+// Mirrors the mockup-portal pattern: 2s poll, 90s stall guard, hot-reload on
+// completion. Backend writes are throttled to 700ms so server load is fine.
+var _leadgenPollTimer = null;
+function _leadgenShowProgress(pct, msg) {
+  var box = document.getElementById('leadgen-progress'); if (!box) return;
+  box.style.display = 'block';
+  var bar = document.getElementById('leadgen-progress-bar');
+  var p   = document.getElementById('leadgen-progress-pct');
+  var m   = document.getElementById('leadgen-progress-msg');
+  if (bar) bar.style.width = (pct || 0) + '%';
+  if (p)   p.textContent = (pct || 0) + '%';
+  if (m && msg) m.textContent = msg;
+}
+function _leadgenHideProgress() {
+  var box = document.getElementById('leadgen-progress'); if (box) box.style.display = 'none';
+  if (_leadgenPollTimer) { clearInterval(_leadgenPollTimer); _leadgenPollTimer = null; }
+}
+function _startLeadgenPoll(jobId) {
+  if (_leadgenPollTimer) clearInterval(_leadgenPollTimer);
+  var stuckCount = 0, lastPct = -1;
+  _leadgenPollTimer = setInterval(function() {
+    fetch('/api/jobs/' + encodeURIComponent(jobId) + '?_t=' + Date.now(), { cache: 'no-store' })
+      .then(function(r) { return r.ok ? r.json() : null; })
+      .then(function(job) {
+        if (!job) return;
+        var rr = job.extracted_data && job.extracted_data._generated && job.extracted_data._generated.apollo_rerun;
+        if (!rr) return;
+        _leadgenShowProgress(rr.progress || 0, rr.message || '');
+        if (rr.progress === lastPct) stuckCount++;
+        else { stuckCount = 0; lastPct = rr.progress; }
+        if (stuckCount > 45) { // 45 polls × 2s = 90s
+          _leadgenHideProgress();
+          showIcpStatus('Apollo search stalled — please retry', '#f87171');
+          return;
+        }
+        if (rr.status === 'completed') {
+          showIcpStatus('✓ ' + (rr.message || 'Apollo search complete'), '#4ade80');
+          setTimeout(_leadgenHideProgress, 1200);
+        } else if (rr.status === 'failed') {
+          _leadgenHideProgress();
+          showIcpStatus('✗ ' + (rr.message || 'Apollo search failed'), '#f87171');
+        }
+      })
+      .catch(function(e) { console.warn('[leadgen-poll]', e.message); });
+  }, 2000);
 }
 
 function showIcpStatus(msg, color) {
