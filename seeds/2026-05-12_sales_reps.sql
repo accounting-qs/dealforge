@@ -54,6 +54,12 @@ create trigger sales_reps_touch_updated_at
   before update on sales_assets.sales_reps
   for each row execute function sales_assets.touch_updated_at();
 
+-- Grants — without these the server (PostgREST via service_role) returns 403
+-- on /api/sales-reps, /api/jobs/:id/rep, and the prefetch rep auto-resolve.
+-- Mirrors the pattern from supabase/migrations/20260508_copy_brain*.sql.
+grant usage on schema sales_assets to service_role;
+grant select, insert, update on sales_assets.sales_reps to service_role;
+
 
 -- 4. Seed the three known reps ─────────────────────────────────────────────
 -- Replace the <ghl_user_id_*> placeholders with real values from GHL.
