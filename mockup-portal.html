@@ -863,6 +863,22 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
           </div>
         </div>
 
+        <!-- Rep edit mode (?edit=true) — chat input for regenerate + per-variant title/description edit controls -->
+        <div id="cal-rep-edit-bar" style="display:none;margin-bottom:14px;padding:10px 12px;background:rgba(139,92,246,0.06);border:1px solid rgba(139,92,246,0.25);border-radius:8px;font-family:inherit;">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+            <span style="font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#a78bfa;flex-shrink:0;">Regenerate prompt</span>
+            <input id="cal-regen-prompt" type="text" maxlength="800" placeholder="Optional — tell the regenerator what to change. e.g. 'softer tone, no urgency, lead with curiosity'" style="flex:1;background:rgba(0,0,0,0.3);border:1px solid rgba(255,255,255,0.08);border-radius:6px;padding:7px 10px;font-size:12px;color:#e2e8f0;outline:none;font-family:inherit;">
+            <span style="font-size:10px;color:#71717a;">↪ feeds the ↻ Regenerate button above</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;">
+            <span style="font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#a78bfa;flex-shrink:0;">Edit variant <span id="cal-edit-variant-letter">A</span></span>
+            <button type="button" onclick="calEditTitle()" style="font-size:11px;font-weight:600;padding:4px 10px;border-radius:6px;border:1px solid rgba(139,92,246,0.4);background:rgba(139,92,246,0.08);color:#c4b5fd;cursor:pointer;font-family:inherit;">✏️ Edit title</button>
+            <button type="button" onclick="calEditDesc()" style="font-size:11px;font-weight:600;padding:4px 10px;border-radius:6px;border:1px solid rgba(139,92,246,0.4);background:rgba(139,92,246,0.08);color:#c4b5fd;cursor:pointer;font-family:inherit;">✏️ Edit description</button>
+            <button type="button" onclick="calResetVariantOverrides()" title="Clear rep edits for this variant — revert to AI-generated copy" style="font-size:11px;font-weight:600;padding:4px 10px;border-radius:6px;border:1px solid rgba(148,163,184,0.4);background:transparent;color:#94a3b8;cursor:pointer;font-family:inherit;">↺ Revert</button>
+            <span id="cal-edit-status" style="font-size:10px;color:#94a3b8;margin-left:auto;"></span>
+          </div>
+        </div>
+
         <div class="cal-header">
           <div class="cal-event-color"></div>
           <div class="cal-event-title" id="cal-title">Why 90% of Consulting Firms Plateau at $1.5M — and the Revenue System That Actually Breaks Through</div>
@@ -1857,11 +1873,39 @@ function switchVariant(i) {
       btn.style.background = '#fff'; btn.style.borderColor = '#dadce0'; btn.style.color = '#5f6368';
     }
   });
+  window._currentVariantIdx = i;
+  // Rep-edit overrides win over AI-generated / hardcoded variant copy.
+  const overrides = (typeof SESSION !== 'undefined' && SESSION?.extracted?._overrides) || {};
+  const titleOv = overrides['webinar_title_' + i];
+  const descOv  = overrides['webinar_desc_' + i];
+  const effectiveTitle = (titleOv && String(titleOv).trim()) || variants[i].title;
   document.getElementById('var-tag').textContent = variants[i].tag;
-  document.getElementById('cal-title').textContent = variants[i].title;
-  document.getElementById('cal-desc').innerHTML = variants[i].desc;
-  document.getElementById('slide-title').textContent = variants[i].title;
+  document.getElementById('cal-title').textContent = effectiveTitle;
+  if (descOv && String(descOv).trim()) {
+    document.getElementById('cal-desc').innerHTML = _calRenderDescOverride(descOv);
+  } else {
+    document.getElementById('cal-desc').innerHTML = variants[i].desc;
+  }
+  const slideTitleEl = document.getElementById('slide-title');
+  if (slideTitleEl) slideTitleEl.textContent = effectiveTitle;
+  // Reflect the active variant letter in the rep edit bar.
+  const letterEl = document.getElementById('cal-edit-variant-letter');
+  if (letterEl) letterEl.textContent = String.fromCharCode(65 + i); // A/B/C
   resetRsvp();
+}
+
+// Render a rep-edited description override. Treated as plain text (escaped) so
+// reps can paste freely without worrying about HTML — line breaks become <br>.
+// Keeps the visual frame of the calendar invite ("cal-desc-custom" wrapper) so
+// padding/typography matches the rendered AI version.
+function _calRenderDescOverride(text) {
+  const esc = String(text || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+  return '<div class="cal-desc-custom" style="white-space:pre-wrap;font-size:13px;line-height:1.6;color:#3c4043;padding:4px 0;">' + esc + '</div>';
 }
 
 function resetRsvp() {
@@ -2576,6 +2620,7 @@ function wireROIEditMode() {
     `;
     document.head.appendChild(style);
     if (typeof _initWebinarAssetPicker === 'function') _initWebinarAssetPicker();
+    if (typeof _initCalRepEditBar === 'function') _initCalRepEditBar();
     // Reveal Prospect Infos tab + Brand Gallery panel at page-load so they appear
     // for the rep even if runPersonalization fails mid-flight (the form/panel content
     // still gets populated inside runPersonalization, but the chrome is independent).
@@ -4671,6 +4716,10 @@ function _startRegenPoll(jobId) {
         _showRegenProgress(100, '✓ Variants regenerated');
         setTimeout(_hideRegenProgress, 1500);
         var btn = document.getElementById('cal-regen-btn'); if (btn) btn.disabled = false;
+        // Clear the rep prompt input so the next ↻ Regenerate click doesn't
+        // accidentally re-send the same instructions. Rep can re-enter if needed.
+        var promptEl = document.getElementById('cal-regen-prompt');
+        if (promptEl) promptEl.value = '';
       } else if (rr.status === 'failed') {
         clearInterval(_regenPollTimer); _regenPollTimer = null;
         _showRegenProgress(100, rr.message || 'Regeneration failed');
@@ -4692,8 +4741,16 @@ function regenerateCalendarCopy() {
   if (!jobId) { alert('No job ID in URL — cannot regenerate.'); return; }
   var btn = document.getElementById('cal-regen-btn');
   if (btn) btn.disabled = true;
-  _showRegenProgress(5, 'Starting regeneration…');
-  fetch('/api/jobs/' + encodeURIComponent(jobId) + '/regenerate/webinar-titles', { method: 'POST' })
+  // Rep-supplied prompt (Calendar Invite tab, edit mode only). Sent as
+  // { prompt } and appended to the user message in generateWebinarTitles.
+  var promptEl = document.getElementById('cal-regen-prompt');
+  var promptText = (promptEl && promptEl.value || '').trim();
+  _showRegenProgress(5, promptText ? 'Starting regeneration with rep prompt…' : 'Starting regeneration…');
+  fetch('/api/jobs/' + encodeURIComponent(jobId) + '/regenerate/webinar-titles', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ prompt: promptText })
+  })
     .then(function(r){ return r.json(); })
     .then(function(d){
       if (d && d.ok) {
@@ -4709,6 +4766,179 @@ function regenerateCalendarCopy() {
       setTimeout(_hideRegenProgress, 3000);
       if (btn) btn.disabled = false;
     });
+}
+
+// ── Calendar Invite: rep edit controls for variant title + description ───────
+// Persist as `webinar_title_<i>` / `webinar_desc_<i>` via PATCH /overrides.
+// Empty value clears the override (string trims to '') so the AI-generated copy
+// re-emerges on the next switchVariant.
+function _calSetEditStatus(msg, color) {
+  var el = document.getElementById('cal-edit-status');
+  if (!el) return;
+  el.textContent = msg || '';
+  el.style.color = color || '#94a3b8';
+  if (msg) setTimeout(function(){ if (el.textContent === msg) el.textContent = ''; }, 4000);
+}
+async function _calSaveVariantOverride(field, value) {
+  var jobId = (typeof _getPortalJobId === 'function') ? _getPortalJobId() : null;
+  if (!jobId) {
+    var p = new URLSearchParams(window.location.search);
+    jobId = p.get('job') || p.get('session');
+  }
+  if (!jobId) throw new Error('No job ID in URL');
+  var r = await fetch('/api/jobs/' + encodeURIComponent(jobId) + '/overrides', {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ [field]: value })
+  });
+  if (!r.ok) {
+    var errBody = '';
+    try { errBody = (await r.json()).error || ''; } catch (_) {}
+    throw new Error(errBody || ('Save failed: ' + r.status));
+  }
+  // Mirror locally so switchVariant + future renders see the override without a refetch.
+  if (typeof SESSION === 'object' && SESSION) {
+    SESSION.extracted = SESSION.extracted || {};
+    SESSION.extracted._overrides = SESSION.extracted._overrides || {};
+    if (value === '' || value == null) {
+      delete SESSION.extracted._overrides[field];
+    } else {
+      SESSION.extracted._overrides[field] = value;
+    }
+  }
+  console.log('[Cal Edit] Saved override:', field, '=', String(value).slice(0, 80));
+}
+function calEditTitle() {
+  var i = (typeof window._currentVariantIdx === 'number') ? window._currentVariantIdx : 0;
+  var el = document.getElementById('cal-title');
+  if (!el || el.dataset.editing === '1') return;
+  el.dataset.editing = '1';
+  var original = el.textContent;
+  var input = document.createElement('input');
+  input.type = 'text';
+  input.value = original;
+  input.maxLength = 200;
+  input.style.cssText = 'flex:1;min-width:0;font-size:18px;font-weight:700;padding:6px 10px;border:2px solid #a78bfa;border-radius:6px;background:#fff;color:#202124;font-family:inherit;';
+  var wrap = document.createElement('div');
+  wrap.style.cssText = 'display:flex;gap:6px;align-items:center;flex:1;';
+  wrap.appendChild(input);
+  var save = document.createElement('button');
+  save.type = 'button';
+  save.textContent = '✓ Save';
+  save.style.cssText = 'flex-shrink:0;background:#22c55e;border:none;border-radius:6px;color:#052e16;font-size:12px;font-weight:600;padding:6px 12px;cursor:pointer;font-family:inherit;';
+  var cancel = document.createElement('button');
+  cancel.type = 'button';
+  cancel.textContent = 'Cancel';
+  cancel.style.cssText = 'flex-shrink:0;background:#f1f3f4;border:1px solid #dadce0;border-radius:6px;color:#5f6368;font-size:12px;font-weight:600;padding:6px 12px;cursor:pointer;font-family:inherit;';
+  wrap.appendChild(save);
+  wrap.appendChild(cancel);
+  el.replaceWith(wrap);
+  setTimeout(function(){ input.focus(); input.select(); }, 10);
+  function restore(text) {
+    var newEl = document.createElement('div');
+    newEl.className = 'cal-event-title';
+    newEl.id = 'cal-title';
+    newEl.textContent = text;
+    wrap.replaceWith(newEl);
+  }
+  save.onclick = async function() {
+    var v = input.value.trim();
+    if (!v) { restore(original); _calSetEditStatus('Title cannot be empty', '#f87171'); return; }
+    save.disabled = true; cancel.disabled = true;
+    try {
+      await _calSaveVariantOverride('webinar_title_' + i, v);
+      restore(v);
+      var slide = document.getElementById('slide-title');
+      if (slide) slide.textContent = v;
+      _calSetEditStatus('✓ Title saved', '#4ade80');
+    } catch (e) {
+      restore(original);
+      _calSetEditStatus('✗ ' + (e.message || 'Save failed'), '#f87171');
+    }
+  };
+  cancel.onclick = function() { restore(original); };
+  input.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') { e.preventDefault(); save.click(); }
+    else if (e.key === 'Escape') { e.preventDefault(); cancel.click(); }
+  });
+}
+function calEditDesc() {
+  var i = (typeof window._currentVariantIdx === 'number') ? window._currentVariantIdx : 0;
+  var el = document.getElementById('cal-desc');
+  if (!el || el.dataset.editing === '1') return;
+  el.dataset.editing = '1';
+  // Seed the textarea: prefer existing override (raw text), else the visible
+  // text content of the rendered description (drops HTML structure — rep can
+  // re-add line breaks as needed).
+  var overrides = (typeof SESSION !== 'undefined' && SESSION?.extracted?._overrides) || {};
+  var seed = overrides['webinar_desc_' + i];
+  if (seed == null || seed === '') {
+    seed = (el.innerText || el.textContent || '').replace(/\n{3,}/g, '\n\n').trim();
+  }
+  var originalHtml = el.innerHTML;
+  var ta = document.createElement('textarea');
+  ta.value = seed;
+  ta.maxLength = 4000;
+  ta.style.cssText = 'width:100%;box-sizing:border-box;min-height:240px;font-size:13px;line-height:1.6;padding:10px;border:2px solid #a78bfa;border-radius:6px;background:#fff;color:#202124;font-family:inherit;resize:vertical;';
+  var wrap = document.createElement('div');
+  wrap.style.cssText = 'display:flex;flex-direction:column;gap:8px;width:100%;';
+  wrap.appendChild(ta);
+  var btnRow = document.createElement('div');
+  btnRow.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;align-items:center;';
+  var hint = document.createElement('span');
+  hint.style.cssText = 'font-size:11px;color:#9aa0a6;margin-right:auto;';
+  hint.textContent = 'Plain text — line breaks preserved. Replaces the AI-rendered description for variant ' + String.fromCharCode(65 + i) + '.';
+  btnRow.appendChild(hint);
+  var cancel = document.createElement('button');
+  cancel.type = 'button';
+  cancel.textContent = 'Cancel';
+  cancel.style.cssText = 'background:#f1f3f4;border:1px solid #dadce0;border-radius:6px;color:#5f6368;font-size:12px;font-weight:600;padding:7px 14px;cursor:pointer;font-family:inherit;';
+  var save = document.createElement('button');
+  save.type = 'button';
+  save.textContent = '✓ Save description';
+  save.style.cssText = 'background:#22c55e;border:none;border-radius:6px;color:#052e16;font-size:12px;font-weight:600;padding:7px 14px;cursor:pointer;font-family:inherit;';
+  btnRow.appendChild(cancel);
+  btnRow.appendChild(save);
+  wrap.appendChild(btnRow);
+  el.replaceWith(wrap);
+  setTimeout(function(){ ta.focus(); }, 10);
+  function restore(html) {
+    var newEl = document.createElement('div');
+    newEl.className = 'cal-desc';
+    newEl.id = 'cal-desc';
+    newEl.innerHTML = html;
+    wrap.replaceWith(newEl);
+  }
+  save.onclick = async function() {
+    var v = ta.value;
+    save.disabled = true; cancel.disabled = true;
+    try {
+      await _calSaveVariantOverride('webinar_desc_' + i, v);
+      restore(v.trim() ? _calRenderDescOverride(v) : variants[i].desc);
+      _calSetEditStatus(v.trim() ? '✓ Description saved' : '✓ Description cleared (revert to AI copy)', '#4ade80');
+    } catch (e) {
+      restore(originalHtml);
+      _calSetEditStatus('✗ ' + (e.message || 'Save failed'), '#f87171');
+    }
+  };
+  cancel.onclick = function() { restore(originalHtml); };
+}
+async function calResetVariantOverrides() {
+  var i = (typeof window._currentVariantIdx === 'number') ? window._currentVariantIdx : 0;
+  if (!confirm('Clear rep edits for variant ' + String.fromCharCode(65 + i) + ' and revert to the AI-generated copy?')) return;
+  try {
+    await _calSaveVariantOverride('webinar_title_' + i, '');
+    await _calSaveVariantOverride('webinar_desc_' + i, '');
+    if (typeof switchVariant === 'function') switchVariant(i);
+    _calSetEditStatus('✓ Reverted to AI copy', '#4ade80');
+  } catch (e) {
+    _calSetEditStatus('✗ ' + (e.message || 'Reset failed'), '#f87171');
+  }
+}
+function _initCalRepEditBar() {
+  if (typeof IS_EDIT_MODE === 'undefined' || !IS_EDIT_MODE) return;
+  var bar = document.getElementById('cal-rep-edit-bar');
+  if (bar) bar.style.display = 'block';
 }
 
 function rerunApolloSearch() {

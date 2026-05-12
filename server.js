@@ -2069,7 +2069,7 @@ async function fetchLeadsFromApollo(icp, progressCb) {
 // and research_data.host (founder name + bio) into the per-job context. These are
 // available cheaply (already populated by brand_scrape and prospect_research tasks)
 // and give Claude meaningfully more material than extracted_data alone.
-async function generateWebinarTitles(extracted, companyName, job = null) {
+async function generateWebinarTitles(extracted, companyName, job = null, customInstructions = '') {
   const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
   const icp = extracted.icp || {};
   const role = icp.role || 'business owners', industry = icp.industry || 'B2B';
@@ -2149,6 +2149,14 @@ async function generateWebinarTitles(extracted, companyName, job = null) {
   } else {
     systemPrompt = `You are a direct-response copywriter writing calendar blocker copy for ${companyName}'s webinar targeting ${role}s in ${industry}. Write as ${companyName} hosting — never as Quantum Scaling. Return valid JSON only.` + outputSchema;
     userPrompt   = `Generate 3 calendar blocker variants for ${companyName}'s webinar targeting ${role}s in ${industry}${size ? ' (' + size + ' companies)' : ''}.\nPain: ${pain}\nResult: ${result}`;
+  }
+  // Rep-supplied regeneration instructions (from the Calendar Invite tab's chat
+  // input). Appended last so they override any framing above without forcing the
+  // model to re-derive context. Capped at 800 chars upstream.
+  const repInstructions = (customInstructions || '').toString().trim();
+  if (repInstructions) {
+    userPrompt += `\n\n### Rep instructions (apply these — overrides anything above)\n${repInstructions.slice(0, 800)}`;
+    console.log(`[webinar_titles] Rep instructions applied: "${repInstructions.slice(0, 120)}${repInstructions.length > 120 ? '…' : ''}"`);
   }
   console.log('[webinar_titles] Calling Claude Sonnet...');
   // max_tokens raised from 3000 → 4000 to accommodate the new top-level
@@ -4133,7 +4141,15 @@ const server = http.createServer(async (req, res) => {
     const jobId = urlPath.slice('/api/jobs/'.length, -'/overrides'.length);
     try {
       const body = await parseBody(req);
-      const ALLOWED = ['tam_total','recommended_outreach','webinar_title','roi_ltv','roi_show_rate','roi_close_rate','webinar_logo_url','webinar_hero_image_url','webinar_headshot_url'];
+      const ALLOWED = [
+        'tam_total','recommended_outreach','webinar_title','roi_ltv','roi_show_rate','roi_close_rate',
+        'webinar_logo_url','webinar_hero_image_url','webinar_headshot_url',
+        // Per-variant calendar copy overrides (A/B/C). Set in rep edit mode from
+        // the Calendar Invite tab. Empty string clears the override (falls back
+        // to the AI-generated copy).
+        'webinar_title_0','webinar_title_1','webinar_title_2',
+        'webinar_desc_0','webinar_desc_1','webinar_desc_2',
+      ];
       const safeOverrides = {};
       for (const k of ALLOWED) {
         if (body[k] !== undefined) safeOverrides[k] = body[k];
@@ -4917,6 +4933,11 @@ const server = http.createServer(async (req, res) => {
     setCors(res);
     const jobId = urlPath.slice('/api/jobs/'.length, -'/regenerate/webinar-titles'.length);
     try {
+      // Parse body before sending 202 — once the response is finalized the
+      // request stream can be discarded. Body is optional; the legacy callers
+      // POST with no payload, the Calendar Invite chat input adds { prompt }.
+      const body = await parseBody(req).catch(() => ({}));
+      const customInstructions = (body && typeof body.prompt === 'string') ? body.prompt.slice(0, 800).trim() : '';
       const job = await getJob(jobId);
       if (!job) { res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'Job not found' })); return; }
       const extracted = job.extracted_data || {};
@@ -4947,8 +4968,8 @@ const server = http.createServer(async (req, res) => {
           console.log(`[regen-webinar-titles] Starting for job ${jobId}`);
           await writeRerun({ status: 'running', progress: 10, message: 'Loading Copy Brain…' });
           const company = extracted.prospect?.company || job.prospect_company || 'Your Company';
-          await writeRerun({ status: 'running', progress: 30, message: 'Calling Claude Sonnet…' });
-          const result = await generateWebinarTitles(extracted, company, job);
+          await writeRerun({ status: 'running', progress: 30, message: customInstructions ? 'Calling Claude Sonnet with rep prompt…' : 'Calling Claude Sonnet…' });
+          const result = await generateWebinarTitles(extracted, company, job, customInstructions);
           await writeRerun({ status: 'running', progress: 90, message: 'Saving variants…' });
 
           // 1) Update the task row so portal's primary read path picks it up.
