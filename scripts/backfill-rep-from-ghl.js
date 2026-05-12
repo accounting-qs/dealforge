@@ -46,7 +46,7 @@ async function sbPatch(path, body) {
   if (!r.ok) throw new Error(`Supabase PATCH ${path}: ${r.status} ${await r.text()}`);
 }
 
-async function ghlLookup(email) {
+async function ghlContact(email) {
   const url = `https://services.leadconnectorhq.com/contacts/search/duplicate?locationId=${GHL_LOCATION_ID}&email=${encodeURIComponent(email)}`;
   const r = await fetch(url, {
     headers: { Authorization: 'Bearer ' + GHL_API_KEY, Version: '2021-07-28' },
@@ -54,9 +54,35 @@ async function ghlLookup(email) {
   });
   if (!r.ok) return null;
   const data = await r.json();
-  const c = data.contact;
-  if (!c) return null;
-  return c.assignedTo || c.assigned_to || c.assigned || null;
+  return data.contact || null;
+}
+
+async function ghlOpportunityOwner(contactId) {
+  if (!contactId) return null;
+  const url = `https://services.leadconnectorhq.com/opportunities/search?location_id=${GHL_LOCATION_ID}&contact_id=${encodeURIComponent(contactId)}`;
+  const r = await fetch(url, {
+    headers: { Authorization: 'Bearer ' + GHL_API_KEY, Version: '2021-07-28' },
+    signal: AbortSignal.timeout(5000)
+  });
+  if (!r.ok) return null;
+  const data = await r.json();
+  const opps = Array.isArray(data.opportunities) ? data.opportunities : [];
+  if (!opps.length) return null;
+  opps.sort((a, b) => new Date(b.updatedAt || b.dateUpdated || 0) - new Date(a.updatedAt || a.dateUpdated || 0));
+  const top = opps[0];
+  return top.assignedTo || top.assigned_to || top.assigned || null;
+}
+
+// Resolve a job to a rep slug. Opportunity owner wins; contact owner is the
+// fallback. Returns { ghlUserId, source } or null.
+async function resolveRep(email) {
+  const c = await ghlContact(email);
+  if (!c) return { found: 'no_contact' };
+  const oppOwner = await ghlOpportunityOwner(c.id);
+  if (oppOwner) return { ghlUserId: oppOwner, source: 'opportunity', contactId: c.id };
+  const contactOwner = c.assignedTo || c.assigned_to || c.assigned || null;
+  if (contactOwner) return { ghlUserId: contactOwner, source: 'contact', contactId: c.id };
+  return { found: 'no_owner', contactId: c.id };
 }
 
 (async () => {
@@ -73,22 +99,24 @@ async function ghlLookup(email) {
   console.log(`  candidate jobs (rep_name IS NULL): ${jobs.length}`);
   if (!jobs.length) { console.log('Nothing to backfill.'); return; }
 
-  const counters = { filled: 0, no_ghl_match: 0, no_contact: 0, errors: 0, unknown_user: 0 };
+  const counters = { filled_opp: 0, filled_contact: 0, no_contact: 0, no_owner: 0, unknown_user: 0, errors: 0 };
   for (const job of jobs) {
     try {
-      const ghlUserId = await ghlLookup(job.prospect_email);
-      if (!ghlUserId) { counters.no_ghl_match++; continue; }
-      const slug = ghlToSlug.get(ghlUserId);
+      const r = await resolveRep(job.prospect_email);
+      if (r.found === 'no_contact') { counters.no_contact++; continue; }
+      if (r.found === 'no_owner')   { counters.no_owner++;   continue; }
+      const slug = ghlToSlug.get(r.ghlUserId);
       if (!slug) {
         counters.unknown_user++;
-        console.warn(`  ! ${job.prospect_email}: GHL user ${ghlUserId} not in sales_reps`);
+        console.warn(`  ! ${job.prospect_email}: GHL user ${r.ghlUserId} (${r.source}) not in sales_reps`);
         continue;
       }
-      console.log(`  ${APPLY ? '→' : '·'} ${job.prospect_email}  → ${slug}  (job ${job.id.slice(0,8)})`);
+      console.log(`  ${APPLY ? '→' : '·'} ${job.prospect_email}  → ${slug}  [${r.source}]  (job ${job.id.slice(0,8)})`);
       if (APPLY) {
         await sbPatch(`jobs?id=eq.${job.id}`, { rep_name: slug, updated_at: new Date().toISOString() });
       }
-      counters.filled++;
+      if (r.source === 'opportunity') counters.filled_opp++;
+      else                            counters.filled_contact++;
     } catch(e) {
       counters.errors++;
       console.warn(`  ! ${job.prospect_email}: ${e.message}`);

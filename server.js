@@ -592,9 +592,47 @@ async function lookupGHLContact(email) {
     // second-level fallback by reading `assigned` (older shape) too.
     const ghlUserId = contact.assignedTo || contact.assigned_to || contact.assigned || null;
     console.log(`[GHL] Found contact: ${name} @ ${company}${linkedinUrl ? ' (LinkedIn ✓)' : ''}${ghlUserId ? ` (assignedTo=${ghlUserId})` : ''}`);
-    return { name, company, website, title: null, linkedin_url: linkedinUrl, ghl_user_id: ghlUserId };
+    return {
+      id: contact.id || null,   // needed to query this contact's opportunities
+      name, company, website, title: null, linkedin_url: linkedinUrl,
+      ghl_user_id: ghlUserId
+    };
   } catch(e) {
     console.warn('[GHL] Lookup error:', e.message);
+    return null;
+  }
+}
+
+// ── GHL opportunity owner lookup ─────────────────────────────────────────────
+// Reps care about the OPPORTUNITY owner, not the contact owner — in GHL those
+// can diverge (intake auto-assigns the contact to a default user, then the
+// deal moves to whichever rep is actively working it). We pick the most
+// recently updated opportunity and return its assignedTo user ID. Falls back
+// to null if the contact has no opportunities yet.
+async function lookupGHLOpportunityOwner(contactId) {
+  if (!GHL_API_KEY || !GHL_LOCATION_ID || !contactId) return null;
+  try {
+    const url = `https://services.leadconnectorhq.com/opportunities/search?location_id=${GHL_LOCATION_ID}&contact_id=${encodeURIComponent(contactId)}`;
+    const res = await fetch(url, {
+      headers: {
+        'Authorization': `Bearer ${GHL_API_KEY}`,
+        'Version': '2021-07-28',
+        'Content-Type': 'application/json'
+      },
+      signal: AbortSignal.timeout(5000)
+    });
+    if (!res.ok) { console.warn('[GHL/opp] Lookup failed:', res.status); return null; }
+    const data = await res.json();
+    const opps = Array.isArray(data.opportunities) ? data.opportunities : [];
+    if (!opps.length) return null;
+    // Most recently updated first (active pipeline deals tend to sit at the top).
+    opps.sort((a, b) => new Date(b.updatedAt || b.dateUpdated || 0) - new Date(a.updatedAt || a.dateUpdated || 0));
+    const top = opps[0];
+    const owner = top.assignedTo || top.assigned_to || top.assigned || null;
+    console.log(`[GHL/opp] contact ${String(contactId).slice(0,8)} → ${opps.length} opps, top "${top.name || top.title || top.id}" assignedTo=${owner || 'unassigned'}`);
+    return owner ? { ghl_user_id: owner, opportunity_id: top.id, opportunity_name: top.name || null } : null;
+  } catch(e) {
+    console.warn('[GHL/opp] error:', e.message);
     return null;
   }
 }
@@ -3472,9 +3510,27 @@ const server = http.createServer(async (req, res) => {
           ]);
 
           setProgress(id, { progress: 25, step: 'Resolving sales rep…' });
-          const repRow = await getRepByGhlUserId(ghlContact?.ghl_user_id);
+          // Precedence: opportunity owner > contact owner. Reps work the deal,
+          // not the contact, so the opp's assignedTo is the authoritative rep.
+          // Contact owner is just a fallback for prospects with no opportunity yet.
+          let repSource  = null;
+          let repUserId  = null;
+          let repOppMeta = null;
+          if (ghlContact?.id) {
+            const oppOwner = await lookupGHLOpportunityOwner(ghlContact.id);
+            if (oppOwner?.ghl_user_id) {
+              repUserId  = oppOwner.ghl_user_id;
+              repSource  = 'ghl_opportunity';
+              repOppMeta = { id: oppOwner.opportunity_id, name: oppOwner.opportunity_name };
+            }
+          }
+          if (!repUserId && ghlContact?.ghl_user_id) {
+            repUserId = ghlContact.ghl_user_id;
+            repSource = 'ghl_contact';
+          }
+          const repRow = await getRepByGhlUserId(repUserId);
           const rep = repRow
-            ? { slug: repRow.slug, display_name: repRow.display_name, source: 'ghl' }
+            ? { slug: repRow.slug, display_name: repRow.display_name, source: repSource, opportunity: repOppMeta }
             : null;
 
           const emailDomain = email.split('@')[1] || '';
