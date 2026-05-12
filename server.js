@@ -1599,6 +1599,21 @@ async function finalizeLeadList(rawLeads, icp) {
     deduped.forEach(l => { if (!l.company_size) l.company_size = sizeFallback; });
   }
   await peopleMatchAllLeads(deduped);
+  // Stale-code alarm bell. peopleMatchAllLeads filters on `l.apollo_id`; if
+  // no lead has one, the match step silently does nothing and the rep ends up
+  // staring at obfuscated names. The only way 25 freshly-searched leads can
+  // all lack apollo_id is when the running container is using an older
+  // build of normalizePerson that pre-dates the apollo_id field — i.e. a
+  // module-cache miss after a Render deploy. Surface it loudly so the next
+  // time it happens we catch it in the logs instead of from a UI complaint.
+  const withId = deduped.filter(l => l && l.apollo_id).length;
+  if (deduped.length > 0 && withId === 0) {
+    console.warn(`[lead_list] ⚠ 0/${deduped.length} leads have apollo_id — `
+      + `normalizePerson is running stale code (no people-match possible). `
+      + `Force a clearCache redeploy on Render and rerun this job.`);
+  } else if (deduped.length > 0 && withId < deduped.length) {
+    console.warn(`[lead_list] ${withId}/${deduped.length} leads have apollo_id — partial match coverage`);
+  }
   return { leads: deduped, sizeFallback };
 }
 const PARKING_SIGNALS = ['domain for sale','this domain is for sale','buy this domain','coming soon','under construction','parked by','domain parking'];
