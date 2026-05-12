@@ -6,11 +6,38 @@ const http    = require('http');
 const https   = require('https');
 const fs      = require('fs');
 const path    = require('path');
+const crypto  = require('crypto');
 const Anthropic = require('@anthropic-ai/sdk');
 const sharp = require('sharp');
 
 const PORT = process.env.PORT || 3000;
 const MIME = { '.html': 'text/html', '.css': 'text/css', '.js': 'application/javascript', '.png': 'image/png', '.jpg': 'image/jpeg' };
+
+// ── Ephemeral progress jobs (prefetch + extract-brief) ───────────────────────
+// In-memory only. Reps poll GET /api/<kind>/:id while a background async block
+// pushes progress updates via setProgress(). Mirrors the rerun-apollo pattern
+// but skips the Supabase round-trip per tick — the data is ephemeral, lives
+// for ~10 minutes, and rebuilding the work on a server restart is fine: the
+// client just retries from the New Job UI.
+const _progressJobs = new Map(); // id → { kind, progress, step, status, result, error, updated_at }
+const PROGRESS_TTL_MS = 10 * 60 * 1000;
+function newProgressJob(kind) {
+  const id = crypto.randomUUID();
+  _progressJobs.set(id, { kind, progress: 0, step: 'Starting…', status: 'running', updated_at: Date.now() });
+  return id;
+}
+function setProgress(id, patch) {
+  const cur = _progressJobs.get(id);
+  if (!cur) return;
+  _progressJobs.set(id, { ...cur, ...patch, updated_at: Date.now() });
+}
+function getProgress(id) { return _progressJobs.get(id) || null; }
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, j] of _progressJobs) {
+    if (j.status !== 'running' && now - j.updated_at > PROGRESS_TTL_MS) _progressJobs.delete(id);
+  }
+}, 60 * 1000).unref();
 
 // ── Prompt templates — loaded from files at startup ───────────────────────────
 const PROMPTS_DIR   = path.join(__dirname, 'prompts');
@@ -882,6 +909,14 @@ async function findFirefliesTranscripts(email, contactInfo = {}) {
     console.log('[FF] No transcripts found for', email, '— searched:', [...searched].join(', '));
     return [];
   }
+  // Tag each match with how it qualified (exact_email > domain > loose). The
+  // picker UI in calls.html / mockup-dashboard.html color-codes rows by this
+  // so the rep can tell at a glance which candidate is the strongest link.
+  matches.forEach(t => {
+    t._match_kind = isExactEmail(t) ? 'exact_email'
+                  : isDomainEmail(t) ? 'domain'
+                  : 'loose';
+  });
   // Exact email first, then longest duration (most context)
   matches.sort((a, b) => {
     const aEx = isExactEmail(a) ? 1 : 0, bEx = isExactEmail(b) ? 1 : 0;
@@ -889,7 +924,7 @@ async function findFirefliesTranscripts(email, contactInfo = {}) {
     return (b.duration || 0) - (a.duration || 0);
   });
   console.log(`[FF] Found ${matches.length} transcript(s) for ${email}:`);
-  matches.forEach(t => console.log(`[FF]   - "${t.title}" (${(t.duration||0).toFixed(0)} min)${isExactEmail(t) ? ' [exact]' : ''}`));
+  matches.forEach(t => console.log(`[FF]   - "${t.title}" (${(t.duration||0).toFixed(0)} min) [${t._match_kind}]`));
   return matches;
 }
 
@@ -3368,197 +3403,312 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // ── POST /api/prefetch — fetch Fireflies + extract brief (no job created) ──
+  // ── POST /api/prefetch — async phase-1 lookup (GHL + Fireflies + scrape) ───
+  // Returns 202 + { prefetch_id } immediately; client polls GET /api/prefetch/:id.
+  // Phase 1 produces the candidate Fireflies transcripts so the rep can pick the
+  // right one before any Claude tokens are burned. Brief extraction is phase 2
+  // (POST /api/extract-brief) and only runs after the rep confirms a candidate.
   if (req.method === 'POST' && urlPath === '/api/prefetch') {
     setCors(res);
     try {
-      const body    = await parseBody(req);
-      const email   = (body.email || '').trim().toLowerCase();
+      const body  = await parseBody(req);
+      const email = (body.email || '').trim().toLowerCase();
       if (!email || !email.includes('@')) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Valid email required' })); return;
       }
-      // Step 0: GHL lookup to get real contact name/company (used to improve Fireflies matching)
-      const [ghlContact, historicalContext] = await Promise.all([
-        lookupGHLContact(email),
-        getHistoricalContextByEmail(email)
-      ]);
+      const id = newProgressJob('prefetch');
+      res.writeHead(202, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ prefetch_id: id }));
 
-      const emailDomain = email.split('@')[1] || '';
-      const websiteFallback = isFreeMailDomain(emailDomain) ? '' : emailDomain;
+      // Run phase-1 in the background. Errors land on the progress map; the
+      // client surfaces them in the New Job UI.
+      (async () => {
+        try {
+          setProgress(id, { progress: 10, step: 'Looking up GHL contact…' });
+          const [ghlContact, historicalContext] = await Promise.all([
+            lookupGHLContact(email),
+            getHistoricalContextByEmail(email)
+          ]);
 
-      // Resolve each contact field by waterfall AND record where it came from,
-      // so the brief UI can show "from GHL" / "from previous job" / "from rep input"
-      // badges and reps can spot stale CRM values at a glance.
-      const contactSources = {};
-      const pick = (field, ...candidates) => {
-        for (const [src, val] of candidates) {
-          if (val != null && val !== '') {
-            contactSources[field] = src;
-            return val;
-          }
-        }
-        contactSources[field] = null;
-        return null;
-      };
-      const contactInfo = {
-        name:         pick('name',
-                          ['rep_input', body.name],
-                          ['ghl',       ghlContact?.name],
-                          ['history',   historicalContext?.name]),
-        company:      pick('company',
-                          ['rep_input', body.company],
-                          ['ghl',       ghlContact?.company],
-                          ['history',   historicalContext?.company]),
-        title:        pick('title',
-                          ['ghl',       ghlContact?.title]),
-        website:      pick('website',
-                          ['rep_input', body.website],
-                          ['ghl',       ghlContact?.website],
-                          ['history',   historicalContext?.website],
-                          ['email_domain', websiteFallback]),
-        linkedin_url: pick('linkedin_url',
-                          ['rep_input', body.linkedin_url],
-                          ['ghl',       ghlContact?.linkedin_url],
-                          ['history',   historicalContext?.linkedin_url])
-      };
-      // Normalize website (strip protocol, take host segment only)
-      if (contactInfo.website) {
-        contactInfo.website = String(contactInfo.website).replace(/^https?:\/\//, '').split('/')[0];
-      }
+          setProgress(id, { progress: 25, step: 'Resolving sales rep…' });
+          const repRow = await getRepByGhlUserId(ghlContact?.ghl_user_id);
+          const rep = repRow
+            ? { slug: repRow.slug, display_name: repRow.display_name, source: 'ghl' }
+            : null;
 
-      // Apollo people/match by email — used as a fallback when GHL has no data on
-      // this contact. Fills LinkedIn URL, title, name, AND company (organization.name).
-      // Best-effort; failure is non-fatal. Skip for free-mail addresses since Apollo
-      // can't reliably identify a person from a gmail/yahoo address.
-      const needsApollo = !contactInfo.linkedin_url || !contactInfo.name || !contactInfo.company || !contactInfo.title;
-      if (needsApollo && !isFreeMailDomain(emailDomain)) {
-        const apolloMatch = await apolloMatchByEmail(email);
-        if (apolloMatch) {
-          if (!contactInfo.linkedin_url && apolloMatch.linkedin_url) { contactInfo.linkedin_url = apolloMatch.linkedin_url; contactSources.linkedin_url = 'apollo'; }
-          if (!contactInfo.name         && apolloMatch.name)         { contactInfo.name         = apolloMatch.name;         contactSources.name         = 'apollo'; }
-          if (!contactInfo.company      && apolloMatch.company)      { contactInfo.company      = apolloMatch.company;      contactSources.company      = 'apollo'; }
-          if (!contactInfo.title        && apolloMatch.title)        { contactInfo.title        = apolloMatch.title;        contactSources.title        = 'apollo'; }
-          console.log(`[prefetch] Apollo people/match for ${email}: linkedin=${!!apolloMatch.linkedin_url}, name=${!!apolloMatch.name}, company=${!!apolloMatch.company}, title=${!!apolloMatch.title}`);
-        }
-      }
-      console.log(`[prefetch] contactInfo sources for ${email} (pre-scrape):`, JSON.stringify(contactSources));
-
-      // Phase 3: also check DB for approved calls — used for count badge in UI
-      const dbApproved = await findApprovedCallsFromDB(email);
-      const approvedCallCount = dbApproved.length;
-
-      // Parallel: Fireflies lookup (with contact info for better matching) + website scrape
-      const [transcript, website] = await Promise.all([
-        findFirefliesTranscript(email, contactInfo),
-        contactInfo.website ? scrapeWebsite(contactInfo.website) : Promise.resolve(null)
-      ]);
-
-      // Last-resort fallback for company: scrape <title> tag. Strips trailing
-      // ' | ...' / ' — ...' / ' - ...' segments so "The 4FP Agency | Financial Planners"
-      // becomes just "The 4FP Agency". Only fires when no other source produced a value.
-      if (!contactInfo.company && website?.title) {
-        const fromTitle = companyFromWebsiteTitle(website.title);
-        if (fromTitle) {
-          contactInfo.company = fromTitle;
-          contactSources.company = 'website_title';
-          console.log(`[prefetch] Fell back to website title for company: "${fromTitle}"`);
-        }
-      }
-
-      let brief           = null;
-      let transcriptFound = false;
-      let transcriptTitle = null;
-
-      if (transcript) {
-        transcriptFound = true;
-        transcriptTitle = transcript.title || null;
-
-        // Fetch full detail (sentences) for just this one transcript
-        const detail = await fetchTranscriptDetail(transcript.id);
-        const s = (detail?.summary || transcript.summary) || {};
-
-        // Build verbatim content from raw sentences (speaker-tagged, preserves exact words)
-        const rawSentences = ((detail || transcript).sentences || [])
-          .filter(s => s.text && s.text.trim().length > 0)
-          .map(s => `${s.speaker_name || 'Speaker'}: ${s.text.trim()}`)
-          .join('\n');
-
-        // Combine verbatim sentences + summary fields for max context
-        // Sentences get priority (verbatim), summaries fill if sentences empty
-        const summaryParts = [s.shorthand_bullet, s.overview, s.short_summary, s.action_items].filter(Boolean).join('\n\n');
-        const txContent = rawSentences
-          ? `VERBATIM TRANSCRIPT:\n${rawSentences.slice(0, 12000)}\n\nSUMMARY NOTES:\n${summaryParts.slice(0, 2000)}`
-          : summaryParts.slice(0, 14000);
-
-        const webContent = website?.bodyText || '';
-        console.log(`[prefetch] Transcript context: ${txContent.length} chars (${rawSentences.length} verbatim + summaries)`);
-        brief = await extractBriefFromTranscript(txContent, webContent, contactInfo);
-        // Overlay external-source provenance onto the brief's _provenance map so the
-        // UI can show "FROM APOLLO" / "FROM GHL" / "FROM WEBSITE" for fields the
-        // transcript path didn't fill but external lookups did. The extract prompt
-        // only sees the transcript + website body and can't know Apollo/GHL filled
-        // a value upstream, so we patch that in here.
-        if (brief && typeof brief === 'object') {
-          brief._provenance = brief._provenance || {};
-          const setProv = (key, source) => {
-            // Only overwrite if the prompt returned 'missing' or no value at all —
-            // never downgrade a 'transcript' or 'inferred' tag.
-            const current = brief._provenance[key];
-            if (!current || current === 'missing') brief._provenance[key] = source;
+          const emailDomain = email.split('@')[1] || '';
+          const websiteFallback = isFreeMailDomain(emailDomain) ? '' : emailDomain;
+          const contactSources = {};
+          const pick = (field, ...candidates) => {
+            for (const [src, val] of candidates) {
+              if (val != null && val !== '') { contactSources[field] = src; return val; }
+            }
+            contactSources[field] = null;
+            return null;
           };
-          // contactSources comes from the waterfall above (ghl > apollo > website_title etc.)
-          if (contactSources.company)      setProv('prospect.company',       contactSources.company === 'website_title' ? 'website' : contactSources.company);
-          if (contactSources.name)         setProv('prospect.contact_name',  contactSources.name);
-          if (contactSources.title)        setProv('prospect.contact_title', contactSources.title);
-          if (contactSources.linkedin_url) setProv('prospect.linkedin_url',  contactSources.linkedin_url);
-        }
-        // Promote extracted contact info back to contactInfo and update its source
-        // to 'transcript' so the brief UI shows the rep that the call (not stale GHL)
-        // is what populated this field.
-        if (brief?.prospect?.company && !body.company) {
-          contactInfo.company = brief.prospect.company;
-          contactSources.company = 'transcript';
-          if (brief._provenance) brief._provenance['prospect.company'] = 'transcript';
-        }
-        if (brief?.prospect?.contact_name && !body.name) {
-          contactInfo.name = brief.prospect.contact_name;
-          contactSources.name = 'transcript';
-          if (brief._provenance) brief._provenance['prospect.contact_name'] = 'transcript';
-        }
-        if (brief?.prospect?.contact_title) {
-          contactInfo.title = brief.prospect.contact_title;
-          contactSources.title = 'transcript';
-        }
-      } else if (historicalContext?.brief) {
-        brief = historicalContext.brief;
-        console.log(`[prefetch] Reusing historical brief from job ${historicalContext.jobId || 'unknown'} for ${email}`);
-      }
+          const contactInfo = {
+            name:         pick('name',
+                              ['rep_input', body.name],
+                              ['ghl',       ghlContact?.name],
+                              ['history',   historicalContext?.name]),
+            company:      pick('company',
+                              ['rep_input', body.company],
+                              ['ghl',       ghlContact?.company],
+                              ['history',   historicalContext?.company]),
+            title:        pick('title',
+                              ['ghl',       ghlContact?.title]),
+            website:      pick('website',
+                              ['rep_input', body.website],
+                              ['ghl',       ghlContact?.website],
+                              ['history',   historicalContext?.website],
+                              ['email_domain', websiteFallback]),
+            linkedin_url: pick('linkedin_url',
+                              ['rep_input', body.linkedin_url],
+                              ['ghl',       ghlContact?.linkedin_url],
+                              ['history',   historicalContext?.linkedin_url])
+          };
+          if (contactInfo.website) {
+            contactInfo.website = String(contactInfo.website).replace(/^https?:\/\//, '').split('/')[0];
+          }
 
-      // Resolve the GHL contact owner → app rep slug. Surfaces as data.rep on
-      // the client so the New Job dropdown can auto-fill without the legacy
-      // email-hash guess. Null when there's no GHL contact, no assignedTo,
-      // or no sales_reps row for that user ID.
-      const repRow = await getRepByGhlUserId(ghlContact?.ghl_user_id);
-      const rep = repRow
-        ? { slug: repRow.slug, display_name: repRow.display_name, source: 'ghl' }
-        : null;
+          // Apollo people/match fills LinkedIn / name / company / title when GHL is sparse.
+          const needsApollo = !contactInfo.linkedin_url || !contactInfo.name || !contactInfo.company || !contactInfo.title;
+          if (needsApollo && !isFreeMailDomain(emailDomain)) {
+            setProgress(id, { progress: 35, step: 'Apollo people/match…' });
+            const apolloMatch = await apolloMatchByEmail(email);
+            if (apolloMatch) {
+              if (!contactInfo.linkedin_url && apolloMatch.linkedin_url) { contactInfo.linkedin_url = apolloMatch.linkedin_url; contactSources.linkedin_url = 'apollo'; }
+              if (!contactInfo.name         && apolloMatch.name)         { contactInfo.name         = apolloMatch.name;         contactSources.name         = 'apollo'; }
+              if (!contactInfo.company      && apolloMatch.company)      { contactInfo.company      = apolloMatch.company;      contactSources.company      = 'apollo'; }
+              if (!contactInfo.title        && apolloMatch.title)        { contactInfo.title        = apolloMatch.title;        contactSources.title        = 'apollo'; }
+              console.log(`[prefetch ${id.slice(0,8)}] Apollo: linkedin=${!!apolloMatch.linkedin_url}, name=${!!apolloMatch.name}, company=${!!apolloMatch.company}, title=${!!apolloMatch.title}`);
+            }
+          }
 
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
-        transcript_found:    transcriptFound,
-        transcript_title:    transcriptTitle,
-        approved_call_count: approvedCallCount,
-        contact:             contactInfo,
-        contact_sources:     contactSources,
-        rep:                 rep,
-        brief:               brief || emptyBrief(contactInfo)
-      }));
+          // Approved-calls badge count
+          const dbApproved = await findApprovedCallsFromDB(email);
+          const approvedCallCount = dbApproved.length;
+
+          setProgress(id, { progress: 50, step: 'Searching Fireflies (parallel) + scraping website…' });
+          const [candidates, website] = await Promise.all([
+            findFirefliesTranscripts(email, contactInfo),
+            contactInfo.website ? scrapeWebsite(contactInfo.website) : Promise.resolve(null)
+          ]);
+
+          // Website-title fallback for company (only when nothing else filled it)
+          if (!contactInfo.company && website?.title) {
+            const fromTitle = companyFromWebsiteTitle(website.title);
+            if (fromTitle) {
+              contactInfo.company = fromTitle;
+              contactSources.company = 'website_title';
+              console.log(`[prefetch ${id.slice(0,8)}] Fell back to website title for company: "${fromTitle}"`);
+            }
+          }
+
+          // Public candidate list — strip the heavy `sentences` blob and the
+          // internal `_match_kind` tag, surfacing match_kind as a clean field.
+          const publicCandidates = (candidates || []).slice(0, 10).map(t => ({
+            id:         t.id,
+            title:      t.title || null,
+            duration:   t.duration || 0,
+            date:       t.date || null,
+            attendees:  (t.meeting_attendees || []).map(a => ({ email: a.email || null, name: a.displayName || null })),
+            match_kind: t._match_kind || 'loose'
+          }));
+
+          setProgress(id, {
+            progress: 100, status: 'completed', step: 'Done',
+            result: {
+              contact:                 contactInfo,
+              contact_sources:         contactSources,
+              rep:                     rep,
+              approved_call_count:     approvedCallCount,
+              candidates:              publicCandidates,
+              suggested_candidate_id:  publicCandidates[0]?.id || null,
+              has_historical_brief:    !!historicalContext?.brief
+            }
+          });
+
+          // Side-cache for phase 2 — extract-brief needs the website body and
+          // the historical brief but they're too heavy to ship to the client.
+          _progressJobs.get(id)._extras = {
+            email,
+            contactInfo,
+            contactSources,
+            webBody:         website?.bodyText || '',
+            historicalBrief: historicalContext?.brief || null,
+            candidatesById:  new Map((candidates || []).map(t => [t.id, t]))
+          };
+        } catch (e) {
+          console.error(`[prefetch ${id.slice(0,8)}] failed:`, e.message);
+          setProgress(id, { progress: 100, status: 'failed', step: 'Failed', error: e.message });
+        }
+      })();
     } catch(e) {
       console.error('[POST /api/prefetch]', e.message);
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: e.message }));
     }
+    return;
+  }
+
+  // ── GET /api/prefetch/:id — poll prefetch progress + result ────────────────
+  if (req.method === 'GET' && urlPath.startsWith('/api/prefetch/')) {
+    setCors(res);
+    const id = urlPath.slice('/api/prefetch/'.length);
+    const job = getProgress(id);
+    if (!job || job.kind !== 'prefetch') {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Unknown prefetch_id (expired or never existed)' }));
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      status:   job.status,
+      progress: job.progress,
+      step:     job.step,
+      result:   job.result || null,
+      error:    job.error  || null
+    }));
+    return;
+  }
+
+  // ── POST /api/extract-brief — async phase-2 Claude extraction ──────────────
+  // Body: { prefetch_id, transcript_id }
+  // transcript_id === null means the rep clicked "Skip — no transcript", in
+  // which case we build an empty brief from the contact + website only.
+  if (req.method === 'POST' && urlPath === '/api/extract-brief') {
+    setCors(res);
+    try {
+      const body = await parseBody(req);
+      const prefetchId  = (body.prefetch_id || '').trim();
+      const transcriptId = body.transcript_id ? String(body.transcript_id) : null;
+      const prefetchJob = getProgress(prefetchId);
+      if (!prefetchJob || prefetchJob.kind !== 'prefetch' || prefetchJob.status !== 'completed') {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Prefetch result not available — re-run search' }));
+        return;
+      }
+      const extras = prefetchJob._extras;
+      if (!extras) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Prefetch extras missing — re-run search' }));
+        return;
+      }
+      const id = newProgressJob('extract_brief');
+      res.writeHead(202, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ extract_id: id }));
+
+      (async () => {
+        try {
+          const contactInfo    = { ...extras.contactInfo };
+          const contactSources = { ...extras.contactSources };
+          const webBody        = extras.webBody;
+          let   brief           = null;
+          let   transcriptFound = false;
+          let   transcriptTitle = null;
+          let   transcriptDate  = null;
+
+          if (transcriptId) {
+            const candidate = extras.candidatesById.get(transcriptId);
+            if (!candidate) throw new Error(`Unknown transcript_id ${transcriptId} for this prefetch`);
+            transcriptTitle = candidate.title || null;
+            transcriptDate  = candidate.date || null;
+
+            setProgress(id, { progress: 20, step: 'Loading transcript detail…' });
+            const detail = await fetchTranscriptDetail(transcriptId);
+            const s = (detail?.summary || candidate.summary) || {};
+            const rawSentences = ((detail || candidate).sentences || [])
+              .filter(x => x.text && x.text.trim().length > 0)
+              .map(x => `${x.speaker_name || 'Speaker'}: ${x.text.trim()}`)
+              .join('\n');
+            const summaryParts = [s.shorthand_bullet, s.overview, s.short_summary, s.action_items].filter(Boolean).join('\n\n');
+            const txContent = rawSentences
+              ? `VERBATIM TRANSCRIPT:\n${rawSentences.slice(0, 12000)}\n\nSUMMARY NOTES:\n${summaryParts.slice(0, 2000)}`
+              : summaryParts.slice(0, 14000);
+
+            setProgress(id, { progress: 50, step: 'Extracting brief with Claude…' });
+            console.log(`[extract-brief ${id.slice(0,8)}] Claude context: ${txContent.length} chars (${rawSentences.length} verbatim)`);
+            brief = await extractBriefFromTranscript(txContent, webBody, contactInfo);
+            transcriptFound = true;
+
+            // Stamp external-source provenance + promote any new transcript values
+            // back into the contactInfo summary (same logic as the legacy handler).
+            if (brief && typeof brief === 'object') {
+              brief._provenance = brief._provenance || {};
+              const setProv = (key, source) => {
+                const current = brief._provenance[key];
+                if (!current || current === 'missing') brief._provenance[key] = source;
+              };
+              if (contactSources.company)      setProv('prospect.company',       contactSources.company === 'website_title' ? 'website' : contactSources.company);
+              if (contactSources.name)         setProv('prospect.contact_name',  contactSources.name);
+              if (contactSources.title)        setProv('prospect.contact_title', contactSources.title);
+              if (contactSources.linkedin_url) setProv('prospect.linkedin_url',  contactSources.linkedin_url);
+            }
+            if (brief?.prospect?.company && contactSources.company !== 'rep_input') {
+              contactInfo.company = brief.prospect.company;
+              contactSources.company = 'transcript';
+              if (brief._provenance) brief._provenance['prospect.company'] = 'transcript';
+            }
+            if (brief?.prospect?.contact_name && contactSources.name !== 'rep_input') {
+              contactInfo.name = brief.prospect.contact_name;
+              contactSources.name = 'transcript';
+              if (brief._provenance) brief._provenance['prospect.contact_name'] = 'transcript';
+            }
+            if (brief?.prospect?.contact_title) {
+              contactInfo.title = brief.prospect.contact_title;
+              contactSources.title = 'transcript';
+            }
+          } else if (extras.historicalBrief) {
+            // Rep chose Skip but a previous job already produced a brief — reuse it.
+            brief = extras.historicalBrief;
+            console.log(`[extract-brief ${id.slice(0,8)}] Reusing historical brief (no transcript picked)`);
+          }
+
+          setProgress(id, {
+            progress: 100, status: 'completed', step: 'Done',
+            result: {
+              transcript_found:    transcriptFound,
+              transcript_title:    transcriptTitle,
+              transcript_date:     transcriptDate,
+              transcript_id:       transcriptId,
+              contact:             contactInfo,
+              contact_sources:     contactSources,
+              brief:               brief || emptyBrief(contactInfo)
+            }
+          });
+        } catch (e) {
+          console.error(`[extract-brief ${id.slice(0,8)}] failed:`, e.message);
+          setProgress(id, { progress: 100, status: 'failed', step: 'Failed', error: e.message });
+        }
+      })();
+    } catch(e) {
+      console.error('[POST /api/extract-brief]', e.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  // ── GET /api/extract-brief/:id — poll extract-brief progress + result ──────
+  if (req.method === 'GET' && urlPath.startsWith('/api/extract-brief/')) {
+    setCors(res);
+    const id = urlPath.slice('/api/extract-brief/'.length);
+    const job = getProgress(id);
+    if (!job || job.kind !== 'extract_brief') {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Unknown extract_id (expired or never existed)' }));
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      status:   job.status,
+      progress: job.progress,
+      step:     job.step,
+      result:   job.result || null,
+      error:    job.error  || null
+    }));
     return;
   }
 
@@ -3570,6 +3720,7 @@ const server = http.createServer(async (req, res) => {
       const email      = (body.email || '').trim().toLowerCase();
       const websiteUrl = (body.websiteUrl || '').trim().replace(/^https?:\/\//, '').split('/')[0].toLowerCase();
       const linkedinUrl = (body.linkedin_url || body.linkedinUrl || '').trim() || null;
+      const transcriptId = (body.transcript_id || body.transcriptId || '').trim() || null;
       const brief      = body.brief || null;
       const repName    = (body.repName || body.rep_name || '').trim() || null; // B5 fix
 
@@ -3577,6 +3728,19 @@ const server = http.createServer(async (req, res) => {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Valid email required' }));
         return;
+      }
+
+      // Stamp the chosen Fireflies transcript on the brief so we can tell later
+      // whether the rep auto-accepted the top candidate or actively picked a
+      // non-default one. Useful for tuning the search ranker without adding a
+      // dedicated column.
+      if (brief && typeof brief === 'object' && transcriptId) {
+        brief._source = {
+          ...(brief._source || {}),
+          fireflies_transcript_id: transcriptId,
+          picked_by:               body.transcript_picked_by || 'rep',
+          picked_at:               new Date().toISOString()
+        };
       }
 
       const job = await createJob(email, websiteUrl || null, brief, repName, linkedinUrl);
