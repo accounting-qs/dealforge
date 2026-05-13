@@ -490,23 +490,41 @@ async function getRecentJobsByEmail(email, limit = 5) {
   return r.body;
 }
 
-async function getHistoricalContextByEmail(email) {
-  const rows = await getRecentJobsByEmail(email, 5);
-  if (!rows.length) return null;
-  let websiteOnlyFallback = null;
-  for (const row of rows) {
-    const brief = row.extracted_data || null;
-    const company = row.prospect_company || brief?.prospect?.company || null;
-    const name = row.prospect_name || brief?.prospect?.contact_name || null;
-    const website = row.prospect_website || null;
-    if (brief || company || name) {
-      return { brief, company, name, website, jobId: row.id || row.job_id || null };
-    }
-    if (!websiteOnlyFallback && website) {
-      websiteOnlyFallback = { brief: null, company: null, name: null, website, jobId: row.id || row.job_id || null };
+// Build a Map<apollo_id, enriched_lead> from this prospect's previous jobs.
+// Used by lead_list + rerun-apollo to skip the people/match Apollo call (1
+// credit per lead) when the same lead was already enriched on an earlier run
+// for the same prospect_email. We only seed from rows where `revealed === true`
+// — those are the leads that actually had a successful Apollo match.
+async function getCachedApolloEnrichments(email, currentJobId = null) {
+  if (!email) return new Map();
+  // Scan the last 20 jobs for this prospect — enough to cover months of reruns
+  // without scanning the whole table. Skip the current job to avoid pulling
+  // half-written state during rerun-apollo.
+  const r = await supabaseRequest(
+    'GET',
+    `/rest/v1/jobs?prospect_email=eq.${encodeURIComponent(email)}&select=id,extracted_data&order=updated_at.desc&limit=20`
+  );
+  if (r.status !== 200 || !Array.isArray(r.body)) return new Map();
+  const cache = new Map();
+  for (const row of r.body) {
+    if (currentJobId && row.id === currentJobId) continue;
+    const leads = row.extracted_data?._generated?.leads;
+    if (!Array.isArray(leads)) continue;
+    for (const l of leads) {
+      if (!l || !l.apollo_id || !l.revealed) continue;
+      if (cache.has(l.apollo_id)) continue; // first (newest) wins
+      cache.set(l.apollo_id, {
+        name:         l.name || null,
+        email:        l.email || null,
+        company_size: l.company_size || null,
+        website:      l.website || null,
+        linkedin_url: l.linkedin_url || null,
+        photo_url:    l.photo_url || null,
+        headline:     l.headline || null
+      });
     }
   }
-  return websiteOnlyFallback;
+  return cache;
 }
 
 async function getPendingTasks(limit = 5) {
@@ -1523,11 +1541,36 @@ function formatEmployeeRangeBand(ranges) {
 //     have apollo_id, and as a manual refresh if anything ever needs it.)
 // The website column intentionally stays on the free proxy-scrape value; this
 // helper only overrides name / email / company_size when match returns them.
-async function peopleMatchAllLeads(leads) {
+async function peopleMatchAllLeads(leads, cache = null) {
   const APOLLO_KEY = process.env.APOLLO_API_KEY;
   if (!APOLLO_KEY || !Array.isArray(leads) || !leads.length) return leads;
+
+  // Phase 0: hydrate from prior-job cache before any Apollo call. Saves 1
+  // credit per lead that the same prospect has already enriched on a previous
+  // run. The cache is keyed by apollo_id (stable across reruns).
+  let cacheHits = 0;
+  if (cache && cache.size) {
+    for (const lead of leads) {
+      if (!lead || !lead.apollo_id || lead.revealed) continue;
+      const hit = cache.get(lead.apollo_id);
+      if (!hit) continue;
+      if (hit.name)         lead.name         = hit.name;
+      if (hit.email)        lead.email        = hit.email;
+      if (hit.company_size) lead.company_size = hit.company_size;
+      if (hit.website)      lead.website      = hit.website;
+      if (hit.linkedin_url) lead.linkedin_url = hit.linkedin_url;
+      if (hit.photo_url)    lead.photo_url    = hit.photo_url;
+      if (hit.headline)     lead.headline     = hit.headline;
+      lead.revealed = true;
+      cacheHits++;
+    }
+  }
+
   const targets = leads.filter(l => l && l.apollo_id && !l.revealed);
-  if (!targets.length) return leads;
+  if (!targets.length) {
+    if (cacheHits) console.log(`[lead_list] People-match: 0/${cacheHits + targets.length} new calls (${cacheHits} reused from prior jobs — 0 credits)`);
+    return leads;
+  }
 
   const CONCURRENCY = 5;
   let matched = 0;
@@ -1577,7 +1620,7 @@ async function peopleMatchAllLeads(leads) {
       }
     }));
   }
-  console.log(`[lead_list] People-match: ${matched}/${targets.length} leads matched (${matched} enrichment credits) | website set from email domain: ${websiteFromEmail}`);
+  console.log(`[lead_list] People-match: ${matched}/${targets.length} leads matched (${matched} enrichment credits) | reused from prior jobs: ${cacheHits} | website set from email domain: ${websiteFromEmail}`);
   return leads;
 }
 
@@ -1597,7 +1640,7 @@ async function peopleMatchAllLeads(leads) {
 //   4. People-match all 25 to unlock full name + work email + real employee count
 //      (25 enrichment credits per finalize call). Step (3) still applies as a
 //      fallback whenever match doesn't return an employee count.
-async function finalizeLeadList(rawLeads, icp) {
+async function finalizeLeadList(rawLeads, icp, enrichmentCache = null) {
   const seen = new Set();
   const deduped = [];
   for (const l of (rawLeads || [])) {
@@ -1611,7 +1654,7 @@ async function finalizeLeadList(rawLeads, icp) {
   if (sizeFallback) {
     deduped.forEach(l => { if (!l.company_size) l.company_size = sizeFallback; });
   }
-  await peopleMatchAllLeads(deduped);
+  await peopleMatchAllLeads(deduped, enrichmentCache);
   // Stale-code alarm bell. peopleMatchAllLeads filters on `l.apollo_id`; if
   // no lead has one, the match step silently does nothing and the rep ends up
   // staring at obfuscated names. The only way 25 freshly-searched leads can
@@ -3253,11 +3296,20 @@ async function handleLeadList(task, job) {
   const result = await fetchLeadsFromApollo(icp);
   const rawLeads = result?.leads || [];
 
+  // Build the apollo_id → enriched_lead cache from previous jobs for this same
+  // prospect_email. Cache hits skip the people/match Apollo call (1 credit
+  // each). Brand-new prospects produce an empty cache → identical behavior to
+  // before this change.
+  const enrichmentCache = await getCachedApolloEnrichments(job.prospect_email, job.id);
+  if (enrichmentCache.size) {
+    console.log(`[lead_list] Apollo enrichment cache: ${enrichmentCache.size} leads from prior jobs for ${job.prospect_email}`);
+  }
   // Dedup + size fallback + people-match — shared finalizer so handleLeadList
   // (worker) and rerun-apollo produce identical output. People-match runs for
   // every lead with an apollo_id at this step, so reps see real names + emails
-  // immediately instead of obfuscated stubs (~25 enrichment credits per job).
-  const { leads, sizeFallback } = await finalizeLeadList(rawLeads, icp);
+  // immediately instead of obfuscated stubs (~25 enrichment credits per job,
+  // minus any cache hits from previous jobs for the same prospect).
+  const { leads, sizeFallback } = await finalizeLeadList(rawLeads, icp, enrichmentCache);
   console.log(`[lead_list] Dedup: ${rawLeads.length} → ${leads.length} unique-company leads (size fallback: ${sizeFallback || 'none'})`);
 
   // fetchLeadsFromApollo returns { total }; legacy callers used { totalAvailable }
@@ -3893,10 +3945,11 @@ const server = http.createServer(async (req, res) => {
       (async () => {
         try {
           setProgress(id, { progress: 10, step: 'Looking up GHL contact…' });
-          const [ghlContact, historicalContext] = await Promise.all([
-            lookupGHLContact(email),
-            getHistoricalContextByEmail(email)
-          ]);
+          // Every new job starts fresh — no historical brief / company / website
+          // reuse from prior jobs for this same prospect. Reps explicitly asked
+          // for this so that re-runs after a fresh Fireflies call don't inherit
+          // stale extracted fields from an older job.
+          const ghlContact = await lookupGHLContact(email);
 
           setProgress(id, { progress: 25, step: 'Resolving sales rep…' });
           // Precedence: opportunity owner > contact owner. Reps work the deal,
@@ -3938,23 +3991,19 @@ const server = http.createServer(async (req, res) => {
           const contactInfo = {
             name:         pick('name',
                               ['rep_input', body.name],
-                              ['ghl',       ghlContact?.name],
-                              ['history',   historicalContext?.name]),
+                              ['ghl',       ghlContact?.name]),
             company:      pick('company',
                               ['rep_input', body.company],
-                              ['ghl',       ghlContact?.company],
-                              ['history',   historicalContext?.company]),
+                              ['ghl',       ghlContact?.company]),
             title:        pick('title',
                               ['ghl',       ghlContact?.title]),
             website:      pick('website',
                               ['rep_input',    cleanWebsiteCandidate(body.website)],
                               ['ghl',          cleanWebsiteCandidate(ghlContact?.website)],
-                              ['history',      cleanWebsiteCandidate(historicalContext?.website)],
                               ['email_domain', cleanWebsiteCandidate(emailDomain)]),
             linkedin_url: pick('linkedin_url',
                               ['rep_input', body.linkedin_url],
-                              ['ghl',       ghlContact?.linkedin_url],
-                              ['history',   historicalContext?.linkedin_url])
+                              ['ghl',       ghlContact?.linkedin_url])
           };
           if (contactInfo.website) {
             contactInfo.website = String(contactInfo.website).replace(/^https?:\/\//, '').split('/')[0];
@@ -4003,19 +4052,17 @@ const server = http.createServer(async (req, res) => {
               rep:                     rep,
               approved_call_count:     approvedCallCount,
               candidates:              publicCandidates,
-              suggested_candidate_id:  publicCandidates[0]?.id || null,
-              has_historical_brief:    !!historicalContext?.brief
+              suggested_candidate_id:  publicCandidates[0]?.id || null
             }
           });
 
-          // Side-cache for phase 2 — extract-brief needs the historical brief
-          // and the raw candidate map (for sentences). webBody is filled by
-          // extract-brief itself once the rep has confirmed the URL.
+          // Side-cache for phase 2 — extract-brief needs the raw candidate map
+          // (for sentences). webBody is filled by extract-brief itself once the
+          // rep has confirmed the URL.
           _progressJobs.get(id)._extras = {
             email,
             contactInfo,
             contactSources,
-            historicalBrief: historicalContext?.brief || null,
             candidatesById:  new Map((candidates || []).map(t => [t.id, t]))
           };
         } catch (e) {
@@ -4122,13 +4169,24 @@ const server = http.createServer(async (req, res) => {
           }
 
           if (transcriptId) {
-            const candidate = extras.candidatesById.get(transcriptId);
-            if (!candidate) throw new Error(`Unknown transcript_id ${transcriptId} for this prefetch`);
+            // Manual-paste path: when none of the auto-detected Fireflies
+            // candidates is right, the rep pastes a Fireflies link. The ID
+            // won't be in candidatesById, so resolve title/date by fetching
+            // detail directly from Fireflies.
+            let candidate       = extras.candidatesById.get(transcriptId);
+            let preloadedDetail = null;
+            if (!candidate) {
+              console.log(`[extract-brief ${id.slice(0,8)}] manual transcript_id ${transcriptId} (not in picker) — fetching detail directly`);
+              setProgress(id, { progress: 20, step: 'Loading pasted Fireflies transcript…' });
+              preloadedDetail = await fetchTranscriptDetail(transcriptId);
+              if (!preloadedDetail) throw new Error(`Fireflies transcript ${transcriptId} not found or not accessible — check the link and that you have access`);
+              candidate = preloadedDetail;
+            }
             transcriptTitle = candidate.title || null;
             transcriptDate  = candidate.date || null;
 
             setProgress(id, { progress: 20, step: 'Loading transcript detail…' });
-            const detail = await fetchTranscriptDetail(transcriptId);
+            const detail = preloadedDetail || await fetchTranscriptDetail(transcriptId);
             const s = (detail?.summary || candidate.summary) || {};
             // Tag each transcript turn as [REP] (QS rep speaking) vs [PROSPECT]
             // (the buyer speaking) so the extractor can source prospect-side
@@ -4197,10 +4255,6 @@ const server = http.createServer(async (req, res) => {
               contactSources.website = 'transcript';
               if (brief._provenance) brief._provenance['prospect.website'] = 'transcript';
             }
-          } else if (extras.historicalBrief) {
-            // Rep chose Skip but a previous job already produced a brief — reuse it.
-            brief = extras.historicalBrief;
-            console.log(`[extract-brief ${id.slice(0,8)}] Reusing historical brief (no transcript picked)`);
           }
 
           setProgress(id, {
@@ -4852,8 +4906,13 @@ const server = http.createServer(async (req, res) => {
             // Dedup + size fallback + people-match — same shared helper
             // handleLeadList uses, so a rerun produces an identically-shaped list
             // (25 unique-company leads, real names + emails baked in from the match
-            // call). ~25 enrichment credits per rerun.
-            const { leads: finalizedLeads } = await finalizeLeadList(result.leads, icp);
+            // call). Cache hits from prior jobs for this prospect skip the Apollo
+            // call entirely; brand-new leads still cost 1 credit each.
+            const enrichmentCache = await getCachedApolloEnrichments(job.prospect_email, job.id);
+            if (enrichmentCache.size) {
+              console.log(`[rerun-apollo] Apollo enrichment cache: ${enrichmentCache.size} leads from prior jobs for ${job.prospect_email}`);
+            }
+            const { leads: finalizedLeads } = await finalizeLeadList(result.leads, icp, enrichmentCache);
             console.log(`[rerun-apollo] Dedup: ${result.leads.length} → ${finalizedLeads.length} unique-company leads`);
 
             // Re-read latest extracted_data so we don't clobber progress writes that

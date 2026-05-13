@@ -436,6 +436,23 @@ option{background:#111116;color:#e4e4e7}
           <div id="brief-picker-list" style="display:flex;flex-direction:column;gap:6px;max-height:240px;overflow-y:auto"></div>
         </div>
 
+        <!-- Manual Fireflies-link fallback: shown whenever the picker is shown -->
+        <!-- so the rep can paste a Fireflies URL when none of the auto-detected -->
+        <!-- candidates is the right call. -->
+        <div id="brief-manual-link" style="display:none;margin-top:10px;padding:10px 12px;background:rgba(255,255,255,0.02);border:1px dashed rgba(255,255,255,0.10);border-radius:8px">
+          <div style="font-size:11px;color:#a1a1aa;margin-bottom:6px">
+            None of these the right call? Paste the Fireflies link:
+          </div>
+          <div style="display:flex;gap:6px">
+            <input id="brief-manual-link-input" type="text" placeholder="https://app.fireflies.ai/view/Title::ID"
+                   oninput="briefManualLinkParse()"
+                   style="flex:1;padding:7px 10px;background:rgba(0,0,0,0.25);border:1px solid rgba(255,255,255,0.10);border-radius:6px;color:#e4e4e7;font-size:12px;font-family:inherit">
+            <button type="button" onclick="briefManualLinkClear()" id="brief-manual-link-clear"
+                    style="display:none;padding:6px 10px;background:rgba(239,68,68,0.10);border:1px solid rgba(239,68,68,0.25);border-radius:6px;color:#fca5a5;font-size:11px;cursor:pointer;font-family:inherit">Clear</button>
+          </div>
+          <div id="brief-manual-link-status" style="font-size:11px;color:#71717a;margin-top:6px;min-height:14px"></div>
+        </div>
+
         <!-- Website URL input -->
         <div style="margin-top:16px">
           <div class="brief-label">Website URL <span style="font-weight:400;text-transform:none;letter-spacing:0;color:#3f3f46">(recommended — used for branding)</span></div>
@@ -956,6 +973,8 @@ var _briefExtractResult  = null;       // result blob from /api/extract-brief
 var _briefPrefetchId     = null;
 var _briefExtractId      = null;
 var _briefSelectedTranscriptId = null; // null = rep chose Skip
+var _briefPickerLastSelectedId = null; // remembers radio pick so Clear-on-manual restores it
+var _briefManualIdActive       = false; // true while a pasted Fireflies link is the source
 var _briefEmail = null;
 
 function _createNewJob(email) {
@@ -964,6 +983,8 @@ function _createNewJob(email) {
   _briefExtractResult  = null;
   _briefPrefetchId     = null;
   _briefSelectedTranscriptId = null;
+  _briefPickerLastSelectedId = null;
+  _briefManualIdActive       = false;
   if (_briefPollTimer) { clearTimeout(_briefPollTimer); _briefPollTimer = null; }
 
   // Reset modal state
@@ -1075,6 +1096,7 @@ function briefRenderPhase1(result) {
 
   var candidates = Array.isArray(result.candidates) ? result.candidates : [];
   _briefSelectedTranscriptId = result.suggested_candidate_id || (candidates[0] && candidates[0].id) || null;
+  _briefPickerLastSelectedId = _briefSelectedTranscriptId;
 
   // Always render the picker when at least one Fireflies call matched, so
   // the rep can explicitly confirm or swap or skip — even when only one
@@ -1088,6 +1110,12 @@ function briefRenderPhase1(result) {
   } else {
     briefRenderPicker(candidates, _briefSelectedTranscriptId);
   }
+  // Manual-paste fallback is always available — show whether we found
+  // candidates or not. When there are zero candidates the rep MUST either
+  // paste a link or skip; when there are candidates the rep can still paste
+  // a different one if the picker doesn't list the right call.
+  briefResetManualLink();
+  document.getElementById('brief-manual-link').style.display = 'block';
 
   document.getElementById('brief-subtitle').textContent = 'Review contact info and continue to brief';
   document.getElementById('brief-contact').style.display = 'block';
@@ -1142,6 +1170,78 @@ function briefRenderPicker(candidates, selectedId) {
 
 function briefSelectTranscript(id) {
   _briefSelectedTranscriptId = id || null;
+  _briefPickerLastSelectedId = id || null;
+  // Picking from the radio list clears any manually-pasted link so the two
+  // controls can't disagree about which transcript wins.
+  briefResetManualLink();
+}
+
+// Pull a Fireflies transcript ID out of whatever the rep pasted.
+//   - https://app.fireflies.ai/view/Some-Title::ABC123…   → ABC123…
+//   - https://app.fireflies.ai/share/transcript/ABC123…   → ABC123…
+//   - https://app.fireflies.ai/notepad/ABC123…             → ABC123…
+//   - raw ID like "ABC123..."                              → ABC123…
+function parseFirefliesId(input) {
+  if (!input) return null;
+  var s = String(input).trim();
+  if (!s) return null;
+  var m = s.match(/::([A-Za-z0-9_-]{8,})/);
+  if (m) return m[1];
+  m = s.match(/\/(?:transcript|view|notepad|share)\/([A-Za-z0-9_-]{8,})/);
+  if (m) return m[1];
+  if (s.includes('/')) {
+    var last = s.split(/[?#]/)[0].split('/').filter(Boolean).pop();
+    if (last && /^[A-Za-z0-9_-]{8,}$/.test(last)) return last;
+  }
+  if (/^[A-Za-z0-9_-]{8,}$/.test(s)) return s;
+  return null;
+}
+
+function briefManualLinkParse() {
+  var inputEl  = document.getElementById('brief-manual-link-input');
+  var statusEl = document.getElementById('brief-manual-link-status');
+  var clearEl  = document.getElementById('brief-manual-link-clear');
+  var raw = (inputEl.value || '').trim();
+  if (!raw) {
+    statusEl.textContent = '';
+    clearEl.style.display = 'none';
+    // Drop the manual selection but keep whatever the radio picker had.
+    if (_briefManualIdActive) {
+      _briefManualIdActive = false;
+      _briefSelectedTranscriptId = _briefPickerLastSelectedId;
+    }
+    return;
+  }
+  var id = parseFirefliesId(raw);
+  if (!id) {
+    statusEl.style.color = '#fca5a5';
+    statusEl.textContent = 'Could not find a Fireflies ID in that link';
+    clearEl.style.display = 'inline-block';
+    return;
+  }
+  statusEl.style.color = '#86efac';
+  statusEl.textContent = 'Using transcript ID: ' + id;
+  clearEl.style.display = 'inline-block';
+  _briefManualIdActive       = true;
+  _briefSelectedTranscriptId = id;
+  // Visually un-select the picker radios — the manual paste wins.
+  var radios = document.querySelectorAll('input[name="brief-transcript-pick"]');
+  radios.forEach(function(r) { r.checked = false; });
+}
+
+function briefManualLinkClear() {
+  document.getElementById('brief-manual-link-input').value = '';
+  briefManualLinkParse();
+}
+
+function briefResetManualLink() {
+  var inputEl = document.getElementById('brief-manual-link-input');
+  var statusEl = document.getElementById('brief-manual-link-status');
+  var clearEl  = document.getElementById('brief-manual-link-clear');
+  if (inputEl) inputEl.value = '';
+  if (statusEl) statusEl.textContent = '';
+  if (clearEl) clearEl.style.display = 'none';
+  _briefManualIdActive = false;
 }
 
 function briefPickerToggle() {

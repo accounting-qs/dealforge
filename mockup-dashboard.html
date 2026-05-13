@@ -274,6 +274,23 @@
           <div id="nj-picker-list" style="display:flex;flex-direction:column;gap:6px;max-height:220px;overflow-y:auto;"></div>
         </div>
 
+        <!-- Manual Fireflies-link fallback: shown alongside the picker so the rep -->
+        <!-- can paste a Fireflies URL when none of the auto-detected candidates -->
+        <!-- is the right call. -->
+        <div id="nj-manual-link" style="display:none;margin-top:10px;padding:10px 12px;background:rgba(255,255,255,0.02);border:1px dashed rgba(255,255,255,0.10);border-radius:8px;">
+          <div style="font-size:11px;color:#a1a1aa;margin-bottom:6px;">
+            None of these the right call? Paste the Fireflies link:
+          </div>
+          <div style="display:flex;gap:6px;">
+            <input id="nj-manual-link-input" type="text" placeholder="https://app.fireflies.ai/view/Title::ID"
+                   oninput="njManualLinkParse()"
+                   style="flex:1;padding:7px 10px;background:rgba(0,0,0,0.25);border:1px solid rgba(255,255,255,0.10);border-radius:6px;color:#e4e4e7;font-size:12px;font-family:inherit;">
+            <button type="button" onclick="njManualLinkClear()" id="nj-manual-link-clear"
+                    style="display:none;padding:6px 10px;background:rgba(239,68,68,0.10);border:1px solid rgba(239,68,68,0.25);border-radius:6px;color:#fca5a5;font-size:11px;cursor:pointer;font-family:inherit;">Clear</button>
+          </div>
+          <div id="nj-manual-link-status" style="font-size:11px;color:#71717a;margin-top:6px;min-height:14px;"></div>
+        </div>
+
         <!-- Phase 3: approved calls badge -->
         <div id="nj-approved-calls" style="display:none;font-size:12px;font-weight:500;color:#4ade80;margin-top:8px;padding:7px 10px;background:rgba(34,197,94,0.08);border:1px solid rgba(34,197,94,0.2);border-radius:7px;"></div>
       </div>
@@ -981,6 +998,8 @@ var _njExtractResult  = null;
 var _njPrefetchId     = null;
 var _njExtractId      = null;
 var _njSelectedTranscriptId = null;
+var _njPickerLastSelectedId = null; // remembers radio pick so Clear-on-manual restores it
+var _njManualIdActive       = false; // true while a pasted Fireflies link is the source
 var _njPollTimer      = null;
 var _njPollStuck      = 0;
 var _njPollLastPct    = -1;
@@ -1003,6 +1022,8 @@ function njReset() {
   _njPrefetchId     = null;
   _njExtractId      = null;
   _njSelectedTranscriptId = null;
+  _njPickerLastSelectedId = null;
+  _njManualIdActive       = false;
   _njPollLastPct = -1; _njPollStuck = 0;
   if (_njPollTimer) { clearTimeout(_njPollTimer); _njPollTimer = null; }
   document.getElementById('nj-email').value = '';
@@ -1017,6 +1038,9 @@ function njReset() {
   if (picker) { picker.style.display = 'none'; }
   var plist = document.getElementById('nj-picker-list');
   if (plist) plist.innerHTML = '';
+  var manualBlock = document.getElementById('nj-manual-link');
+  if (manualBlock) manualBlock.style.display = 'none';
+  njResetManualLink();
   document.getElementById('nj-step2').style.display = 'none';
   njSetProgress(0, 'Starting…');
   // Clear all brief fields
@@ -1121,6 +1145,7 @@ function njRenderPhase1(result) {
   // Fireflies candidates → picker / status
   var candidates = Array.isArray(result.candidates) ? result.candidates : [];
   _njSelectedTranscriptId = result.suggested_candidate_id || (candidates[0] && candidates[0].id) || null;
+  _njPickerLastSelectedId = _njSelectedTranscriptId;
   // Always render the picker when at least one Fireflies call matched, so
   // the rep can confirm/swap/skip even when only one came back.
   document.getElementById('nj-transcript-found').style.display = 'none';
@@ -1131,6 +1156,10 @@ function njRenderPhase1(result) {
   } else {
     njRenderPicker(candidates, _njSelectedTranscriptId);
   }
+  // Manual-paste fallback is always available — the rep can override even a
+  // good auto-detected pick, or rescue a zero-candidate prefetch.
+  njResetManualLink();
+  document.getElementById('nj-manual-link').style.display = 'block';
 
   // Approved call badge
   var approvedCount = result.approved_call_count || 0;
@@ -1195,7 +1224,79 @@ function njRenderPicker(candidates, selectedId) {
   listEl.innerHTML = html;
 }
 
-function njSelectTranscript(id) { _njSelectedTranscriptId = id || null; }
+function njSelectTranscript(id) {
+  _njSelectedTranscriptId = id || null;
+  _njPickerLastSelectedId = id || null;
+  // Picking from the radio list clears any manually-pasted link so the two
+  // controls can't disagree about which transcript wins.
+  njResetManualLink();
+}
+
+// Pull a Fireflies transcript ID out of whatever the rep pasted.
+//   - https://app.fireflies.ai/view/Some-Title::ABC123…   → ABC123…
+//   - https://app.fireflies.ai/share/transcript/ABC123…   → ABC123…
+//   - raw ID                                              → ABC123…
+function njParseFirefliesId(input) {
+  if (!input) return null;
+  var s = String(input).trim();
+  if (!s) return null;
+  var m = s.match(/::([A-Za-z0-9_-]{8,})/);
+  if (m) return m[1];
+  m = s.match(/\/(?:transcript|view|notepad|share)\/([A-Za-z0-9_-]{8,})/);
+  if (m) return m[1];
+  if (s.indexOf('/') >= 0) {
+    var last = s.split(/[?#]/)[0].split('/').filter(Boolean).pop();
+    if (last && /^[A-Za-z0-9_-]{8,}$/.test(last)) return last;
+  }
+  if (/^[A-Za-z0-9_-]{8,}$/.test(s)) return s;
+  return null;
+}
+
+function njManualLinkParse() {
+  var inputEl  = document.getElementById('nj-manual-link-input');
+  var statusEl = document.getElementById('nj-manual-link-status');
+  var clearEl  = document.getElementById('nj-manual-link-clear');
+  var raw = (inputEl.value || '').trim();
+  if (!raw) {
+    statusEl.textContent = '';
+    clearEl.style.display = 'none';
+    if (_njManualIdActive) {
+      _njManualIdActive = false;
+      _njSelectedTranscriptId = _njPickerLastSelectedId;
+    }
+    return;
+  }
+  var id = njParseFirefliesId(raw);
+  if (!id) {
+    statusEl.style.color = '#fca5a5';
+    statusEl.textContent = 'Could not find a Fireflies ID in that link';
+    clearEl.style.display = 'inline-block';
+    return;
+  }
+  statusEl.style.color = '#86efac';
+  statusEl.textContent = 'Using transcript ID: ' + id;
+  clearEl.style.display = 'inline-block';
+  _njManualIdActive       = true;
+  _njSelectedTranscriptId = id;
+  // Visually un-select the picker radios — the manual paste wins.
+  var radios = document.querySelectorAll('input[name="nj-transcript-pick"]');
+  radios.forEach(function(r) { r.checked = false; });
+}
+
+function njManualLinkClear() {
+  document.getElementById('nj-manual-link-input').value = '';
+  njManualLinkParse();
+}
+
+function njResetManualLink() {
+  var inputEl = document.getElementById('nj-manual-link-input');
+  var statusEl = document.getElementById('nj-manual-link-status');
+  var clearEl  = document.getElementById('nj-manual-link-clear');
+  if (inputEl) inputEl.value = '';
+  if (statusEl) statusEl.textContent = '';
+  if (clearEl) clearEl.style.display = 'none';
+  _njManualIdActive = false;
+}
 
 function njPickerToggle() {
   var list = document.getElementById('nj-picker-list');
