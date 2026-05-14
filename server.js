@@ -4047,10 +4047,10 @@ const server = http.createServer(async (req, res) => {
       const jobs = (jobsR.status === 200 && Array.isArray(jobsR.body)) ? jobsR.body : [];
       const file = (fileR.status === 200 && Array.isArray(fileR.body) && fileR.body[0]) ? fileR.body[0] : null;
 
-      // Add portal_url to each job (format matches dashboard: /?job=ID)
+      // Add portal_url to each job (path-based deep link → /<jobId>/how-it-works).
       const jobsWithPortal = jobs.map(j => ({
         ...j,
-        portal_url: j.portal_url || `/?job=${j.id}`
+        portal_url: j.portal_url || `/${j.id}/how-it-works`
       }));
 
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -4489,7 +4489,7 @@ const server = http.createServer(async (req, res) => {
       await createTasks(job.id, ['extract', 'prospect_research', 'lead_list']);
 
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ job_id: job.id, portal_url: `/?job=${job.id}` }));
+      res.end(JSON.stringify({ job_id: job.id, portal_url: `/${job.id}/how-it-works` }));
     } catch(e) {
       console.error('[POST /api/jobs]', e.message);
       res.writeHead(500, { 'Content-Type': 'application/json' });
@@ -4514,7 +4514,7 @@ const server = http.createServer(async (req, res) => {
         prospect_company: j.prospect_company,
         prospect_name:   j.prospect_name,
         assigned_rep:    j.rep_name || null,
-        portal_url:      `/?job=${j.id}`,
+        portal_url:      `/${j.id}/how-it-works`,
         created_at:      j.created_at,
         updated_at:      j.updated_at
       }))));
@@ -5403,7 +5403,7 @@ const server = http.createServer(async (req, res) => {
         industry,
         transcriptFound: meta.transcript?.found || false,
         websiteScraped:  meta.website?.scraped  || false,
-        portalUrl:       `/?job=${job.id}`
+        portalUrl:       `/${job.id}/how-it-works`
       }));
     } catch(err) {
       console.error('[/api/generate]', err.message);
@@ -5877,6 +5877,36 @@ const server = http.createServer(async (req, res) => {
     console.warn('[lloyd-avatar] No file found at assets/lloyd-yip.{jpg,png}');
     res.writeHead(404); res.end();
     return;
+  }
+
+  // ── Portal deep-link routing ──────────────────────────────────────────────
+  // URLs of shape /<jobId>/<tab-slug> serve mockup-portal.html; the client
+  // reads the job id + slug from window.location.pathname. Plain /<jobId>
+  // redirects to /<jobId>/how-it-works. Legacy /?job=<uuid> URLs already
+  // handed out to prospects 302 to the new path-based shape so links stay live.
+  const UUID_PATH_RE = /^\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:\/([a-z0-9-]+))?\/?$/i;
+  const portalMatch = urlPath.match(UUID_PATH_RE);
+  if (portalMatch) {
+    if (!portalMatch[2]) {
+      const qs = req.url.includes('?') ? req.url.slice(req.url.indexOf('?')) : '';
+      res.writeHead(302, { Location: `/${portalMatch[1]}/how-it-works${qs}` });
+      res.end();
+      return;
+    }
+    urlPath = '/mockup-portal.html';
+  } else if (urlPath === '/' || urlPath === '') {
+    const qIdx = req.url.indexOf('?');
+    if (qIdx >= 0) {
+      const legacyParams = new URLSearchParams(req.url.slice(qIdx + 1));
+      const legacyJob = legacyParams.get('job');
+      if (legacyJob && /^[0-9a-f-]{36}$/i.test(legacyJob)) {
+        legacyParams.delete('job');
+        const tail = legacyParams.toString();
+        res.writeHead(302, { Location: `/${legacyJob}/how-it-works${tail ? `?${tail}` : ''}` });
+        res.end();
+        return;
+      }
+    }
   }
 
   // ── Static files ──────────────────────────────────────────────────────────

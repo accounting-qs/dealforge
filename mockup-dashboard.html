@@ -1616,7 +1616,7 @@ function njGenerate() {
   .then(function(data) {
     if (data.error) throw new Error(data.error);
 
-    var portalUrl     = data.portal_url || ('/?job=' + data.job_id);
+    var portalUrl     = data.portal_url || ('/' + data.job_id + '/how-it-works');
     var editPortalUrl = portalUrl + (portalUrl.includes('?') ? '&' : '?') + 'edit=true';
     var repName = (_SALES_REPS_BY_SLUG[rep] && _SALES_REPS_BY_SLUG[rep].display_name) || rep || '';
     var today = new Date();
@@ -1720,7 +1720,7 @@ function _fmtDate(d) {
 function _renderJobRow(job) {
   var company = _fmtCompany(job);
   var name = job.prospect_name || job.prospect_email || '';
-  var portalUrl     = job.portal_url || ('/?job=' + job.job_id);
+  var portalUrl     = job.portal_url || ('/' + job.job_id + '/how-it-works');
   var editPortalUrl = portalUrl + (portalUrl.includes('?') ? '&' : '?') + 'edit=true';
   var date = _fmtDate(job.created_at);
   var jobId = job.job_id || '';
@@ -1747,7 +1747,7 @@ function _renderJobRow(job) {
 // per-run fields the rep needs to choose between runs: when it happened,
 // its status, who owns it, and an Open arrow.
 function _renderChildJobRow(job) {
-  var portalUrl     = job.portal_url || ('/?job=' + job.job_id);
+  var portalUrl     = job.portal_url || ('/' + job.job_id + '/how-it-works');
   var prospectUrl   = portalUrl;
   var editPortalUrl = portalUrl + (portalUrl.includes('?') ? '&' : '?') + 'edit=true';
   var jobId   = job.job_id || '';
@@ -1781,7 +1781,7 @@ function _renderContactGroup(g) {
   var latestDate     = _fmtDate(latest.created_at);
   // All groups collapsed by default. Rep expands to see history, or clicks
   // the Open latest button to jump straight to the most recent run.
-  var latestPortal   = latest.portal_url || ('/?job=' + latest.job_id);
+  var latestPortal   = latest.portal_url || ('/' + latest.job_id + '/how-it-works');
   // Prospect view = portal URL without edit=true (matches the portal's own
   // "Open Prospect View ↗" link). Rep edit view appends edit=true.
   var latestProspect = latestPortal;

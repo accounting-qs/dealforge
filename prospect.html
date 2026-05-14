@@ -280,7 +280,7 @@ function renderJobs(jobs) {
       + '</div>'
       + '<div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">'
       + (j.status==='completed'
-        ? '<a class="action-link" href="'+(j.portal_url||'/?job='+j.id)+'" target="_blank">Open Portal ↗</a>'
+        ? '<a class="action-link" href="'+(j.portal_url||'/'+j.id+'/how-it-works')+'" target="_blank">Open Portal ↗</a>'
         : '')
       + '</div>'
       + '</div>';

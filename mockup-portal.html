@@ -608,6 +608,21 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
   (function(){
     var isEdit = new URLSearchParams(window.location.search).get('edit') === 'true';
     if (!isEdit) document.documentElement.dataset.mode = 'prospect';
+
+    // ── Deep-link routing globals ───────────────────────────────────────────
+    // URL shape: /<jobId>/<tab-slug>?edit=true. Job id used to come from the
+    // ?job= query param; resolve from the path first, fall back to the query
+    // string for legacy callers and the no-job demo. Exposed on window so the
+    // dozen-odd existing call sites can share a single source of truth.
+    window.TAB_SLUGS = [
+      'how-it-works','lead-list','calendar-invite','webinar-experience',
+      'onboarding','roi-model','case-studies','prospect-info'
+    ];
+    var __uuidPathRe = /^\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:\/([a-z0-9-]+))?\/?$/i;
+    var __pathMatch  = window.location.pathname.match(__uuidPathRe);
+    var __qsJob      = new URLSearchParams(window.location.search).get('job');
+    window.__JOB_ID  = (__pathMatch && __pathMatch[1]) || __qsJob || null;
+    window.__TAB_SLUG_FROM_PATH = (__pathMatch && __pathMatch[2]) || null;
   })();
 </script>
 </head>
@@ -1783,10 +1798,41 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
 const WAP_BRAND_ONLY = '__brand_only__';
 
 // ── Tab switching ──
-function switchTab(i) {
+// Each tab maps to a URL slug (TAB_SLUGS defined at the top of <head>). On
+// every switch we replaceState the URL to /<jobId>/<slug>?edit=true so the
+// tab is part of the address bar — copy-paste opens the same view, reloads
+// stay put, and the legacy reload-after-save no longer bounces the rep back
+// to How It Works. replaceState (not pushState) because tabs aren't real
+// navigation steps; we don't want Back to step through 7 history entries.
+function switchTab(i, opts) {
+  opts = opts || {};
   document.querySelectorAll('.tab-content').forEach((t,j) => t.classList.toggle('active', i===j));
   document.querySelectorAll('.tab').forEach((t,j) => t.classList.toggle('active', i===j));
+  if (opts.push === false) return;
+  if (!window.__JOB_ID) return;
+  const slug = (window.TAB_SLUGS && window.TAB_SLUGS[i]) || 'how-it-works';
+  const newUrl = '/' + window.__JOB_ID + '/' + slug + window.location.search;
+  if (newUrl !== window.location.pathname + window.location.search) {
+    history.replaceState({ tab: i }, '', newUrl);
+  }
 }
+
+function _tabIndexFromPath() {
+  if (!window.TAB_SLUGS) return 0;
+  const slug = window.__TAB_SLUG_FROM_PATH;
+  const i = slug ? window.TAB_SLUGS.indexOf(slug) : -1;
+  return i >= 0 ? i : 0;
+}
+
+window.addEventListener('popstate', function() {
+  // Re-parse the path on back/forward so the right tab activates without
+  // pushing a new history entry.
+  const m = window.location.pathname.match(
+    /^\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:\/([a-z0-9-]+))?\/?$/i
+  );
+  window.__TAB_SLUG_FROM_PATH = (m && m[2]) || null;
+  switchTab(_tabIndexFromPath(), { push: false });
+});
 // Reorder tabs: Onboarding (index 4) before ROI Model (index 5) — matches button bar order
 (function() {
   var roi = document.getElementById('tab-roi');
@@ -2502,7 +2548,7 @@ function applyOverrides(gen, overrides) {
 const IS_EDIT_MODE = new URLSearchParams(window.location.search).get('edit') === 'true';
 
 async function saveOverride(field, value, displayEl) {
-  const _jobId = new URLSearchParams(window.location.search).get('job');
+  const _jobId = window.__JOB_ID;
   if (!_jobId) return;
   try {
     const r = await fetch('/api/jobs/' + encodeURIComponent(_jobId) + '/overrides', {
@@ -2646,8 +2692,20 @@ function wireROIEditMode() {
 
 // ── Personalization from session / job data ───────────────────────────────────
 (async function() {
+  // Honour the URL on first paint — tab-how is hardcoded .active in the HTML,
+  // so without this the rep flashes to How It Works for ~one frame before the
+  // deep-linked tab activates. push:false because the URL is already correct.
+  // Prospect-info (index 7) is rep-only — only honour it when edit mode is on,
+  // otherwise the button stays display:none and the panel would be unreachable
+  // to switch away from.
+  if (typeof switchTab === 'function') {
+    let _initialTab = _tabIndexFromPath();
+    if (_initialTab === 7 && !IS_EDIT_MODE) _initialTab = 0;
+    switchTab(_initialTab, { push: false });
+  }
+
   const params = new URLSearchParams(window.location.search);
-  const jobId        = params.get('job');
+  const jobId        = window.__JOB_ID;
   const sessionToken = params.get('session');
 
   // ── Edit mode — inject banner + CSS when IS_EDIT_MODE ──────────────────────
@@ -3487,7 +3545,7 @@ function runPersonalization(session) {
         renderFilterTags();
         // Show edit button if we have a job ID
         var fEditBtn = document.getElementById('filter-edit-btn');
-        if (fEditBtn && new URLSearchParams(window.location.search).get('job')) {
+        if (fEditBtn && window.__JOB_ID) {
           fEditBtn.style.display = 'inline-flex';
         }
       } else {
@@ -3844,7 +3902,7 @@ function runPersonalization(session) {
             if (!btn) return;
             var apolloId = btn.dataset.apolloId;
             var idx = parseInt(btn.dataset.leadIdx, 10);
-            var jobId = new URLSearchParams(window.location.search).get('job');
+            var jobId = window.__JOB_ID;
             if (!apolloId || !jobId) return;
             btn.disabled = true;
             btn.textContent = '⏳ Revealing…';
@@ -4226,7 +4284,7 @@ function setKeyword(val) {
 }
 
 function _getPortalJobId() {
-  return new URLSearchParams(window.location.search).get('job');
+  return window.__JOB_ID;
 }
 
 // ── Asset Picker (Webinar Experience tab) ─────────────────────────────────────
@@ -4814,7 +4872,7 @@ function portalLoadSalesReps() {
     .catch(function() { _portalRepsCache = []; return []; });
 }
 function portalSaveRep(slug) {
-  var jobId = new URLSearchParams(window.location.search).get('job');
+  var jobId = window.__JOB_ID;
   if (!jobId) return;
   var statusEl = document.getElementById('pi-rep-status');
   if (statusEl) { statusEl.style.display = 'block'; statusEl.style.color = '#52525b'; statusEl.textContent = 'Saving rep…'; }
