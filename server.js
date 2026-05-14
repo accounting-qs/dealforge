@@ -4951,6 +4951,16 @@ const server = http.createServer(async (req, res) => {
       for (const k of ICP_FIELDS) {
         if (body[k] !== undefined) updatedIcp[k] = body[k];
       }
+      // Mirror apollo_keyword → icp.industry so legacy display callers
+      // (calendar header, case-studies filter, ROI templates) stay in sync
+      // with the rep's chip state. Without the mirror, clearing the chip
+      // leaves icp.industry pointing at the original extracted value and
+      // every downstream surface that reads `icp.industry` re-shows it.
+      if (body.apollo_keyword !== undefined) {
+        updatedIcp.industry = (typeof body.apollo_keyword === 'string' && body.apollo_keyword.trim())
+          ? body.apollo_keyword.trim()
+          : '';
+      }
       // Rep edits invalidate any pre-baked translator payload. Without this,
       // a stored apollo_payload (which fetchLeadsFromApollo prefers over the
       // legacy-build path) would silently re-inject filters the rep removed.

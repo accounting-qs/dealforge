@@ -3509,23 +3509,27 @@ function runPersonalization(session) {
 
     // ── Lead list ICP parameters ──────────────────────────────────────────────
     const icpFiltersRow = document.querySelector('.tam-filters-row');
-    // Use Apollo-native fields for display if present — these are the exact search
-    // parameters passed to Apollo. Fall back to narrative ICP fields for briefs
-    // that haven't run extract yet (first render from prefetch brief).
-    const displayTitles = Array.isArray(icp.apollo_titles) && icp.apollo_titles.length
+    // Apollo-native fields are authoritative. We only fall back to the narrative
+    // ICP fields (role/industry/geography) when the Apollo-native field is
+    // genuinely *unset* (null/undefined) — typical for prefetch briefs before
+    // extract has run. An explicit empty (`''` or `[]`) means the rep cleared
+    // the chip and we MUST honor that — otherwise a re-run repaints the chip
+    // from the legacy mirror field and the rep can never remove a filter.
+    const displayTitles = Array.isArray(icp.apollo_titles)
       ? icp.apollo_titles
-      : (icp.role ? [icp.role] : null);
-    // apollo_keyword is the new single-phrase industry signal. Fall back to the
-    // legacy apollo_industries array (first value only) for jobs created before the cutover.
-    var keywordSingle = (typeof icp.apollo_keyword === 'string' && icp.apollo_keyword.trim())
-      ? icp.apollo_keyword.trim()
-      : (Array.isArray(icp.apollo_industries) && icp.apollo_industries.length
-          ? String(icp.apollo_industries[0] || '').trim()
-          : (icp.industry ? String(icp.industry).trim() : ''));
+      : (icp.role ? [icp.role] : []);
+    var keywordSingle;
+    if (typeof icp.apollo_keyword === 'string') {
+      keywordSingle = icp.apollo_keyword.trim();
+    } else if (Array.isArray(icp.apollo_industries) && icp.apollo_industries.length) {
+      keywordSingle = String(icp.apollo_industries[0] || '').trim();
+    } else {
+      keywordSingle = icp.industry ? String(icp.industry).trim() : '';
+    }
     const displayIndustries = keywordSingle ? [keywordSingle] : null;
-    const displayGeos = Array.isArray(icp.apollo_geography) && icp.apollo_geography.length
+    const displayGeos = Array.isArray(icp.apollo_geography)
       ? icp.apollo_geography
-      : (icp.geography ? [icp.geography] : null);
+      : (icp.geography ? [icp.geography] : []);
     const displaySize = icp.company_size || null;
 
     if (icpFiltersRow) {
