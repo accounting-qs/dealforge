@@ -2720,6 +2720,12 @@ function wireROIEditMode() {
         const session = buildCompatSession(job);
         window.SESSION = session; // global — used by applyProspectBranding for brand assets
         runPersonalization(session);
+        // SESSION now has _overrides — re-render the asset-picker slot cards
+        // so any saved override URL (image or upload) appears as the current
+        // pick, not "— default —". Without this, slots only refresh after a
+        // save round-trip, leaving the initial render stuck on the empty
+        // state even when the job has overrides persisted.
+        if (typeof _wapRenderSlots === 'function') _wapRenderSlots();
       }
 
       // ── Phase 2: Update lead table + TAM when lead_list task settles ────────
@@ -2730,6 +2736,7 @@ function wireROIEditMode() {
           const session2 = buildCompatSession(job);
           window.SESSION = session2;
           runPersonalization(session2);
+          if (typeof _wapRenderSlots === 'function') _wapRenderSlots();
           console.log('[Deal Forge] Lead list complete — personalization updated with real leads');
         } else if (llStatus === 'pending' || llStatus === 'processing') {
           // Update the loading row subtitle to show progress
