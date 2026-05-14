@@ -4503,17 +4503,97 @@ function _wapPaintTileState(tileEl, msg, color) {
 }
 
 // ── Brand color editing (rep-only, fires from the Brand Assets gallery) ─────
-// Opens a native color picker anchored at the row, debounces on input, and
-// persists the hex to extracted_data._overrides as webinar_primary_color /
-// _secondary_color / _accent_color. applyProspectBranding() picks these up
+// Default editor is a small hex-input popover anchored next to the row's Edit
+// button — reps usually paste a hex straight from the prospect's site (often
+// via a VPN'd browser when our scraper hits a Cloudflare block) so typing is
+// faster than the native color wheel. Wheel is still one click away via the
+// 🎨 button. Persists to extracted_data._overrides as webinar_primary_color /
+// _secondary_color / _accent_color; applyProspectBranding() picks these up
 // on the next re-render so the hero slide updates without a full reload.
 function _brandColorEdit(field, currentHex, anchorEl) {
   if (!field) return;
-  // Reuse a singleton hidden picker so we don't accumulate DOM nodes when the
-  // rep clicks Edit many times in a row. Position it at the anchor so the
-  // browser's native popup appears next to the row instead of jumping to the
-  // top-left of the viewport (which is where it lands if the input is parked
-  // off-screen).
+  // Singleton popover — reuse the DOM node across opens so we don't accumulate
+  // listeners or leak nodes when the rep flips between rows.
+  let pop = document.getElementById('brand-hex-popover');
+  if (!pop) {
+    pop = document.createElement('div');
+    pop.id = 'brand-hex-popover';
+    pop.style.cssText = 'position:fixed;z-index:9999;display:none;background:#0a0a0a;border:1px solid rgba(196,181,253,0.4);border-radius:6px;padding:6px;box-shadow:0 6px 20px rgba(0,0,0,0.55);font-family:inherit;';
+    pop.innerHTML = ''
+      + '<div style="display:flex;align-items:center;gap:6px;">'
+      +   '<input id="brand-hex-input" type="text" maxlength="7" autocomplete="off" spellcheck="false" '
+      +     'style="width:90px;background:#0a0a0a;border:1px solid rgba(196,181,253,0.3);border-radius:4px;color:#e4e4e7;font-size:12px;font-family:ui-monospace,Menlo,monospace;padding:4px 6px;text-transform:lowercase;">'
+      +   '<button id="brand-hex-save" type="button" '
+      +     'style="background:rgba(196,181,253,0.15);border:1px solid rgba(196,181,253,0.4);border-radius:4px;color:#c4b5fd;font-size:11px;font-weight:600;padding:4px 10px;cursor:pointer;font-family:inherit;">Save</button>'
+      +   '<button id="brand-hex-wheel" type="button" title="Open color wheel" '
+      +     'style="background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);border-radius:4px;color:#e4e4e7;font-size:12px;padding:4px 6px;cursor:pointer;font-family:inherit;">🎨</button>'
+      + '</div>'
+      + '<div id="brand-hex-err" style="font-size:10px;color:#f87171;margin-top:4px;min-height:12px;"></div>';
+    document.body.appendChild(pop);
+  }
+  const input  = pop.querySelector('#brand-hex-input');
+  const saveBt = pop.querySelector('#brand-hex-save');
+  const wheel  = pop.querySelector('#brand-hex-wheel');
+  const err    = pop.querySelector('#brand-hex-err');
+  const startHex = /^#[0-9a-f]{6}$/i.test(currentHex || '') ? currentHex.toLowerCase() : '#22c55e';
+  input.value   = startHex;
+  err.textContent = '';
+  // Position next to the Edit button. Flip above the anchor if it would
+  // overflow the viewport bottom.
+  pop.style.display = 'block';
+  const r = anchorEl && anchorEl.getBoundingClientRect
+    ? anchorEl.getBoundingClientRect()
+    : { top: window.innerHeight / 2, right: window.innerWidth / 2, bottom: window.innerHeight / 2 };
+  let left = Math.round(r.right + 6);
+  if (left + 240 > window.innerWidth) left = Math.max(8, window.innerWidth - 248);
+  let top  = Math.round(r.top);
+  if (top + 80 > window.innerHeight) top = Math.max(8, Math.round(r.bottom - 80));
+  pop.style.left = left + 'px';
+  pop.style.top  = top  + 'px';
+  // Normalize + preview while typing. Accepts "abc", "abcdef", with or without
+  // the leading #. Only previews when the value resolves to a valid 6-char hex.
+  const normalize = (raw) => {
+    let v = String(raw || '').trim().toLowerCase().replace(/[^0-9a-f]/g, '');
+    if (v.length === 3) v = v[0]+v[0]+v[1]+v[1]+v[2]+v[2];
+    return v.length === 6 ? '#' + v : null;
+  };
+  const commit = () => {
+    const hex = normalize(input.value);
+    if (!hex) { err.textContent = 'Enter a 3 or 6 digit hex code'; return; }
+    _brandColorSave(field, hex);
+    close();
+  };
+  const close = () => {
+    pop.style.display = 'none';
+    document.removeEventListener('mousedown', onOutside, true);
+    document.removeEventListener('keydown', onKey, true);
+  };
+  const onOutside = (e) => { if (!pop.contains(e.target) && e.target !== anchorEl) close(); };
+  const onKey     = (e) => {
+    if (e.key === 'Escape') { close(); }
+    else if (e.key === 'Enter') { e.preventDefault(); commit(); }
+  };
+  // Re-bind each open so handlers capture this field/anchor, but use the same
+  // node — set onX (not addEventListener) so we overwrite cleanly.
+  input.oninput = () => {
+    const hex = normalize(input.value);
+    err.textContent = '';
+    if (hex) _brandColorPreview(field, hex);
+  };
+  saveBt.onclick = commit;
+  wheel.onclick = () => {
+    close();
+    _brandColorEditWheel(field, normalize(input.value) || startHex, anchorEl);
+  };
+  document.addEventListener('mousedown', onOutside, true);
+  document.addEventListener('keydown', onKey, true);
+  // Focus + select the hex so the rep can paste straight away.
+  setTimeout(() => { input.focus(); input.select(); }, 0);
+}
+// Native color-wheel fallback — invoked from the 🎨 button on the hex popover.
+// Same behavior as the previous _brandColorEdit: hidden <input type="color">
+// anchored next to the row.
+function _brandColorEditWheel(field, currentHex, anchorEl) {
   let picker = document.getElementById('brand-color-picker');
   if (!picker) {
     picker = document.createElement('input');
@@ -4531,16 +4611,8 @@ function _brandColorEdit(field, currentHex, anchorEl) {
     picker.style.top  = '20px';
   }
   picker.value = /^#[0-9a-f]{6}$/i.test(currentHex || '') ? currentHex : '#22c55e';
-  // Save once on `change` (fires when picker closes), preview on `input`.
-  let lastPreview = null;
-  picker.oninput = () => {
-    lastPreview = picker.value;
-    _brandColorPreview(field, lastPreview);
-  };
-  picker.onchange = () => {
-    const finalHex = picker.value;
-    _brandColorSave(field, finalHex);
-  };
+  picker.oninput  = () => _brandColorPreview(field, picker.value);
+  picker.onchange = () => _brandColorSave(field, picker.value);
   picker.click();
 }
 // Save: PATCH the override, mirror it into SESSION._overrides locally, and
