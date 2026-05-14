@@ -2,7 +2,7 @@
   "project_name": "Deal Forge",
   "description": "AI pipeline that generates 7 custom prospect assets after Call 1 to increase Call 2 show rates for Quantum Scaling reps",
   "business_entity": "quantum_scaling",
-  "last_updated": "2026-05-12T00:00:00Z",
+  "last_updated": "2026-05-14T00:00:00Z",
   "current_state": {
     "phase_name": "Phase 2 - Build & Test",
     "status": "debugging"
@@ -13,7 +13,7 @@
     "end_state": "A polished internal rep dashboard used for every Call 2 booking. Rep selects today's calls from auto-loaded Fireflies meetings, clicks Generate, and has a full asset package ready within 20 minutes. The ROI model and reg page mock have shareable prospect-facing URLs. Eventually expands to full CRM integration and automated follow-up.",
     "current_summary": "Phase 2 backend live on Render. 7-task pipeline deployed (webinar_mock task removed 2026-05-12 — standalone HTML asset was unused; in-portal Webinar Experience tab now renders a single brand-colors hero + ICP-aware chat client-side). Rep portal live at deal-forge-angel.onrender.com. Key systems confirmed working: (1) Fireflies transcript lookup — 6-pass search strategy (GHL name → company → email segments → domain → recent scan p1 → p2), prefers exact email match → domain match → loose keyword. (2) GHL contact lookup — enriches contactInfo with name/company/title before Fireflies search for better matching. (3) extractBriefFromTranscript — Claude Sonnet extracts full structured brief: prospect info, ICP (apollo_titles, apollo_industries, apollo_employee_ranges, apollo_geography, person_seniorities), metrics (LTV/close/show rate), angle (pain/result/methodology/proof), verbatim quotes, situation, context, webinar title seeds. (4) /api/prefetch endpoint — runs Fireflies + GHL + website scrape + Claude extraction before job creation so rep can review the brief. (5) Task handlers wired: extract, prospect_research, brand_scrape, lead_list, webinar_titles, roi_model, calendar_visual. Main blocker: lead_list EU Apollo coverage — org search returns 0 for Baltic/EU ICPs. Latest fix deployed (commit c934325): strip 'Europe' from geo (invalid Apollo value), EU country list retry with no AND-logic industry filter, geoUsed flag tells classifier to accept EU-wide companies. Unconfirmed — stopped testing to avoid rate limit loop."
   },
-  "resume_here": "Phase 2 backend deployed. Full Fireflies→brief pipeline confirmed working. lead_list is the remaining blocker for EU/Baltic ICPs — returns 0 leads. Latest fix committed (c934325): EU org retry uses explicit country list with geo+size only (no AND-logic industry filter), geoUsed flag tells classifier to accept EU-wide companies. NOT yet confirmed working — stopped testing to avoid Apollo rate limit loop. Next session: (1) trigger one fresh job for rait@planpro.ee, (2) check Render logs for which Apollo tier fires and what HTTP status/org count comes back, (3) if still 0, test people/search direct with person_locations as fallback path.",
+  "resume_here": "webinar_titles legacy 4-field schema removed 2026-05-14. Root cause of schema-drift regressions: loadCopyBrain rendered few-shot examples as Title+Description blob, training Claude to ignore the 12-field schema. Fix: (1) parseExampleDescription splits stored example blobs into 12 fields at prompt-build time so examples teach the new shape; (2) handleCalendarVisual composes description from the 9 narrative fields, drops `variant.description ‖ hook+bullets+for_line` fallback; (3) renderer drops `‖ v.hook` fallback; (4) spec §5 rewritten to canonical 12-field schema; (5) per-variant shape guard in generateWebinarTitles hard-fails on legacy/incomplete shape — no retry, surfaces regressions visibly. No DB migration. Test plan: trigger fresh webinar_titles on a job, confirm all 12 content fields + _score + _analysis present; re-run on 4c57375a-72c4-4fb3-be0e-5ab7d75cea54 manually to repair. Previous lead_list EU Apollo blocker still open (separate workstream).",
   "current_phase": {
     "name": "Phase 2 - Build & Test",
     "goal": "Debug lead_list EU Apollo coverage, confirm full pipeline end-to-end with real Call 1 transcripts, then polish rep portal UI.",
@@ -84,6 +84,10 @@
     }
   ],
   "recent_milestones": [
+    {
+      "description": "webinar_titles legacy 4-field schema removed — old {title, hook, description, for_line} shape was dead weight in the codebase (5 fallback sites across server.js, mockup-portal.html, spec) but the few-shot examples_block kept rendering example bodies as Title+Description blobs, training Claude back into the old shape via demonstrations dominating over instructions. Fix: parseExampleDescription splits stored example blobs into the 12-field shape at prompt-build time so demonstrations now match the schema; handleCalendarVisual composes description from the 9 narrative fields; renderer fallback removed; spec §5 rewritten to canonical 12-field schema; per-variant shape guard hard-fails on legacy shape so future regressions surface immediately in tasks.error_message.",
+      "date": "2026-05-14"
+    },
     {
       "description": "Problem validated: Call 2 show rate 37.5% confirmed as core revenue constraint",
       "date": "2026-04-03"

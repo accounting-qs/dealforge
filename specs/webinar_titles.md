@@ -159,56 +159,81 @@ Prompts are plain text templates with `[bracket]` placeholders. They are NOT har
 
 ## 5. Output Schema
 
-Stored in `tasks.output_data` (JSONB column on `tasks` table).
+Stored in `tasks.output_data` (JSONB column on `tasks` table). This spec is the single source of truth — `prompts/webinar_titles_system.txt` is authored against it.
 
 ```json
 {
+  "_analysis": {
+    "host": "company name from the brief",
+    "attendee": "the reader — who is invited to attend",
+    "attendees_customer": "who the attendee sells to — almost never appears in copy directly",
+    "attendee_outcome": "the business outcome the attendee wants",
+    "geography_class": "us | ca | other",
+    "compliance_language_allowed": ["array of terms permitted under the geography class"],
+    "supported_claims": {
+      "verbatim_numbers": ["only numbers/timeframes present in the brief — empty array if none"],
+      "goal_revenue": "string | null — the prospect's stated goal revenue, if any",
+      "current_acquisition_channels": ["array — how they currently get clients per the brief"]
+    },
+    "risk_flags": ["zero or more canonical strings from prompt STEP 8"],
+    "confidence": "integer 1-10"
+  },
   "variants": [
     {
       "variant": "A",
       "style": "Curiosity-first (Revealed style)",
-      "title": "string — max 60 chars, first 40 must make sense if truncated",
-      "hook": "string — 2 sentences, opens with client pain, written as prospect company hosting",
-      "bullets": ["string — transformation promise", "string", "string"],
-      "for_line": "string — who should attend, 1 sentence"
+      "title": "string — max 60 chars, first 40 must make sense if truncated. NO emojis.",
+      "conditional_opener": "string — ONE sentence, qualifies the reader by self-identification",
+      "proof_story": "string | null — ONE client story with VERBATIM numbers from the brief; null when no proof numbers",
+      "contrast_frame": "string — ONE sentence; shape adapts to host business_model (educational vs delivery)",
+      "session_promise": "string — ONE sentence; the host's commitment to the attendee",
+      "rsvp_block": "string — canonical 'Click YES or MAYBE…' two-line block",
+      "bullets": ["string — 4-5 SPECIFIC PROMISES, never topics. Verb set adapts to business_model. Prefix with 💥 or 🚀."],
+      "reframe_line": "string — ONE sentence; 'Most [segment] don't have a [obvious problem] — they have a [real underlying problem].'",
+      "urgency_close": "string — ONE sentence; no false scarcity",
+      "ps_replay": "string — 'P.S. Want the replay? Just register through the official page.'",
+      "for_line": "string — ONE sentence describing who specifically should attend",
+      "_score": {
+        "icp_accuracy":     "integer 0-30",
+        "pain_relevance":   "integer 0-25",
+        "outcome_clarity":  "integer 0-20",
+        "compliance_safety":"integer 0-15",
+        "curiosity_appeal": "integer 0-10",
+        "total":            "integer 0-100 (sum)"
+      }
     },
-    {
-      "variant": "B",
-      "style": "Outcome-first (Hormozi style)",
-      "title": "string — max 60 chars, leads with the result",
-      "hook": "string — 2 sentences, opens with outcome or promise",
-      "bullets": ["string", "string", "string"],
-      "for_line": "string"
-    },
-    {
-      "variant": "C",
-      "style": "Mechanism-first (Kennedy style)",
-      "title": "string — max 60 chars, leads with the system or mechanism",
-      "hook": "string — 2 sentences, opens with how the mechanism works",
-      "bullets": ["string", "string", "string"],
-      "for_line": "string"
-    }
+    { "variant": "B", "style": "Outcome-first (Hormozi style)", "...": "same 12 content fields + _score" },
+    { "variant": "C", "style": "Mechanism-first (Kennedy style) / Process-transparency for delivery hosts", "...": "same 12 content fields + _score" }
   ],
-  "generated_at": "ISO timestamp",
-  "model": "claude-sonnet-4-6",
-  "format_brain_version": "integer — snapshot of format brain version used"
+  "_recommended_index": "integer 0|1|2 — variant with highest _score.total",
+  "_meta": {
+    "brain": "{ principles_count, examples_count, config_updated_at, loaded_at }",
+    "generated_at": "ISO timestamp",
+    "inputs": "{ has_case_study, has_host_bio, has_brand_tagline, has_website_summary, has_pain_quote, has_goal_quote }",
+    "analysis": "(mirror of top-level _analysis)",
+    "recommended_index": "(mirror of top-level _recommended_index)",
+    "confidence": "integer | null",
+    "risk_flags": ["…"]
+  }
 }
 ```
+
+**Hard requirements per variant.** `title`, `conditional_opener`, `rsvp_block`, `bullets`, `for_line` are always non-null. `proof_story` is `null` only when the brief has no verbatim proof numbers. The other six narrative fields (`contrast_frame`, `session_promise`, `reframe_line`, `urgency_close`, `ps_replay`) are always non-null. `bullets` is always an array of 4–5 strings. The legacy 4-field schema (`{title, hook, bullets, for_line}` ± fused `description`) is REMOVED — no consumer reads it and the generator hard-fails any variant in that shape.
 
 ---
 
 ## 6. Output Validation (Post-Generation)
 
-Run these checks before marking task `completed`. If any check fails, retry once with a stricter prompt addendum. If second attempt fails, mark task `failed` with error detail.
+Run these checks immediately after JSON parse in `generateWebinarTitles`. Any failure throws — no retry, no fallback — so regressions surface on the Render dashboard and in `tasks.error_message`.
 
-| Check | Rule | Retry Prompt Addendum |
+| Check | Rule | Action on failure |
 |-------|------|-----------------------|
-| Variant count | Exactly 3 variants present | "You must return exactly 3 variants." |
-| Title length | Each title ≤ 60 characters | "All titles must be 60 characters or fewer." |
-| Title front-load | First 40 chars make sense in isolation | Log warning only (no retry — hard to validate programmatically) |
-| Description word count | Each description ≤ 300 words | "Each description must be 300 words or fewer." |
-| No fabricated numbers | If case_study was null, no numeric proof claims | Log warning for human review |
-| Valid JSON | `json.loads()` succeeds | Retry with "Output must be valid JSON only, no markdown." |
+| Top-level shape | `variants` array of length 3; `_recommended_index ∈ {0,1,2}` (derive from `_score.total` if missing) | Throw |
+| Per-variant required fields | `title`, `conditional_opener`, `rsvp_block`, `bullets`, `for_line` all non-null | Throw with the missing field list |
+| No legacy `description` field | `variant.description` must NOT be a non-empty string | Throw — model has been taught the wrong shape; check `examples_block` |
+| Bullets shape | `Array.isArray(bullets)` and `length >= 3` | Throw |
+| Title length | Each title ≤ 60 characters | Log warning (soft) |
+| Valid JSON | `extractJsonObject(raw)` succeeds | Throw |
 
 ---
 
