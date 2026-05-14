@@ -2390,13 +2390,13 @@ async function fetchLeadsFromApollo(icp, progressCb) {
     : [];
 
   // apollo_keyword (single free-text phrase, e.g. "property management") is the
-  // industry signal. Falls back to legacy apollo_industries[0] for old jobs.
-  // If neither is present we send no industry filter at all.
+  // industry signal. If the rep cleared the chip we send no industry filter —
+  // the chip state is authoritative. No fallback to legacy apollo_industries:
+  // that fallback silently re-injected an extracted default whenever the rep
+  // removed the chip, defeating the whole point of an editable filter.
   const keywordPhrase = (typeof icp?.apollo_keyword === 'string' && icp.apollo_keyword.trim())
     ? icp.apollo_keyword.trim()
-    : (Array.isArray(icp?.apollo_industries) && icp.apollo_industries.length
-        ? String(icp.apollo_industries[0] || '').trim()
-        : '');
+    : '';
 
   // Four core Apollo filters by default: titles, location (account HQ),
   // employee size, industry keyword. person_seniorities is OPT-IN — the
@@ -4951,6 +4951,10 @@ const server = http.createServer(async (req, res) => {
       for (const k of ICP_FIELDS) {
         if (body[k] !== undefined) updatedIcp[k] = body[k];
       }
+      // Rep edits invalidate any pre-baked translator payload. Without this,
+      // a stored apollo_payload (which fetchLeadsFromApollo prefers over the
+      // legacy-build path) would silently re-inject filters the rep removed.
+      delete updatedIcp.apollo_payload;
       const updatedData = { ...existingData, icp: updatedIcp };
       const r = await supabaseRequest('PATCH', `/rest/v1/jobs?id=eq.${jobId}`,
         { extracted_data: updatedData, updated_at: new Date().toISOString() },
@@ -5138,9 +5142,16 @@ const server = http.createServer(async (req, res) => {
       const job = await getJob(jobId);
       if (!job) { res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'Job not found' })); return; }
       const icp = (job.extracted_data || {}).icp || {};
-      const hasKeyword = (typeof icp.apollo_keyword === 'string' && icp.apollo_keyword.trim().length > 0)
-        || (Array.isArray(icp.apollo_industries) && icp.apollo_industries.length > 0); // legacy
-      if (!icp.apollo_titles?.length && !hasKeyword) {
+      // No individual filter is required — rep can run with any combination.
+      // We only block a totally empty search (every chip cleared) because an
+      // unconstrained Apollo query returns millions of random people, which
+      // wastes credits and isn't what an empty-chip UI is asking for.
+      const hasAnyFilter = (Array.isArray(icp.apollo_titles) && icp.apollo_titles.length > 0)
+        || (typeof icp.apollo_keyword === 'string' && icp.apollo_keyword.trim().length > 0)
+        || (Array.isArray(icp.apollo_geography) && icp.apollo_geography.length > 0)
+        || (Array.isArray(icp.apollo_employee_ranges) && icp.apollo_employee_ranges.length > 0)
+        || (Array.isArray(icp.person_seniorities) && icp.person_seniorities.length > 0);
+      if (!hasAnyFilter) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'No ICP filters set — nothing to search' }));
         return;
