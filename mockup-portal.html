@@ -2264,17 +2264,27 @@ function applyProspectBranding(brandData) {
   };
 
   // 3. CSS color variables — applied to webinar UI accents
+  // Rep overrides (set via the Brand Assets gallery in edit mode) win over
+  // scraped colors. Saved as webinar_primary_color / webinar_secondary_color
+  // / webinar_accent_color on extracted_data._overrides.
+  const _colorOv = (typeof SESSION !== 'undefined' && SESSION?.extracted?._overrides) || {};
+  const _ovPrimary   = _colorOv.webinar_primary_color   || null;
+  const _ovSecondary = _colorOv.webinar_secondary_color || null;
+  const _ovAccent    = _colorOv.webinar_accent_color    || null;
   // Use primary_color unless it's near-white/black, then try secondary, then accent, then all_colors
   let effectivePrimary = null;
-  if (brandData?.primary_color && !isUselessColor(brandData.primary_color)) effectivePrimary = brandData.primary_color;
+  if (_ovPrimary && !isUselessColor(_ovPrimary)) effectivePrimary = _ovPrimary;
+  else if (brandData?.primary_color && !isUselessColor(brandData.primary_color)) effectivePrimary = brandData.primary_color;
+  else if (_ovSecondary && !isUselessColor(_ovSecondary)) effectivePrimary = _ovSecondary;
   else if (brandData?.secondary_color && !isUselessColor(brandData.secondary_color)) effectivePrimary = brandData.secondary_color;
+  else if (_ovAccent && !isUselessColor(_ovAccent)) effectivePrimary = _ovAccent;
   else if (brandData?.accent_color && !isUselessColor(brandData.accent_color)) effectivePrimary = brandData.accent_color;
   else if (brandData?.all_colors?.length) {
     effectivePrimary = brandData.all_colors.find(c => !isUselessColor(c)) || null;
   }
   let effectiveSecondary = null;
   if (effectivePrimary) {
-    const candidates = [brandData?.secondary_color, brandData?.accent_color, ...(brandData?.all_colors || [])];
+    const candidates = [_ovSecondary, brandData?.secondary_color, _ovAccent, brandData?.accent_color, ...(brandData?.all_colors || [])];
     effectiveSecondary = candidates.find(c => c && c !== effectivePrimary && !isUselessColor(c)) || effectivePrimary;
   }
 
@@ -2943,18 +2953,36 @@ function populateBrandGallery(session) {
   // Colors
   const colorsList = document.getElementById('brand-colors-list');
   if (colorsList) {
+    // Rep edit-mode overrides win over scraped values. Saved as
+    // webinar_primary_color / webinar_secondary_color / webinar_accent_color
+    // on extracted_data._overrides — flow through to applyProspectBranding()
+    // so the webinar slide repaints immediately.
+    const ov = (typeof SESSION !== 'undefined' && SESSION?.extracted?._overrides) || {};
     const colorDefs = [
-      { color: brand.primary_color,   label: 'Primary' },
-      { color: brand.secondary_color, label: 'Secondary' },
-      { color: brand.accent_color,    label: 'Accent' },
+      { color: ov.webinar_primary_color   || brand.primary_color,   label: 'Primary',   field: 'webinar_primary_color',   overridden: !!ov.webinar_primary_color },
+      { color: ov.webinar_secondary_color || brand.secondary_color, label: 'Secondary', field: 'webinar_secondary_color', overridden: !!ov.webinar_secondary_color },
+      { color: ov.webinar_accent_color    || brand.accent_color,    label: 'Accent',    field: 'webinar_accent_color',    overridden: !!ov.webinar_accent_color },
     ].filter(c => c.color);
     colorsList.innerHTML = colorDefs.map(c => `
-      <div class="brand-color-row">
-        <span class="brand-swatch" style="background:${c.color};" title="Click to copy" onclick="navigator.clipboard.writeText('${c.color}').then(()=>this.title='Copied!')"></span>
-        <span class="brand-swatch-hex" onclick="navigator.clipboard.writeText('${c.color}')" title="Click to copy">${c.color}</span>
-        <span style="font-size:11px;color:#52525b;margin-left:4px;">${c.label}</span>
+      <div class="brand-color-row" data-color-field="${c.field}">
+        <span class="brand-swatch" style="background:${c.color};${c.overridden ? 'outline:2px solid #c4b5fd;outline-offset:1px;' : ''}" title="Click to copy" onclick="navigator.clipboard.writeText('${c.color}').then(()=>this.title='Copied!')"></span>
+        <span class="brand-swatch-hex" data-color-hex onclick="navigator.clipboard.writeText('${c.color}')" title="Click to copy">${c.color}</span>
+        <span style="font-size:11px;color:#52525b;margin-left:4px;">${c.label}${c.overridden ? ' · rep edit' : ''}</span>
+        <button type="button" class="rep-only brand-color-edit" data-color-field="${c.field}" data-color-current="${c.color}" title="Edit color" style="background:rgba(196,181,253,0.1);border:1px solid rgba(196,181,253,0.3);border-radius:4px;color:#c4b5fd;font-size:10px;font-weight:600;padding:2px 8px;margin-left:6px;cursor:pointer;font-family:inherit;">✏️ Edit</button>
+        ${c.overridden ? `<button type="button" class="rep-only brand-color-reset" data-color-field="${c.field}" title="Revert to scraped" style="background:none;border:none;color:#71717a;font-size:10px;text-decoration:underline;margin-left:4px;cursor:pointer;font-family:inherit;">reset</button>` : ''}
       </div>
     `).join('') || '<span style="font-size:11px;color:#3f3f46;">No colors extracted</span>';
+    // One-time wiring (idempotent): clicking Edit opens a native color picker
+    // anchored to the row; clicking reset clears the override.
+    if (!colorsList.dataset.wired) {
+      colorsList.dataset.wired = '1';
+      colorsList.addEventListener('click', (e) => {
+        const editBtn = e.target.closest('.brand-color-edit');
+        const resetBtn = e.target.closest('.brand-color-reset');
+        if (editBtn) _brandColorEdit(editBtn.dataset.colorField, editBtn.dataset.colorCurrent, editBtn);
+        else if (resetBtn) _brandColorSave(resetBtn.dataset.colorField, '');
+      });
+    }
   }
 
   // Images
@@ -3556,8 +3584,8 @@ function runPersonalization(session) {
         }
         const parts = [];
 
-        // 1. Conditional opener (or fall back to legacy hook field)
-        const opener = v.conditional_opener || v.hook || '';
+        // 1. Conditional opener
+        const opener = v.conditional_opener || '';
         if (opener) parts.push(`<div class="cal-desc-hook">${escapeHTML(opener)}</div>`);
 
         // 2. Proof story (skipped if null — LLM was told to null this when no numbers)
@@ -4257,10 +4285,25 @@ function wapOpenModal(slotKey, slotLabel) {
     </div>
   ` : '';
 
+  // "Upload your own" tile — first in the grid, available for every slot.
+  // Clicking opens the OS file picker; the chosen file is POSTed to
+  // /api/jobs/:id/upload-asset and the returned Supabase Storage URL flows
+  // into the standard wapSetOverride() path (same as picking a scraped image).
+  const uploadTile = `
+    <div data-wap-upload="1" data-wap-slot="${slotKey}"
+         style="cursor:pointer;border:2px dashed #c4b5fd;border-radius:6px;overflow:hidden;background:#0a0a0a;transition:filter .15s;"
+         onmouseover="this.style.background='rgba(196,181,253,0.08)'" onmouseout="this.style.background='#0a0a0a'">
+      <div style="height:80px;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#c4b5fd;font-size:24px;line-height:1;">📤</div>
+      <div style="padding:5px 8px;font-size:10px;color:#c4b5fd;line-height:1.3;font-weight:600;text-align:center;">Upload your own</div>
+    </div>
+  `;
+
   if (!candidates.length && !brandOnlyTile) {
-    grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;color:#71717a;font-size:12px;padding:24px;">No scraped images available. Run brand_scrape first (Save & Regenerate Job).</div>';
+    // Even with no scraped images, the rep can still upload — keep the
+    // upload tile visible and skip the "run brand_scrape" empty state.
+    grid.innerHTML = uploadTile + '<div style="grid-column:span 2;font-size:11px;color:#71717a;padding:8px 4px;align-self:center;">No scraped images yet — upload your own, or run brand_scrape first to populate this grid.</div>';
   } else {
-    grid.innerHTML = brandOnlyTile + candidates.map(c => `
+    grid.innerHTML = uploadTile + brandOnlyTile + candidates.map(c => `
       <div data-wap-pick="${c.url.replace(/"/g,'&quot;')}" data-wap-slot="${slotKey}"
            style="cursor:pointer;border:1px solid #27272a;border-radius:6px;overflow:hidden;background:#0a0a0a;transition:border-color .15s;"
            onmouseover="this.style.borderColor='#c4b5fd'" onmouseout="this.style.borderColor='#27272a'">
@@ -4270,16 +4313,166 @@ function wapOpenModal(slotKey, slotLabel) {
         <div style="padding:5px 8px;font-size:10px;color:#a1a1aa;line-height:1.3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${(c.label||'').replace(/"/g,'&quot;')}">${c.label || '—'}</div>
       </div>
     `).join('');
-    // Wire pick clicks
-    grid.querySelectorAll('[data-wap-pick]').forEach(el => {
-      el.addEventListener('click', () => {
-        wapSetOverride(el.dataset.wapSlot, el.dataset.wapPick);
-        wapCloseModal();
-      });
-    });
   }
+  // Wire pick clicks (scraped images + brand-only)
+  grid.querySelectorAll('[data-wap-pick]').forEach(el => {
+    el.addEventListener('click', () => {
+      wapSetOverride(el.dataset.wapSlot, el.dataset.wapPick);
+      wapCloseModal();
+    });
+  });
+  // Wire upload tile
+  grid.querySelectorAll('[data-wap-upload]').forEach(el => {
+    el.addEventListener('click', () => _wapTriggerUpload(el.dataset.wapSlot, el));
+  });
   modal.style.display = 'flex';
 }
+
+// Trigger the hidden file input, route the chosen file through the upload
+// endpoint, then hand the returned public URL to wapSetOverride. The tile
+// element is passed in so we can repaint it with progress/error states
+// without re-opening the modal.
+function _wapTriggerUpload(slotKey, tileEl) {
+  let inputEl = document.getElementById('wap-upload-input');
+  if (!inputEl) {
+    inputEl = document.createElement('input');
+    inputEl.type = 'file';
+    inputEl.id = 'wap-upload-input';
+    inputEl.accept = 'image/png,image/jpeg,image/webp,image/svg+xml,image/gif';
+    inputEl.style.display = 'none';
+    document.body.appendChild(inputEl);
+  }
+  // Reset value so picking the same file twice still triggers `change`.
+  inputEl.value = '';
+  // One-shot listener — replaced every click so closures don't pile up.
+  inputEl.onchange = async () => {
+    const file = inputEl.files && inputEl.files[0];
+    if (!file) return;
+    await _wapUploadFile(file, slotKey, tileEl);
+  };
+  inputEl.click();
+}
+
+async function _wapUploadFile(file, slotKey, tileEl) {
+  const ALLOWED = ['image/png','image/jpeg','image/webp','image/svg+xml','image/gif'];
+  if (!ALLOWED.includes(file.type)) {
+    _wapPaintTileState(tileEl, '✗ ' + (file.type || 'unknown type') + ' not supported', '#f87171');
+    return;
+  }
+  if (file.size > 10 * 1024 * 1024) {
+    _wapPaintTileState(tileEl, '✗ Too large (max 10MB)', '#f87171');
+    return;
+  }
+  const jobId = _getPortalJobId();
+  if (!jobId) {
+    _wapPaintTileState(tileEl, '✗ No job in URL', '#f87171');
+    return;
+  }
+  _wapPaintTileState(tileEl, '⏳ Uploading…', '#c4b5fd');
+  try {
+    const qs = new URLSearchParams({ slot: slotKey, filename: file.name || 'upload' });
+    const r = await fetch('/api/jobs/' + encodeURIComponent(jobId) + '/upload-asset?' + qs.toString(), {
+      method: 'POST',
+      headers: { 'Content-Type': file.type },
+      body: file
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || !d.ok || !d.url) throw new Error(d.error || ('HTTP ' + r.status));
+    _wapPaintTileState(tileEl, '✓ Uploaded — saving…', '#4ade80');
+    // Hand the new URL to the standard override flow. wapSetOverride re-renders
+    // the slide and calls _wapRenderSlots(), so the modal can close immediately.
+    await wapSetOverride(slotKey, d.url);
+    wapCloseModal();
+  } catch (e) {
+    console.warn('[wap-upload]', e.message);
+    _wapPaintTileState(tileEl, '✗ ' + (e.message || 'Upload failed'), '#f87171');
+  }
+}
+
+function _wapPaintTileState(tileEl, msg, color) {
+  if (!tileEl) return;
+  tileEl.innerHTML =
+    '<div style="height:80px;display:flex;align-items:center;justify-content:center;color:' + (color || '#c4b5fd') + ';font-size:11px;text-align:center;padding:8px;">' + msg + '</div>' +
+    '<div style="padding:5px 8px;font-size:10px;color:' + (color || '#c4b5fd') + ';line-height:1.3;font-weight:600;text-align:center;">Upload</div>';
+}
+
+// ── Brand color editing (rep-only, fires from the Brand Assets gallery) ─────
+// Opens a native color picker anchored at the row, debounces on input, and
+// persists the hex to extracted_data._overrides as webinar_primary_color /
+// _secondary_color / _accent_color. applyProspectBranding() picks these up
+// on the next re-render so the hero slide updates without a full reload.
+function _brandColorEdit(field, currentHex, anchorEl) {
+  if (!field) return;
+  // Reuse a singleton hidden picker so we don't accumulate DOM nodes when the
+  // rep clicks Edit many times in a row.
+  let picker = document.getElementById('brand-color-picker');
+  if (!picker) {
+    picker = document.createElement('input');
+    picker.type = 'color';
+    picker.id = 'brand-color-picker';
+    picker.style.cssText = 'position:fixed;top:-50px;left:-50px;width:1px;height:1px;opacity:0;pointer-events:none;';
+    document.body.appendChild(picker);
+  }
+  picker.value = /^#[0-9a-f]{6}$/i.test(currentHex || '') ? currentHex : '#22c55e';
+  // Save once on `change` (fires when picker closes), preview on `input`.
+  let lastPreview = null;
+  picker.oninput = () => {
+    lastPreview = picker.value;
+    _brandColorPreview(field, lastPreview);
+  };
+  picker.onchange = () => {
+    const finalHex = picker.value;
+    _brandColorSave(field, finalHex);
+  };
+  picker.click();
+}
+// Save: PATCH the override, mirror it into SESSION._overrides locally, and
+// re-render via the same hook the asset picker uses so the hero/accents
+// repaint immediately.
+async function _brandColorSave(field, hex) {
+  const jobId = _getPortalJobId();
+  if (!jobId) { console.warn('[brand-color] no job in URL'); return; }
+  const value = hex == null ? '' : String(hex).trim();
+  if (value && !/^#[0-9a-f]{6}$/i.test(value)) { console.warn('[brand-color] invalid hex:', value); return; }
+  try {
+    if (!window.SESSION.extracted) window.SESSION.extracted = {};
+    if (!window.SESSION.extracted._overrides) window.SESSION.extracted._overrides = {};
+    if (value === '') delete window.SESSION.extracted._overrides[field];
+    else window.SESSION.extracted._overrides[field] = value;
+  } catch(_) {}
+  try {
+    const body = {}; body[field] = value;
+    const r = await fetch('/api/jobs/' + encodeURIComponent(jobId) + '/overrides', {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+    });
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      throw new Error(e.error || ('HTTP ' + r.status));
+    }
+    // Re-render the slide with the new color (uses overrides via SESSION).
+    if (typeof window._reRunPersonalization === 'function' && typeof buildCompatSession === 'function') {
+      const freshRes = await fetch('/api/jobs/' + encodeURIComponent(jobId));
+      if (freshRes.ok) window._reRunPersonalization(buildCompatSession(await freshRes.json()));
+    }
+  } catch (e) {
+    console.warn('[brand-color] save failed:', e.message);
+  }
+}
+// Preview-only: paint the hero/accents while the picker is open without
+// hitting the server. Writes into SESSION._overrides directly so
+// applyProspectBranding picks it up via its standard override-first path.
+// If the rep cancels the picker (e.g. Escape) the value lingers in memory
+// until the next page load — acceptable because the DB still holds the
+// previous committed state and a reload resets SESSION from it.
+function _brandColorPreview(field, hex) {
+  try {
+    if (!window.SESSION.extracted) window.SESSION.extracted = {};
+    if (!window.SESSION.extracted._overrides) window.SESSION.extracted._overrides = {};
+    window.SESSION.extracted._overrides[field] = hex;
+    if (typeof applyProspectBranding === 'function') applyProspectBranding(window.SESSION?.brand || {});
+  } catch (e) { console.warn('[brand-color] preview failed:', e.message); }
+}
+
 function wapCloseModal() {
   const m = document.getElementById('wap-modal');
   if (m) m.style.display = 'none';

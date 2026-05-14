@@ -202,6 +202,57 @@ function htmlToMarkdown(html) {
   return md;
 }
 
+// Parse a stored Calendar Example body (rich-text HTML or markdown) into the
+// 12-field webinar_titles variant schema. The settings UI stores each example
+// as a single Title + Description blob; this recovers the structure at
+// prompt-build time so Claude sees demonstrations in the SAME shape it must
+// produce. Demonstrations dominate over instructions, so rendering examples
+// in the old shape (Title + Description blob) was teaching Claude to ignore
+// the 12-field schema. Returns null fields where the example doesn't carry
+// content for that slot (e.g. for_line — examples don't include one).
+function parseExampleDescription(rawDesc) {
+  if (!rawDesc) return null;
+  const md = /<[a-z][^>]*>/i.test(rawDesc) ? htmlToMarkdown(rawDesc) : String(rawDesc);
+  const paragraphs = md.split(/\n\s*\n/).map(p => p.trim()).filter(Boolean);
+  if (!paragraphs.length) return null;
+
+  const out = {
+    conditional_opener: null, proof_story: null, contrast_frame: null,
+    session_promise: null, rsvp_block: null, bullets: [],
+    reframe_line: null, urgency_close: null, ps_replay: null, for_line: null,
+  };
+
+  const bulletRe = /^[\u{1F4A5}\u{1F680}]/u;          // 💥 or 🚀 prefix
+  const dontApostrophe = /(don['’]t|do not)/i;
+  for (const para of paragraphs) {
+    if (bulletRe.test(para)) {
+      const lines = para.split(/\n/).map(l => l.trim()).filter(l => bulletRe.test(l));
+      out.bullets.push(...lines);
+      continue;
+    }
+    if (/^you['’]?ll discover how to:?\s*$/i.test(para)) continue;
+    if (/^P\.?\s*S\.?\b/i.test(para))                                 { out.ps_replay      = para; continue; }
+    if (/^Click\s*[""'"“”]?\s*YES/i.test(para))             { out.rsvp_block     = para; continue; }
+    if (/^Instead of\b/i.test(para))                                  { out.contrast_frame = para; continue; }
+    if (/^In this session\b/i.test(para))                             { out.session_promise= para; continue; }
+    if (/^Most\b/i.test(para) && dontApostrophe.test(para) && /\bhave\b/i.test(para)) { out.reframe_line = para; continue; }
+    // urgency_close anchor: must combine "aren't" with a comparative-winning
+    // verb (winning / growing fastest / leading). Without the winning-verb
+    // requirement, openers that start "The best X aren't losing to Y" (which
+    // is a contrast-style opener, not an urgency close) get misclassified.
+    if (/^The\b/i.test(para) && /aren['’]t\b/i.test(para) && /(winning|growing fastest|growing in 20|leading|on top)/i.test(para)) {
+      out.urgency_close = para; continue;
+    }
+    if (/^(Built for|Designed for|For\s+[A-Z])/.test(para))           { out.for_line       = para.replace(/^(Built for|Designed for|For\s+)/, '').trim(); continue; }
+    // Fallthrough: first two unclassified paragraphs are opener + proof story
+    if (!out.conditional_opener) { out.conditional_opener = para; continue; }
+    if (!out.proof_story)        { out.proof_story        = para; continue; }
+    // Extra paragraphs we can't classify are ignored — better to teach a clean
+    // subset than dilute the example with unlabelled prose.
+  }
+  return out;
+}
+
 async function loadCopyBrain() {
   try {
     const [pr, cr, er] = await Promise.all([
@@ -223,17 +274,39 @@ async function loadCopyBrain() {
           '- The reader of the calendar invite is the prospect\'s CUSTOMER, not the prospect. Never frame the attendee as a sales target or describe their business model as if pitching them.',
           '- Anchor every claim and number to the brief. If unsupported, return null rather than fabricating.'
         ].join('\n');
-    // Render Calendar Examples as numbered sections with explicit Title/Description
-    // so Claude sees the same shape it must produce: a calendar title + description.
-    // Description is converted from HTML (WYSIWYG editor output) to clean markdown.
-    const examplesBlock = examples.length
-      ? examples.map((ex, i) => {
-          const title = ex.title || ex.label || '(untitled)';
-          const descRaw = ex.description || ex.content || '';
-          const desc = /<[a-z][^>]*>/i.test(descRaw) ? htmlToMarkdown(descRaw) : descRaw;
-          return `### Calendar Example ${i + 1}\n**Title:** ${title}\n\n**Description:**\n${desc}`;
-        }).join('\n\n---\n\n')
-      : '(none loaded)';
+    // Render each example as a JSON object matching the 12-field variant
+    // schema Claude must produce. Demonstrations dominate over instructions,
+    // so showing examples in the legacy Title+Description blob shape was the
+    // single biggest signal teaching the model to emit `{hook, description,
+    // for_line}` instead of the 12-field shape. Unparseable examples are
+    // skipped (with a warn) rather than falling through to the legacy
+    // rendering — better N−1 clean demonstrations than one dirty one.
+    const renderedExamples = examples.map((ex, i) => {
+      const title = ex.title || ex.label || '(untitled)';
+      const parsed = parseExampleDescription(ex.description || ex.content || '');
+      if (!parsed || !parsed.conditional_opener || !parsed.bullets || parsed.bullets.length < 3) {
+        console.warn(`[copy-brain] example ${i+1} "${title}" failed to parse into 12-field shape (opener=${!!(parsed && parsed.conditional_opener)}, bullets=${parsed?.bullets?.length || 0}) — skipped`);
+        return null;
+      }
+      // Build the demonstration object in the same key order as the system
+      // prompt's Output Format. Drop nulls so the model doesn't learn that
+      // `null` is acceptable for any field that's actually mandatory.
+      const shown = { title };
+      ['conditional_opener','proof_story','contrast_frame','session_promise','rsvp_block'].forEach(f => {
+        if (parsed[f]) shown[f] = parsed[f];
+      });
+      if (parsed.bullets.length) shown.bullets = parsed.bullets;
+      ['reframe_line','urgency_close','ps_replay','for_line'].forEach(f => {
+        if (parsed[f]) shown[f] = parsed[f];
+      });
+      const note = parsed.for_line
+        ? ''
+        : '\n*(This example omits `for_line`, `variant`, `style`, and `_score` for brevity — they are still REQUIRED per the Output Format above.)*\n';
+      return `### Calendar Example ${i + 1}${note}\n\`\`\`json\n${JSON.stringify(shown, null, 2)}\n\`\`\``;
+    }).filter(Boolean);
+    const examplesBlock = renderedExamples.length
+      ? renderedExamples.join('\n\n---\n\n')
+      : '(no parseable examples loaded — review `copy_brain_examples` rows; each must contain 💥 bullets, an "Instead of …" line, an "In this session…" line, and a "P.S." line)';
     return {
       business_context_block: (config.business_context && config.business_context.trim())
         ? config.business_context
@@ -546,6 +619,28 @@ async function parseBody(req) {
     let data = '';
     req.on('data', chunk => data += chunk);
     req.on('end', () => { try { resolve(JSON.parse(data || '{}')); } catch(e) { resolve({}); } });
+    req.on('error', reject);
+  });
+}
+// Binary-safe body reader. Streams chunks into a Buffer and rejects once the
+// running total crosses maxBytes — protects against huge uploads slipping past
+// reverse-proxy limits. Used by the rep asset-upload endpoint.
+async function parseBinaryBody(req, maxBytes = 10 * 1024 * 1024) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let total = 0;
+    let aborted = false;
+    req.on('data', chunk => {
+      if (aborted) return;
+      total += chunk.length;
+      if (total > maxBytes) {
+        aborted = true;
+        req.destroy();
+        return reject(new Error(`Request body exceeded ${maxBytes} bytes`));
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', () => { if (!aborted) resolve(Buffer.concat(chunks)); });
     req.on('error', reject);
   });
 }
@@ -2604,6 +2699,34 @@ async function generateWebinarTitles(extracted, companyName, job = null, customI
       throw new Error('webinar_titles: response missing required "variants" array (got keys: ' + Object.keys(parsed).slice(0, 6).join(', ') + ')');
     }
   }
+  // Per-variant shape guard — fails the task immediately if Claude returns the
+  // legacy 4-field schema (`{title, hook, description, for_line}`) instead of
+  // the 12-field schema in specs/webinar_titles.md §5. No retry: a silent
+  // retry would mask the regression. A thrown error surfaces on the Render
+  // dashboard and in `tasks.error_message` the moment it happens, so the
+  // root cause (usually a regression in the examples_block teaching the wrong
+  // shape) gets fixed instead of hidden.
+  const REQUIRED_VARIANT_FIELDS = ['title', 'conditional_opener', 'rsvp_block', 'bullets', 'for_line'];
+  parsed.variants.forEach((v, i) => {
+    if (!v || typeof v !== 'object') {
+      throw new Error(`webinar_titles: variant ${i} is not an object`);
+    }
+    const missing = REQUIRED_VARIANT_FIELDS.filter(f => v[f] == null);
+    const looksLegacy = typeof v.description === 'string' && v.description.trim().length > 0;
+    if (missing.length || looksLegacy) {
+      throw new Error(
+        `webinar_titles: variant ${i} returned in legacy/incomplete shape ` +
+        `(missing: ${missing.join(',') || 'none'}; legacy_description: ${looksLegacy}). ` +
+        `Re-check loadCopyBrain.examplesBlock — model is being taught the wrong shape.`
+      );
+    }
+    if (!Array.isArray(v.bullets) || v.bullets.length < 3) {
+      throw new Error(
+        `webinar_titles: variant ${i} bullets must be an array of 4-5 strings ` +
+        `(got: ${Array.isArray(v.bullets) ? 'array length ' + v.bullets.length : typeof v.bullets})`
+      );
+    }
+  });
   // Validate _recommended_index. The prompt asks Claude to compute it from the
   // highest _score.total. If it's missing or out of range we fall back: pick
   // the variant with the highest score.total ourselves, defaulting to 0.
@@ -3418,7 +3541,10 @@ async function handleCalendarVisual(task, job) {
               || webinarTitlesTask.output_data?.calendar_blockers
               || webinarTitlesTask.output_data?.titles
               || [];
-  const variant = titles[0];
+  const recIdx = Number.isInteger(webinarTitlesTask.output_data?._recommended_index)
+    ? webinarTitlesTask.output_data._recommended_index
+    : 0;
+  const variant = titles[recIdx] || titles[0];
   if (!variant) throw new Error('calendar_visual: no title variant found');
 
   const extracted = job.extracted_data || {};
@@ -3445,16 +3571,31 @@ async function handleCalendarVisual(task, job) {
   if (!CALENDAR_VISUAL_TEMPLATE) CALENDAR_VISUAL_TEMPLATE = ensureTemplate('calendar_visual.html');
   if (!CALENDAR_VISUAL_TEMPLATE) throw new Error('calendar_visual.html template not loaded');
 
-  const description = variant.description || [
-    variant.hook || '',
-    ...(variant.bullets || []).map(b => `• ${b}`),
-    variant.for_line ? `\nFor: ${variant.for_line}` : ''
-  ].filter(Boolean).join('\n');
+  // Compose description from the 12-field variant in the same order as the
+  // portal renderer (`buildGeneratedDesc` in mockup-portal.html): opener →
+  // proof story → contrast frame → session promise → RSVP → bullets → reframe
+  // → urgency close → P.S. → For: line. The legacy `variant.description ‖
+  // variant.hook+bullets+for_line` fallback was deleted along with the old
+  // 4-field schema — any variant reaching here must have the 12-field shape
+  // (enforced by the per-variant guard in generateWebinarTitles).
+  const bullets = Array.isArray(variant.bullets) ? variant.bullets : [];
+  const description = [
+    variant.conditional_opener,
+    variant.proof_story,
+    variant.contrast_frame,
+    variant.session_promise,
+    variant.rsvp_block,
+    bullets.join('\n'),
+    variant.reframe_line,
+    variant.urgency_close,
+    variant.ps_replay,
+    variant.for_line ? `For: ${variant.for_line}` : null,
+  ].filter(Boolean).join('\n\n');
 
   const htmlContent = interpolate(CALENDAR_VISUAL_TEMPLATE, {
     EVENT_TITLE:       (variant.title || '').replace(/</g, '&lt;').replace(/>/g, '&gt;'),
     EVENT_DATE:        dateStr,
-    EVENT_DESCRIPTION: (description || '').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>'),
+    EVENT_DESCRIPTION: description.replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>'),
     HOST_NAME:         (hostName || '').replace(/</g, '&lt;'),
     HOST_BIO:          (hostBio  || '').replace(/</g, '&lt;').replace(/>/g, '&gt;'),
     EMAILS_JSON:       JSON.stringify(emails)
@@ -3463,16 +3604,15 @@ async function handleCalendarVisual(task, job) {
   const storagePath = `${job.id}/calendar_visual.html`;
   const publicUrl   = await storageUpload(storagePath, htmlContent);
   console.log(`[calendar_visual] Uploaded: ${publicUrl}`);
-  // Store full generated data in output_data so portal can read it directly
+  // Portal reads `emails` (for reminder copy) and `title`; everything else in
+  // the calendar invite UI is rendered from webinar_titles directly. Legacy
+  // `hook`/`bullets`/`for_line` keys removed with the 4-field schema cleanup.
   return {
     url:        publicUrl,
     title:      variant.title,
     host_name:  hostName,
     event_date: dateStr,
-    emails:     emails,          // ← portal reads this for reminder email copy
-    hook:       variant.hook || '',
-    bullets:    variant.bullets || [],
-    for_line:   variant.for_line || ''
+    emails:     emails,
   };
 }
 
@@ -4597,6 +4737,64 @@ const server = http.createServer(async (req, res) => {
   //   roi_close_rate, webinar_logo_url, webinar_hero_image_url, webinar_headshot_url
   //   (the three webinar_* fields let the rep cherry-pick which scraped image goes
   //    in each visual slot of the webinar slide / mock).
+  // ── POST /api/jobs/:id/upload-asset — rep uploads their own image ─────────
+  // Rep-only flow from the Webinar Experience asset picker. Body is the raw
+  // image binary (frontend sends a File object directly via fetch, no
+  // multipart). Query params:
+  //   ?slot=webinar_logo_url|webinar_hero_image_url|webinar_headshot_url
+  //          (label only — used in the storage filename, doesn't gate
+  //           anything; the rep wires the returned URL to whichever slot
+  //           via the existing PATCH /overrides flow)
+  //   ?filename=foo.png  (optional, used to derive the storage filename)
+  // Headers: Content-Type must be one of the image/* whitelist below.
+  // Returns: { ok, url, type, size, path }. The returned `url` is what the
+  // frontend hands to wapSetOverride() so the rep edit lands as a normal
+  // override — no special-casing for uploads anywhere downstream.
+  if (req.method === 'POST' && /^\/api\/jobs\/[^/]+\/upload-asset$/.test(urlPath)) {
+    setCors(res);
+    const jobId = urlPath.split('/')[3];
+    try {
+      const job = await getJob(jobId);
+      if (!job) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Job not found' })); return;
+      }
+      const rawType = String(req.headers['content-type'] || '').toLowerCase().split(';')[0].trim();
+      const ALLOWED_IMG = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'image/svg+xml', 'image/gif'];
+      if (!ALLOWED_IMG.includes(rawType)) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: `Content-Type "${rawType}" not supported. Allowed: ${ALLOWED_IMG.join(', ')}` })); return;
+      }
+      let buf;
+      try {
+        buf = await parseBinaryBody(req, 10 * 1024 * 1024);
+      } catch (e) {
+        res.writeHead(413, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: e.message || 'Upload too large (max 10MB)' })); return;
+      }
+      if (!buf || buf.length === 0) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Empty request body' })); return;
+      }
+      const qs = new URLSearchParams(req.url.split('?')[1] || '');
+      const slot = (qs.get('slot') || 'asset').toLowerCase().replace(/[^a-z0-9_]/g, '').slice(0, 40) || 'asset';
+      const rawName = qs.get('filename') || 'upload';
+      const safeName = String(rawName).replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 60).replace(/\.[a-z0-9]+$/i, '');
+      const extMap = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/jpg': 'jpg', 'image/webp': 'webp', 'image/svg+xml': 'svg', 'image/gif': 'gif' };
+      const ext = extMap[rawType] || 'bin';
+      const storagePath = `${jobId}/uploads/${Date.now()}-${slot}-${safeName}.${ext}`;
+      const publicUrl   = await storageUpload(storagePath, buf, rawType);
+      console.log(`[POST /api/jobs/${jobId}/upload-asset] ${rawType} (${buf.length}B) slot=${slot} → ${publicUrl}`);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, url: publicUrl, type: rawType, size: buf.length, path: storagePath }));
+    } catch (e) {
+      console.error('[POST /api/jobs/upload-asset]', e.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
   if (req.method === 'PATCH' && urlPath.startsWith('/api/jobs/') && urlPath.endsWith('/overrides')) {
     setCors(res);
     const jobId = urlPath.slice('/api/jobs/'.length, -'/overrides'.length);
@@ -4610,6 +4808,11 @@ const server = http.createServer(async (req, res) => {
         // to the AI-generated copy).
         'webinar_title_0','webinar_title_1','webinar_title_2',
         'webinar_desc_0','webinar_desc_1','webinar_desc_2',
+        // Brand colors — rep can override the scraped values from the Brand
+        // Assets gallery. Affect the hero gradient, accents, and (in slides
+        // that pull from CSS vars) anything tied to --prospect-primary etc.
+        // Empty string clears the override.
+        'webinar_primary_color','webinar_secondary_color','webinar_accent_color',
       ];
       const safeOverrides = {};
       for (const k of ALLOWED) {
