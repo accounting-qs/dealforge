@@ -1080,6 +1080,17 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
       <!-- Colors -->
       <div class="brand-colors-block">
         <div style="font-size:10px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#52525b;margin-bottom:10px;">Colors</div>
+        <!-- Rep-only: edit the prospect website and re-scrape primary/secondary/
+             accent. Wired by _initBrandRescan(). Pre-filled from job.prospect_website. -->
+        <div id="brand-rescan-row" class="rep-only" style="display:none;margin-bottom:10px;gap:6px;align-items:center;">
+          <input id="brand-rescan-url" type="text" placeholder="prospect-website.com"
+                 style="flex:1;min-width:0;background:#0a0a0a;border:1px solid rgba(196,181,253,0.25);border-radius:4px;color:#e4e4e7;font-size:11px;font-family:inherit;padding:4px 8px;">
+          <button id="brand-rescan-btn" type="button"
+                  style="background:rgba(196,181,253,0.12);border:1px solid rgba(196,181,253,0.35);border-radius:4px;color:#c4b5fd;font-size:10px;font-weight:600;padding:4px 10px;cursor:pointer;font-family:inherit;white-space:nowrap;">
+            ↻ Fetch colors
+          </button>
+          <span id="brand-rescan-status" style="font-size:10px;color:#71717a;margin-left:4px;"></span>
+        </div>
         <div id="brand-colors-list"></div>
         <div style="font-size:10px;color:#3f3f46;margin-top:6px;">Click any swatch or hex to copy</div>
       </div>
@@ -2951,6 +2962,10 @@ function populateBrandGallery(session) {
     if (domainEl) domainEl.textContent = domainLabel;
   }
 
+  // Rep-only rescan row needs to render even when brand_scrape failed (so the
+  // rep can fix the website and try again). Wire it before the early return.
+  _initBrandRescan(session);
+
   if (!brand || !brand.scraped) return;
 
   // Logo
@@ -4495,14 +4510,25 @@ function _wapPaintTileState(tileEl, msg, color) {
 function _brandColorEdit(field, currentHex, anchorEl) {
   if (!field) return;
   // Reuse a singleton hidden picker so we don't accumulate DOM nodes when the
-  // rep clicks Edit many times in a row.
+  // rep clicks Edit many times in a row. Position it at the anchor so the
+  // browser's native popup appears next to the row instead of jumping to the
+  // top-left of the viewport (which is where it lands if the input is parked
+  // off-screen).
   let picker = document.getElementById('brand-color-picker');
   if (!picker) {
     picker = document.createElement('input');
     picker.type = 'color';
     picker.id = 'brand-color-picker';
-    picker.style.cssText = 'position:fixed;top:-50px;left:-50px;width:1px;height:1px;opacity:0;pointer-events:none;';
+    picker.style.cssText = 'position:fixed;width:1px;height:1px;opacity:0;pointer-events:none;border:0;padding:0;margin:0;';
     document.body.appendChild(picker);
+  }
+  if (anchorEl && typeof anchorEl.getBoundingClientRect === 'function') {
+    const r = anchorEl.getBoundingClientRect();
+    picker.style.left = Math.round(r.right + 4) + 'px';
+    picker.style.top  = Math.round(r.top) + 'px';
+  } else {
+    picker.style.left = '20px';
+    picker.style.top  = '20px';
   }
   picker.value = /^#[0-9a-f]{6}$/i.test(currentHex || '') ? currentHex : '#22c55e';
   // Save once on `change` (fires when picker closes), preview on `input`.
@@ -4562,6 +4588,72 @@ function _brandColorPreview(field, hex) {
     window.SESSION.extracted._overrides[field] = hex;
     if (typeof applyProspectBranding === 'function') applyProspectBranding(window.SESSION?.brand || {});
   } catch (e) { console.warn('[brand-color] preview failed:', e.message); }
+}
+
+// ── Brand color rescan (rep-only) ───────────────────────────────────────────
+// Takes the URL from the input next to the color rows, calls
+// POST /api/jobs/:id/rescan-brand-colors, then refreshes SESSION from the job
+// so the pickers show the freshly-scraped values. Endpoint also wipes any
+// existing webinar_*_color overrides server-side so the new scrape shows
+// through; rep can still click Edit on any row afterwards.
+function _initBrandRescan(session) {
+  const row    = document.getElementById('brand-rescan-row');
+  const input  = document.getElementById('brand-rescan-url');
+  const btn    = document.getElementById('brand-rescan-btn');
+  if (!row || !input || !btn) return;
+  const isEdit = new URLSearchParams(window.location.search).get('edit') === 'true';
+  if (!isEdit) { row.style.display = 'none'; return; }
+  row.style.display = 'flex';
+  // Prefer the live job's prospect_website (kept on SESSION.domain by
+  // buildCompatSession) over the scraped domain — they're usually the same
+  // but the job column is the source of truth for what the server will scrape.
+  const current = (session && (session.prospect_website || session.domain)) || (session?.brand?.domain) || '';
+  if (current && !input.value) input.value = current;
+  if (btn.dataset.wired === '1') return;
+  btn.dataset.wired = '1';
+  btn.addEventListener('click', () => _brandRescanRun());
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); _brandRescanRun(); } });
+}
+async function _brandRescanRun() {
+  const jobId  = _getPortalJobId();
+  const input  = document.getElementById('brand-rescan-url');
+  const btn    = document.getElementById('brand-rescan-btn');
+  const status = document.getElementById('brand-rescan-status');
+  if (!jobId || !input || !btn) return;
+  const website = (input.value || '').trim();
+  if (!website) { if (status) { status.textContent = 'Enter a website first'; status.style.color = '#f87171'; } return; }
+  btn.disabled = true;
+  const originalLabel = btn.textContent;
+  btn.textContent = 'Fetching…';
+  if (status) { status.textContent = ''; status.style.color = '#71717a'; }
+  try {
+    const r = await fetch('/api/jobs/' + encodeURIComponent(jobId) + '/rescan-brand-colors', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ website })
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.error || ('HTTP ' + r.status));
+    const bd = data.brand_data || {};
+    const found = [bd.primary_color, bd.secondary_color, bd.accent_color].filter(Boolean).length;
+    if (status) { status.textContent = found ? ('✓ ' + found + ' color' + (found === 1 ? '' : 's') + ' found') : '⚠ No colors found'; status.style.color = found ? '#4ade80' : '#fbbf24'; }
+    // Refresh SESSION from the job so populateBrandGallery + applyProspectBranding
+    // pick up the new brand_data and the cleared overrides. Same pattern as
+    // _brandColorSave.
+    if (typeof window._reRunPersonalization === 'function' && typeof buildCompatSession === 'function') {
+      const freshRes = await fetch('/api/jobs/' + encodeURIComponent(jobId));
+      if (freshRes.ok) {
+        const fresh = await freshRes.json();
+        window._reRunPersonalization(buildCompatSession(fresh));
+        // Re-populate the gallery rows with the new colors.
+        if (typeof populateBrandGallery === 'function') populateBrandGallery(buildCompatSession(fresh));
+      }
+    }
+  } catch(e) {
+    if (status) { status.textContent = '✗ ' + e.message; status.style.color = '#f87171'; }
+    console.warn('[brand-rescan] failed:', e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalLabel;
+  }
 }
 
 function wapCloseModal() {

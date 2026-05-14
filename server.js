@@ -4670,6 +4670,67 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // ── POST /api/jobs/:id/rescan-brand-colors — ad-hoc re-run of the brand scrape
+  // for the Webinar Experience tab. Lets the rep tweak prospect_website + pull
+  // fresh primary/secondary/accent colors without resetting any other task or
+  // touching the AI-generated webinar copy. Body `{ website? }` is optional —
+  // if provided and different from the saved value, prospect_website is
+  // updated first (same normalisation as /prospect-info). After scrape we drop
+  // any existing webinar_*_color overrides so the freshly-scraped colors are
+  // what the pickers display by default; the rep can still edit them after.
+  if (req.method === 'POST' && urlPath.match(/^\/api\/jobs\/[^/]+\/rescan-brand-colors$/)) {
+    setCors(res);
+    const jobId = urlPath.split('/')[3];
+    try {
+      const body = await parseBody(req).catch(() => ({}));
+      let job = await getJob(jobId);
+      if (!job) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Job not found' })); return;
+      }
+      // Optional website override from the rep — normalize the same way
+      // /prospect-info does (strip protocol, lowercase domain).
+      if (typeof body.website === 'string') {
+        const normalized = body.website.trim().replace(/^https?:\/\//, '').split('/')[0].toLowerCase() || null;
+        if (normalized !== job.prospect_website) {
+          await supabaseRequest('PATCH', `/rest/v1/jobs?id=eq.${jobId}`, {
+            prospect_website: normalized,
+            updated_at:       new Date().toISOString()
+          });
+          job = { ...job, prospect_website: normalized };
+        }
+      }
+      if (!job.prospect_website) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'No prospect_website set on job — pass { website } in body or fill it via /prospect-info first.' }));
+        return;
+      }
+      // Run the scrape — handleBrandScrape persists to jobs.brand_data itself.
+      const brandData = await handleBrandScrape(null, job);
+      // Drop any existing webinar_*_color overrides so the new scrape shows
+      // through in the pickers. The rep can still adjust afterwards.
+      const existingData      = job.extracted_data || {};
+      const existingOverrides = existingData._overrides || {};
+      const clearedOverrides  = { ...existingOverrides };
+      delete clearedOverrides.webinar_primary_color;
+      delete clearedOverrides.webinar_secondary_color;
+      delete clearedOverrides.webinar_accent_color;
+      clearedOverrides._updated_at = new Date().toISOString();
+      await supabaseRequest('PATCH', `/rest/v1/jobs?id=eq.${jobId}`,
+        { extracted_data: { ...existingData, _overrides: clearedOverrides }, updated_at: new Date().toISOString() },
+        { 'Prefer': 'return=minimal' }
+      );
+      console.log(`[POST /api/jobs/${jobId}/rescan-brand-colors] website=${job.prospect_website} primary=${brandData.primary_color||'none'} secondary=${brandData.secondary_color||'none'} accent=${brandData.accent_color||'none'}`);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, brand_data: brandData, prospect_website: job.prospect_website }));
+    } catch(e) {
+      console.error('[POST /api/jobs/:id/rescan-brand-colors]', e.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
   // ── GET /api/jobs/:id/assets/:asset — proxy the stored HTML with correct MIME
   // type. Supabase Storage forces Content-Type: text/plain + X-Content-Type-Options:
   // nosniff on every file in this public bucket (stored-XSS prevention), which makes
