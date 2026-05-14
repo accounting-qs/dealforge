@@ -4784,9 +4784,38 @@ const server = http.createServer(async (req, res) => {
       const ext = extMap[rawType] || 'bin';
       const storagePath = `${jobId}/uploads/${Date.now()}-${slot}-${safeName}.${ext}`;
       const publicUrl   = await storageUpload(storagePath, buf, rawType);
-      console.log(`[POST /api/jobs/${jobId}/upload-asset] ${rawType} (${buf.length}B) slot=${slot} → ${publicUrl}`);
+      // Persist the upload to extracted_data._uploads so the asset picker can
+      // surface it as a candidate on subsequent modal opens. Without this the
+      // file lives in Storage and gets used as the current override, but
+      // there's no record of it for cross-slot reuse or "pick from your
+      // uploads" browsing. Dedupe by URL.
+      const uploadRecord = {
+        url:         publicUrl,
+        filename:    rawName,
+        slot,
+        type:        rawType,
+        size:        buf.length,
+        path:        storagePath,
+        uploaded_at: new Date().toISOString()
+      };
+      let uploadsList = [];
+      try {
+        const existingData    = job.extracted_data || {};
+        const existingUploads = Array.isArray(existingData._uploads) ? existingData._uploads : [];
+        uploadsList = existingUploads.filter(u => u && u.url !== publicUrl).concat([uploadRecord]);
+        const updatedData = { ...existingData, _uploads: uploadsList };
+        const pr = await supabaseRequest('PATCH', `/rest/v1/jobs?id=eq.${jobId}`,
+          { extracted_data: updatedData, updated_at: new Date().toISOString() },
+          { 'Prefer': 'return=minimal' });
+        if (pr.status >= 400) {
+          console.warn(`[POST /api/jobs/${jobId}/upload-asset] _uploads PATCH ${pr.status} — file uploaded but list not persisted: ${JSON.stringify(pr.body).slice(0,200)}`);
+        }
+      } catch (e) {
+        console.warn(`[POST /api/jobs/${jobId}/upload-asset] _uploads append failed: ${e.message} — file uploaded but list not persisted`);
+      }
+      console.log(`[POST /api/jobs/${jobId}/upload-asset] ${rawType} (${buf.length}B) slot=${slot} → ${publicUrl} (uploads count: ${uploadsList.length})`);
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, url: publicUrl, type: rawType, size: buf.length, path: storagePath }));
+      res.end(JSON.stringify({ ok: true, url: publicUrl, type: rawType, size: buf.length, path: storagePath, upload: uploadRecord, uploads: uploadsList }));
     } catch (e) {
       console.error('[POST /api/jobs/upload-asset]', e.message);
       res.writeHead(500, { 'Content-Type': 'application/json' });

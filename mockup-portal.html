@@ -4217,8 +4217,11 @@ function _wapGetOverrides() {
   try { return (window.SESSION?.extracted?._overrides) || {}; } catch(_) { return {}; }
 }
 function _wapGetCandidateImages() {
-  // Pool of images the rep can choose from. Order: brand_data.images[],
-  // brand favicon, brand logo, LinkedIn headshot (when available).
+  // Pool of images the rep can choose from. Order: rep uploads first (most
+  // recently relevant), then scraped brand images, brand favicon/logo, and
+  // LinkedIn headshot last. Uploads come from extracted_data._uploads —
+  // populated by POST /api/jobs/:id/upload-asset, persisted on the job so
+  // they survive page reloads and cross-slot reuse works.
   const out = [];
   const seen = new Set();
   const push = (url, label, kind) => {
@@ -4228,6 +4231,25 @@ function _wapGetCandidateImages() {
   };
   const brand = window.SESSION?.brand || {};
   const research = window.SESSION?.research?.host || {};
+  const uploads = Array.isArray(window.SESSION?.extracted?._uploads) ? window.SESSION.extracted._uploads : [];
+  // Newest uploads first so reps see what they just dropped in.
+  [...uploads].reverse().forEach(u => {
+    if (!u || !u.url) return;
+    const slotHint = u.slot ? ` (${u.slot.replace(/^webinar_/, '').replace(/_url$/, '').replace('_', ' ')})` : '';
+    push(u.url, `📤 Your upload: ${u.filename || 'image'}${slotHint}`, 'upload');
+  });
+  // Back-fill: any existing override URL that points to our Supabase Storage
+  // /uploads/ path is implicitly a prior upload (made before _uploads list
+  // existed). Surface those too so reps can re-pick them across slots without
+  // re-uploading the same file.
+  const ov = window.SESSION?.extracted?._overrides || {};
+  ['webinar_logo_url','webinar_hero_image_url','webinar_headshot_url'].forEach(k => {
+    const u = ov[k];
+    if (typeof u === 'string' && /\/uploads\//.test(u) && !seen.has(u)) {
+      const slotLabel = k.replace(/^webinar_/, '').replace(/_url$/, '').replace('_', ' ');
+      push(u, `📤 Prior upload (${slotLabel})`, 'upload');
+    }
+  });
   (brand.images || []).forEach((img, i) => push(img.url, img.alt || `Image ${i+1}`, img.type || 'general'));
   push(brand.logo_url, 'Logo (auto-detected)', 'logo');
   push(brand.favicon_url, 'Favicon (256px)', 'favicon');
@@ -4408,6 +4430,18 @@ async function _wapUploadFile(file, slotKey, tileEl) {
     const d = await r.json().catch(() => ({}));
     if (!r.ok || !d.ok || !d.url) throw new Error(d.error || ('HTTP ' + r.status));
     _wapPaintTileState(tileEl, '✓ Uploaded — saving…', '#4ade80');
+    // Mirror the upload list locally so the next time the rep opens the picker
+    // the new upload appears as a "Your upload" candidate without waiting for
+    // a page reload. Backend returns the authoritative list; we trust it.
+    try {
+      if (!window.SESSION.extracted) window.SESSION.extracted = {};
+      if (Array.isArray(d.uploads)) {
+        window.SESSION.extracted._uploads = d.uploads;
+      } else if (d.upload) {
+        const existing = Array.isArray(window.SESSION.extracted._uploads) ? window.SESSION.extracted._uploads : [];
+        window.SESSION.extracted._uploads = existing.filter(u => u && u.url !== d.upload.url).concat([d.upload]);
+      }
+    } catch (_) {}
     // Hand the new URL to the standard override flow. wapSetOverride re-renders
     // the slide and calls _wapRenderSlots(), so the modal can close immediately.
     await wapSetOverride(slotKey, d.url);
