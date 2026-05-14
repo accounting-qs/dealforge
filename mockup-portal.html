@@ -56,10 +56,11 @@ body { background: #0d0d12; font-family: -apple-system, BlinkMacSystemFont, 'Int
 .tam-cycle-badge { display: flex; align-items: center; gap: 10px; background: rgba(52,211,153,0.07); border: 1px solid rgba(52,211,153,0.18); border-radius: 12px; padding: 12px 18px; flex-shrink: 0; max-width: 340px; }
 .tam-cycle-dot { width: 7px; height: 7px; background: #34d399; border-radius: 50%; flex-shrink: 0; margin-top: 2px; }
 .tam-cycle-text { font-size: 13px; color: #34d399; font-weight: 500; line-height: 1.5; }
-.tam-filters-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 16px; }
-.filter-group-label { font-size: 10px; font-weight: 600; letter-spacing: 0.07em; text-transform: uppercase; color: #3f3f46; margin-right: 2px; }
+.tam-filters-row { display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px; }
+.filter-row { display: flex; align-items: flex-start; gap: 14px; min-height: 24px; }
+.filter-group-label { font-size: 10px; font-weight: 600; letter-spacing: 0.07em; text-transform: uppercase; color: #3f3f46; flex-shrink: 0; width: 140px; padding-top: 6px; line-height: 1.2; }
+.filter-group-chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; flex: 1; min-width: 0; }
 .filter-tag { font-size: 11px; font-weight: 500; color: #a1a1aa; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.07); border-radius: 6px; padding: 3px 9px; }
-.filter-sep { color: #3f3f46; font-size: 12px; }
 
 /* Prospect-mode visibility gate — hide rep-only UI when not in edit mode.
    The head-script sets `data-mode="prospect"` on <html> before <body> is even
@@ -4172,71 +4173,63 @@ function renderFilterTags() {
     if (!editMode) return '';
     return '<input class="filter-add-input" style="display:inline-block" placeholder="+ ' + placeholder + '" onkeydown="if(event.key===\'Enter\'){addFilter(\'' + group + '\',this.value);this.value=\'\'}">';
   }
+  function makeRow(label, chipsHtml) {
+    if (!chipsHtml) return '';
+    return '<div class="filter-row"><span class="filter-group-label">' + label + '</span>'
+      + '<div class="filter-group-chips">' + chipsHtml + '</div></div>';
+  }
 
   var html = '';
+
   // Titles
+  var titlesChips = '';
   if (d.apollo_titles && d.apollo_titles.length) {
-    html += '<span class="filter-group-label">Titles</span>';
-    html += d.apollo_titles.map(function(v){ return makeTag(v, 'apollo_titles'); }).join('');
-    html += makeAddInput('apollo_titles', 'Add title…');
-    html += '<span class="filter-sep">&middot;</span>';
-  } else if (editMode) {
-    html += '<span class="filter-group-label">Titles</span>';
-    html += makeAddInput('apollo_titles', 'Add title…');
-    html += '<span class="filter-sep">&middot;</span>';
+    titlesChips += d.apollo_titles.map(function(v){ return makeTag(v, 'apollo_titles'); }).join('');
   }
-  // Company Size
-  if (d.company_size) {
-    html += '<span class="filter-group-label">Company Size</span>';
-    html += '<span class="filter-tag">' + escHtml(d.company_size) + '</span>';
-    html += '<span class="filter-sep">&middot;</span>';
-  }
-  // Employee Ranges
+  titlesChips += makeAddInput('apollo_titles', 'Add title…');
+  html += makeRow('Titles', titlesChips);
+
+  // Employee Ranges — this is the actual size filter sent to Apollo as
+  // organization_num_employees_ranges. The prose `company_size` field is
+  // intentionally not rendered here: it is display-only and never reaches
+  // the Apollo payload (see server.js ICP_FIELDS).
+  var empChips = '';
   if (d.apollo_employee_ranges && d.apollo_employee_ranges.length) {
-    html += '<span class="filter-group-label">Employee Ranges</span>';
-    html += d.apollo_employee_ranges.map(function(v){ return makeTag(v, 'apollo_employee_ranges'); }).join('');
-    html += makeAddInput('apollo_employee_ranges', 'e.g. 11,50');
-    html += '<span class="filter-sep">&middot;</span>';
+    empChips += d.apollo_employee_ranges.map(function(v){ return makeTag(v, 'apollo_employee_ranges'); }).join('');
   }
-  // Industry keyword — single free-text phrase (e.g. "property management").
-  // Renders as one chip in display mode; in edit mode the chip × clears the field
-  // and an input replaces the value (typing Enter saves).
+  empChips += makeAddInput('apollo_employee_ranges', 'e.g. 11,50');
+  html += makeRow('Employee Ranges', empChips);
+
+  // Industry keyword — single free-text phrase. × clears the value; in edit
+  // mode an input replaces or sets the value (Enter saves).
+  var indChips = '';
   if (d.apollo_keyword && String(d.apollo_keyword).trim()) {
-    html += '<span class="filter-group-label">Industry</span>';
-    html += makeTag(d.apollo_keyword, 'apollo_keyword');
+    indChips += makeTag(d.apollo_keyword, 'apollo_keyword');
     if (editMode) {
-      html += '<input class="filter-add-input" style="display:inline-block" placeholder="Replace…" '
+      indChips += '<input class="filter-add-input" style="display:inline-block" placeholder="Replace…" '
         + 'onkeydown="if(event.key===\'Enter\'){setKeyword(this.value);this.value=\'\'}">';
     }
-    html += '<span class="filter-sep">&middot;</span>';
   } else if (editMode) {
-    html += '<span class="filter-group-label">Industry</span>';
-    html += '<input class="filter-add-input" style="display:inline-block" placeholder="+ e.g. property management" '
+    indChips += '<input class="filter-add-input" style="display:inline-block" placeholder="+ e.g. property management" '
       + 'onkeydown="if(event.key===\'Enter\'){setKeyword(this.value);this.value=\'\'}">';
-    html += '<span class="filter-sep">&middot;</span>';
   }
+  html += makeRow('Industry', indChips);
+
   // Geographies
+  var geoChips = '';
   if (d.apollo_geography && d.apollo_geography.length) {
-    html += '<span class="filter-group-label">Geographies</span>';
-    html += d.apollo_geography.map(function(v){ return makeTag(v, 'apollo_geography'); }).join('');
-    html += makeAddInput('apollo_geography', 'Add location…');
-  } else if (editMode) {
-    html += '<span class="filter-group-label">Geographies</span>';
-    html += makeAddInput('apollo_geography', 'Add location…');
-  } else {
-    html = html.replace(/<span class="filter-sep">&middot;<\/span>$/, '');
+    geoChips += d.apollo_geography.map(function(v){ return makeTag(v, 'apollo_geography'); }).join('');
   }
+  geoChips += makeAddInput('apollo_geography', 'Add location…');
+  html += makeRow('Geographies', geoChips);
+
   // Seniorities
+  var senChips = '';
   if (d.person_seniorities && d.person_seniorities.length) {
-    html += '<span class="filter-sep">&middot;</span>';
-    html += '<span class="filter-group-label">Seniorities</span>';
-    html += d.person_seniorities.map(function(v){ return makeTag(v, 'person_seniorities'); }).join('');
-    html += makeAddInput('person_seniorities', 'Add seniority…');
-  } else if (editMode) {
-    html += '<span class="filter-sep">&middot;</span>';
-    html += '<span class="filter-group-label">Seniorities</span>';
-    html += makeAddInput('person_seniorities', 'e.g. director');
+    senChips += d.person_seniorities.map(function(v){ return makeTag(v, 'person_seniorities'); }).join('');
   }
+  senChips += makeAddInput('person_seniorities', 'e.g. director');
+  html += makeRow('Seniorities', senChips);
 
   row.innerHTML = html;
 }
