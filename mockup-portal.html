@@ -80,6 +80,9 @@ html[data-mode="prospect"] .rep-only { display: none !important; }
 .filter-tag .ft-remove:hover { color: #fca5a5; }
 .filter-add-input { display: none; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.1); border-radius: 6px; padding: 3px 8px; font-size: 11px; color: #d1d5db; outline: none; width: 130px; font-family: inherit; }
 .filter-add-input:focus { border-color: rgba(245,158,11,0.4); }
+.filter-num-input { display: inline-block; width: 64px; -moz-appearance: textfield; }
+.filter-num-input::-webkit-outer-spin-button, .filter-num-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.filter-revenue-label { font-size: 10px; color: #71717a; text-transform: uppercase; letter-spacing: 0.04em; }
 .filter-actions { display: none; gap: 8px; align-items: center; margin-top: 10px; }
 .filter-actions.show { display: flex; }
 .filter-action-btn { font-size: 11px; font-weight: 600; padding: 6px 14px; border-radius: 8px; cursor: pointer; border: 1px solid; font-family: inherit; transition: all 100ms; }
@@ -3547,6 +3550,10 @@ function runPersonalization(session) {
         apollo_geography: displayGeos ? displayGeos.slice() : [],
         apollo_employee_ranges: (icp.apollo_employee_ranges || []).slice(),
         person_seniorities: (icp.person_seniorities || []).slice(),
+        apollo_person_locations: (icp.apollo_person_locations || []).slice(),
+        apollo_revenue_range: icp.apollo_revenue_range
+          ? { min: icp.apollo_revenue_range.min ?? null, max: icp.apollo_revenue_range.max ?? null }
+          : { min: null, max: null },
         company_size: displaySize || ''
       };
       window._filterEditMode = false;
@@ -4219,13 +4226,23 @@ function renderFilterTags() {
   indChips += makeAddInput('apollo_keyword', 'e.g. property management');
   html += makeRow('Industry', indChips);
 
-  // Geographies
+  // Geographies — company HQ location (Apollo's organization_locations).
   var geoChips = '';
   if (d.apollo_geography && d.apollo_geography.length) {
     geoChips += d.apollo_geography.map(function(v){ return makeTag(v, 'apollo_geography'); }).join('');
   }
-  geoChips += makeAddInput('apollo_geography', 'Add location…');
-  html += makeRow('Geographies', geoChips);
+  geoChips += makeAddInput('apollo_geography', 'Add company location…');
+  html += makeRow('Company Location', geoChips);
+
+  // Person Location — where the *contact* lives, separate from company HQ.
+  // Maps to Apollo's person_locations field. For ICPs like "US-based execs
+  // at global HQ companies" set this instead of (or in addition to) Geographies.
+  var ploChips = '';
+  if (d.apollo_person_locations && d.apollo_person_locations.length) {
+    ploChips += d.apollo_person_locations.map(function(v){ return makeTag(v, 'apollo_person_locations'); }).join('');
+  }
+  ploChips += makeAddInput('apollo_person_locations', 'Add person location…');
+  html += makeRow('Person Location', ploChips);
 
   // Seniorities
   var senChips = '';
@@ -4235,7 +4252,42 @@ function renderFilterTags() {
   senChips += makeAddInput('person_seniorities', 'e.g. director');
   html += makeRow('Seniorities', senChips);
 
+  // Revenue range — two numeric inputs (whole $M). Custom row (not a chip
+  // group). Hidden in display mode when no bound is set.
+  var rev = d.apollo_revenue_range || { min: null, max: null };
+  var minM = (rev.min != null) ? Math.round(rev.min / 1e6) : '';
+  var maxM = (rev.max != null) ? Math.round(rev.max / 1e6) : '';
+  if (editMode) {
+    html += '<div class="filter-row"><span class="filter-group-label">Revenue ($M)</span>'
+      + '<div class="filter-group-chips">'
+      +   '<span class="filter-revenue-label">min</span>'
+      +   '<input class="filter-add-input filter-num-input" type="number" min="0" value="' + minM + '" placeholder="0" '
+      +     'onchange="setRevenue(\'min\', this.value)">'
+      +   '<span class="filter-revenue-label">max</span>'
+      +   '<input class="filter-add-input filter-num-input" type="number" min="0" value="' + maxM + '" placeholder="∞" '
+      +     'onchange="setRevenue(\'max\', this.value)">'
+      + '</div></div>';
+  } else if (rev.min != null || rev.max != null) {
+    var label;
+    if (rev.min != null && rev.max != null) label = '$' + minM + 'M – $' + maxM + 'M';
+    else if (rev.min != null)               label = '$' + minM + 'M+';
+    else                                    label = 'up to $' + maxM + 'M';
+    html += '<div class="filter-row"><span class="filter-group-label">Revenue ($M)</span>'
+      + '<div class="filter-group-chips"><span class="filter-tag">' + label + '</span></div></div>';
+  }
+
   row.innerHTML = html;
+}
+
+function setRevenue(side, valStr) {
+  if (!window._icpEditData.apollo_revenue_range) {
+    window._icpEditData.apollo_revenue_range = { min: null, max: null };
+  }
+  var n = parseInt(valStr, 10);
+  // Whole $M input, sent to Apollo as USD. 0 or NaN clears the bound so the
+  // sanitizer drops the side from revenue_range.
+  window._icpEditData.apollo_revenue_range[side] = (Number.isFinite(n) && n > 0) ? n * 1000000 : null;
+  // Intentionally no re-render — keeps focus in the input the rep is editing.
 }
 
 function toggleFilterEdit() {

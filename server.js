@@ -1561,7 +1561,7 @@ function emptyBrief(contactInfo) {
   const title   = contactInfo.title   || null;
   return {
     prospect:  { company, contact_name: name, contact_title: title, offering_name: null, offer_description: null, website: null },
-    icp:       { role: null, target_audience_type: 'b2b', apollo_titles: null, apollo_keyword: null, industry: null, company_size: null, apollo_employee_ranges: null, geography: null, apollo_geography: null, person_seniorities: null, company_revenue: null, kpis: null },
+    icp:       { role: null, target_audience_type: 'b2b', apollo_titles: null, apollo_keyword: null, industry: null, company_size: null, apollo_employee_ranges: null, geography: null, apollo_geography: null, apollo_person_locations: null, apollo_revenue_range: null, person_seniorities: null, company_revenue: null, kpis: null },
     metrics:   { ltv: null, close_rate: null, show_rate: null },
     angle:     { pain: null, result: null, methodology: null, proof: null },
     verbatim:  { pain_quote: null, result_quote: null, goal_quote: null },
@@ -2420,6 +2420,22 @@ async function fetchLeadsFromApollo(icp, progressCb) {
   if (Array.isArray(icp?.person_seniorities) && icp.person_seniorities.length) {
     legacyPayload.person_seniorities = icp.person_seniorities;
   }
+  // person_locations is the contact's location, separate from organization_locations
+  // (the company HQ). Reps who want US-based people at global-HQ companies set this.
+  if (Array.isArray(icp?.apollo_person_locations) && icp.apollo_person_locations.length) {
+    legacyPayload.person_locations = icp.apollo_person_locations;
+  }
+  // revenue_range filters by org annual revenue in USD. Verified on
+  // mixed_people/api_search — $1M–$50M cuts a baseline 91K pool to 46K.
+  // Send only when at least one bound is set; the sanitizer drops a fully
+  // empty {min:null,max:null} object.
+  const rev = icp?.apollo_revenue_range;
+  if (rev && (rev.min != null || rev.max != null)) {
+    legacyPayload.revenue_range = {
+      min: rev.min != null ? Number(rev.min) : null,
+      max: rev.max != null ? Number(rev.max) : null
+    };
+  }
   // Send q_organization_keyword_tags directly as an array (OR semantics).
   if (keywordTags.length) legacyPayload.q_organization_keyword_tags = keywordTags;
 
@@ -2435,6 +2451,7 @@ async function fetchLeadsFromApollo(icp, progressCb) {
     "q_keywords",                  // fallback name (some translator outputs still use it)
     "person_department_or_subdepartments",
     "organization_locations",
+    "person_locations",
     "person_seniorities",
     "person_titles"
   ];
@@ -4948,7 +4965,7 @@ const server = http.createServer(async (req, res) => {
       if (!job) { res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'Job not found' })); return; }
       const existingData = job.extracted_data || {};
       const existingIcp = existingData.icp || {};
-      const ICP_FIELDS = ['apollo_titles', 'apollo_keyword', 'apollo_geography', 'apollo_employee_ranges', 'person_seniorities', 'target_audience_type'];
+      const ICP_FIELDS = ['apollo_titles', 'apollo_keyword', 'apollo_geography', 'apollo_employee_ranges', 'person_seniorities', 'apollo_person_locations', 'apollo_revenue_range', 'target_audience_type'];
       const updatedIcp = { ...existingIcp };
       for (const k of ICP_FIELDS) {
         if (body[k] !== undefined) updatedIcp[k] = body[k];
@@ -5170,7 +5187,9 @@ const server = http.createServer(async (req, res) => {
         || (typeof icp.apollo_keyword === 'string' && icp.apollo_keyword.trim().length > 0)
         || (Array.isArray(icp.apollo_geography) && icp.apollo_geography.length > 0)
         || (Array.isArray(icp.apollo_employee_ranges) && icp.apollo_employee_ranges.length > 0)
-        || (Array.isArray(icp.person_seniorities) && icp.person_seniorities.length > 0);
+        || (Array.isArray(icp.person_seniorities) && icp.person_seniorities.length > 0)
+        || (Array.isArray(icp.apollo_person_locations) && icp.apollo_person_locations.length > 0)
+        || (icp.apollo_revenue_range && (icp.apollo_revenue_range.min != null || icp.apollo_revenue_range.max != null));
       if (!hasAnyFilter) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'No ICP filters set — nothing to search' }));
