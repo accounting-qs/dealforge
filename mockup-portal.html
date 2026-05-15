@@ -1683,7 +1683,7 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
           <label class="pi-label"><span>Apollo titles (comma-separated)</span><input id="pi-apollo-titles" class="pi-input" type="text" data-brief="icp.apollo_titles" data-csv="1" placeholder="Founder, CEO, Managing Partner"></label>
         </div>
         <div class="pi-grid" style="margin-top:12px;">
-          <label class="pi-label"><span>Industry / apollo_keyword</span><input id="pi-industry" class="pi-input" type="text" data-brief="icp.apollo_keyword" data-mirror="icp.industry" placeholder="financial services"></label>
+          <label class="pi-label"><span>Industry / apollo_keyword (comma-separated for OR)</span><input id="pi-industry" class="pi-input" type="text" data-brief="icp.apollo_keyword" data-csv="1" data-mirror="icp.industry" data-mirror-join="1" placeholder="real estate, property management"></label>
           <label class="pi-label"><span>Company size (target client)</span><input id="pi-company-size" class="pi-input" type="text" data-brief="icp.company_size" placeholder="$50M–$500M AUM / 10–100 employees"></label>
           <label class="pi-label" style="grid-column:1/-1;"><span>Geography (comma-separated countries)</span><input id="pi-geography" class="pi-input" type="text" data-brief="icp.apollo_geography" data-csv="1" data-mirror="icp.geography" data-mirror-join="1" placeholder="United States, Canada"></label>
         </div>
@@ -3518,27 +3518,32 @@ function runPersonalization(session) {
     const displayTitles = Array.isArray(icp.apollo_titles)
       ? icp.apollo_titles
       : (icp.role ? [icp.role] : []);
-    var keywordSingle;
-    if (typeof icp.apollo_keyword === 'string') {
-      keywordSingle = icp.apollo_keyword.trim();
+    var keywordList;
+    if (Array.isArray(icp.apollo_keyword)) {
+      keywordList = icp.apollo_keyword.map(function(s){ return String(s || '').trim(); }).filter(Boolean);
+    } else if (typeof icp.apollo_keyword === 'string') {
+      // Empty string ('') means the rep cleared all industry chips — honor it.
+      // Non-empty legacy string becomes a single-element array.
+      keywordList = icp.apollo_keyword.trim() ? [icp.apollo_keyword.trim()] : [];
     } else if (Array.isArray(icp.apollo_industries) && icp.apollo_industries.length) {
-      keywordSingle = String(icp.apollo_industries[0] || '').trim();
+      keywordList = icp.apollo_industries.map(function(s){ return String(s || '').trim(); }).filter(Boolean);
+    } else if (icp.industry) {
+      keywordList = [String(icp.industry).trim()].filter(Boolean);
     } else {
-      keywordSingle = icp.industry ? String(icp.industry).trim() : '';
+      keywordList = [];
     }
-    const displayIndustries = keywordSingle ? [keywordSingle] : null;
+    const displayIndustries = keywordList.length ? keywordList : null;
     const displayGeos = Array.isArray(icp.apollo_geography)
       ? icp.apollo_geography
       : (icp.geography ? [icp.geography] : []);
     const displaySize = icp.company_size || null;
 
     if (icpFiltersRow) {
-      // Store ICP data globally for filter editing.
-      // apollo_keyword is a single string (not array) — the chip UI renders it as
-      // a single tag with × to clear and an inline input to replace.
+      // Store ICP data globally for filter editing. Every chip group is an
+      // array now — including apollo_keyword (Apollo ORs across multiple tags).
       window._icpEditData = {
         apollo_titles: displayTitles ? displayTitles.slice() : [],
-        apollo_keyword: keywordSingle || '',
+        apollo_keyword: keywordList.slice(),
         apollo_geography: displayGeos ? displayGeos.slice() : [],
         apollo_employee_ranges: (icp.apollo_employee_ranges || []).slice(),
         person_seniorities: (icp.person_seniorities || []).slice(),
@@ -4204,19 +4209,14 @@ function renderFilterTags() {
   empChips += makeAddInput('apollo_employee_ranges', 'e.g. 11,50');
   html += makeRow('Employee Ranges', empChips);
 
-  // Industry keyword — single free-text phrase. × clears the value; in edit
-  // mode an input replaces or sets the value (Enter saves).
+  // Industry — multi-tag OR. Apollo's q_organization_keyword_tags arrays OR
+  // across entries, so adding more chips broadens the pool. Identical chip
+  // behavior to Titles/Geographies.
   var indChips = '';
-  if (d.apollo_keyword && String(d.apollo_keyword).trim()) {
-    indChips += makeTag(d.apollo_keyword, 'apollo_keyword');
-    if (editMode) {
-      indChips += '<input class="filter-add-input" style="display:inline-block" placeholder="Replace…" '
-        + 'onkeydown="if(event.key===\'Enter\'){setKeyword(this.value);this.value=\'\'}">';
-    }
-  } else if (editMode) {
-    indChips += '<input class="filter-add-input" style="display:inline-block" placeholder="+ e.g. property management" '
-      + 'onkeydown="if(event.key===\'Enter\'){setKeyword(this.value);this.value=\'\'}">';
+  if (Array.isArray(d.apollo_keyword) && d.apollo_keyword.length) {
+    indChips += d.apollo_keyword.map(function(v){ return makeTag(v, 'apollo_keyword'); }).join('');
   }
+  indChips += makeAddInput('apollo_keyword', 'e.g. property management');
   html += makeRow('Industry', indChips);
 
   // Geographies
@@ -4251,13 +4251,7 @@ function toggleFilterEdit() {
 }
 
 function removeFilter(group, val) {
-  // apollo_keyword is a single string, not an array — × clears it.
-  if (group === 'apollo_keyword') {
-    window._icpEditData.apollo_keyword = '';
-    renderFilterTags();
-    return;
-  }
-  if (!window._icpEditData[group]) return;
+  if (!Array.isArray(window._icpEditData[group])) return;
   window._icpEditData[group] = window._icpEditData[group].filter(function(v){ return v !== val; });
   renderFilterTags();
 }
@@ -4265,18 +4259,12 @@ function removeFilter(group, val) {
 function addFilter(group, val) {
   val = (val || '').trim();
   if (!val) return;
-  if (group === 'apollo_keyword') {
-    window._icpEditData.apollo_keyword = val;
-    renderFilterTags();
-    return;
-  }
-  if (!window._icpEditData[group]) window._icpEditData[group] = [];
-  if (window._icpEditData[group].indexOf(val) === -1) window._icpEditData[group].push(val);
-  renderFilterTags();
-}
-
-function setKeyword(val) {
-  window._icpEditData.apollo_keyword = (val || '').trim();
+  if (!Array.isArray(window._icpEditData[group])) window._icpEditData[group] = [];
+  // Case-insensitive dedup so "CEO" + "ceo" + "Ceo" don't appear as three
+  // chips with identical Apollo semantics. First-wins on casing.
+  var lc = val.toLowerCase();
+  if (window._icpEditData[group].some(function(v){ return String(v).toLowerCase() === lc; })) return;
+  window._icpEditData[group].push(val);
   renderFilterTags();
 }
 

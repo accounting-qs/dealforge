@@ -2038,23 +2038,18 @@ function sanitizeApolloPayload(payload) {
   if (Array.isArray(sanitized.q_keywords)) {
     sanitized.q_keywords = sanitized.q_keywords.join(' ');
   }
-  // Normalize q_keywords (free text) → q_organization_keyword_tags as a SINGLE tag.
-  // Apollo's mixed_people/api_search ignores q_keywords (returns 0 results) and
-  // applies AND logic across multiple keyword tags. Putting the entire phrase as
-  // one tag keeps it OR-style and preserves industry filtering. We do NOT split
-  // on whitespace — that's the historical bug that killed EU coverage.
+  // Legacy: a stored apollo_payload with q_keywords (free text) gets promoted
+  // to a single-tag q_organization_keyword_tags. The current pipeline doesn't
+  // produce q_keywords anymore — it sends q_organization_keyword_tags directly
+  // as an array — but this branch preserves back-compat for older payloads.
   if (typeof sanitized.q_keywords === 'string' && sanitized.q_keywords.trim()) {
     const phrase = sanitized.q_keywords.trim();
     if (!Array.isArray(sanitized.q_organization_keyword_tags) || sanitized.q_organization_keyword_tags.length === 0) {
       sanitized.q_organization_keyword_tags = [phrase];
     }
   }
-  // Cap q_organization_keyword_tags to a single tag — multiple tags AND-collapse
-  // to zero results. The industry signal is now a single phrase by design.
-  if (Array.isArray(sanitized.q_organization_keyword_tags) && sanitized.q_organization_keyword_tags.length > 1) {
-    warnings.push(`Capped q_organization_keyword_tags from ${sanitized.q_organization_keyword_tags.length} → 1 (AND-trap avoidance)`);
-    sanitized.q_organization_keyword_tags = [sanitized.q_organization_keyword_tags[0]];
-  }
+  // No cap on q_organization_keyword_tags — Apollo ORs across the array, so
+  // multiple industry tags broaden the pool rather than narrowing it.
 
   // Validate revenue (integers or null)
   if (sanitized.revenue_range) {
@@ -2088,10 +2083,13 @@ async function preflightCompanyCheck(payload) {
   if (!APOLLO_KEY) return { companiesFound: 0 };
 
   const companyFilters = {};
-  // q_keywords is FREE TEXT for company search. Do NOT split into q_organization_keyword_tags —
-  // tag-mode applies AND logic and collapses results (especially for EU/non-US markets).
-  // Pass the entire phrase as a single free-text query.
-  if (payload.q_keywords) companyFilters.q_keywords = String(payload.q_keywords).trim();
+  // Industry: prefer the array of tags (multi-OR). Fall back to free-text
+  // q_keywords for legacy payloads that didn't carry the tag array.
+  if (Array.isArray(payload.q_organization_keyword_tags) && payload.q_organization_keyword_tags.length) {
+    companyFilters.q_organization_keyword_tags = payload.q_organization_keyword_tags;
+  } else if (payload.q_keywords) {
+    companyFilters.q_keywords = String(payload.q_keywords).trim();
+  }
   if (payload.organization_num_employees_ranges) companyFilters.organization_num_employees_ranges = payload.organization_num_employees_ranges;
   if (payload.organization_locations) companyFilters.organization_locations = payload.organization_locations;
   if (payload.revenue_range) companyFilters.revenue_range = payload.revenue_range;
@@ -2389,14 +2387,19 @@ async function fetchLeadsFromApollo(icp, progressCb) {
     ? icp.apollo_employee_ranges
     : [];
 
-  // apollo_keyword (single free-text phrase, e.g. "property management") is the
-  // industry signal. If the rep cleared the chip we send no industry filter —
-  // the chip state is authoritative. No fallback to legacy apollo_industries:
-  // that fallback silently re-injected an extracted default whenever the rep
-  // removed the chip, defeating the whole point of an editable filter.
-  const keywordPhrase = (typeof icp?.apollo_keyword === 'string' && icp.apollo_keyword.trim())
-    ? icp.apollo_keyword.trim()
-    : '';
+  // Industry signal — array of OR-ed keyword tags. Apollo's
+  // q_organization_keyword_tags ORs across entries (verified empirically:
+  // "real estate" → 38,678; "property management" → 8,888; both as a
+  // 2-element array → 39,689, which is union-with-overlap, not intersection).
+  // Earlier comments claiming AND-collapse were stale. Accept legacy string
+  // form for jobs created before the array migration. Empty array means the
+  // rep cleared all chips — we send no industry filter; the chip state is
+  // authoritative, no fallback to extracted defaults.
+  const keywordTags = Array.isArray(icp?.apollo_keyword)
+    ? icp.apollo_keyword.map(s => String(s || '').trim()).filter(Boolean)
+    : (typeof icp?.apollo_keyword === 'string' && icp.apollo_keyword.trim()
+        ? [icp.apollo_keyword.trim()]
+        : []);
 
   // Four core Apollo filters by default: titles, location (account HQ),
   // employee size, industry keyword. person_seniorities is OPT-IN — the
@@ -2417,9 +2420,8 @@ async function fetchLeadsFromApollo(icp, progressCb) {
   if (Array.isArray(icp?.person_seniorities) && icp.person_seniorities.length) {
     legacyPayload.person_seniorities = icp.person_seniorities;
   }
-  // Pass the keyword as q_keywords (string). sanitizeApolloPayload normalizes
-  // this to a SINGLE-TAG q_organization_keyword_tags, avoiding Apollo's AND-trap.
-  if (keywordPhrase) legacyPayload.q_keywords = keywordPhrase;
+  // Send q_organization_keyword_tags directly as an array (OR semantics).
+  if (keywordTags.length) legacyPayload.q_organization_keyword_tags = keywordTags;
 
   // Relaxation order matches the filters we actually send. person_seniorities
   // and person_department_or_subdepartments stay listed (defensive) for jobs
@@ -4953,13 +4955,20 @@ const server = http.createServer(async (req, res) => {
       }
       // Mirror apollo_keyword → icp.industry so legacy display callers
       // (calendar header, case-studies filter, ROI templates) stay in sync
-      // with the rep's chip state. Without the mirror, clearing the chip
-      // leaves icp.industry pointing at the original extracted value and
-      // every downstream surface that reads `icp.industry` re-shows it.
+      // with the rep's chip state. apollo_keyword can be an array (multi-tag
+      // OR) or a legacy string; either way we collapse to a comma-joined
+      // string for the singular display field. Without the mirror, clearing
+      // the chips leaves icp.industry pointing at the original extracted
+      // value and every downstream surface that reads `icp.industry`
+      // re-shows it.
       if (body.apollo_keyword !== undefined) {
-        updatedIcp.industry = (typeof body.apollo_keyword === 'string' && body.apollo_keyword.trim())
-          ? body.apollo_keyword.trim()
-          : '';
+        let mirrored = '';
+        if (Array.isArray(body.apollo_keyword)) {
+          mirrored = body.apollo_keyword.map(s => String(s || '').trim()).filter(Boolean).join(', ');
+        } else if (typeof body.apollo_keyword === 'string' && body.apollo_keyword.trim()) {
+          mirrored = body.apollo_keyword.trim();
+        }
+        updatedIcp.industry = mirrored;
       }
       // Rep edits invalidate any pre-baked translator payload. Without this,
       // a stored apollo_payload (which fetchLeadsFromApollo prefers over the
@@ -5157,6 +5166,7 @@ const server = http.createServer(async (req, res) => {
       // unconstrained Apollo query returns millions of random people, which
       // wastes credits and isn't what an empty-chip UI is asking for.
       const hasAnyFilter = (Array.isArray(icp.apollo_titles) && icp.apollo_titles.length > 0)
+        || (Array.isArray(icp.apollo_keyword) && icp.apollo_keyword.length > 0)
         || (typeof icp.apollo_keyword === 'string' && icp.apollo_keyword.trim().length > 0)
         || (Array.isArray(icp.apollo_geography) && icp.apollo_geography.length > 0)
         || (Array.isArray(icp.apollo_employee_ranges) && icp.apollo_employee_ranges.length > 0)
