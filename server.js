@@ -3125,17 +3125,26 @@ async function extractColorsFromImage(imageUrl) {
     const response = await fetch(imageUrl, { signal: AbortSignal.timeout(5000) });
     if (!response.ok) return [];
     const buffer = Buffer.from(await response.arrayBuffer());
+    // Composite over white for transparent PNGs/SVGs so transparent pixels
+    // don't all collapse to "near black" and dominate the dominant-color
+    // count (logos on transparent bg were producing #001xxx noise otherwise).
+    // Drop alpha after compositing — downstream loop assumes 3 channels.
     const { data } = await sharp(buffer)
+      .flatten({ background: { r: 255, g: 255, b: 255 } })
       .resize(50, 50, { fit: 'cover' })
+      .removeAlpha()
       .raw()
       .toBuffer({ resolveWithObject: true });
 
-    // Count quantized color frequencies
+    // Count quantized color frequencies. floor() keeps each channel in
+    // [0, 240] so the resulting hex is always exactly 6 chars — round()
+    // could produce 256 → toString(16) "100" → 9-char malformed hex that
+    // every downstream isValidColor check rejects.
     const colorCounts = {};
     for (let i = 0; i < data.length; i += 3) {
-      const r = Math.round(data[i] / 16) * 16;
-      const g = Math.round(data[i+1] / 16) * 16;
-      const b = Math.round(data[i+2] / 16) * 16;
+      const r = Math.floor(data[i] / 16) * 16;
+      const g = Math.floor(data[i+1] / 16) * 16;
+      const b = Math.floor(data[i+2] / 16) * 16;
       const hex = `#${r.toString(16).padStart(2,'0')}${g.toString(16).padStart(2,'0')}${b.toString(16).padStart(2,'0')}`;
       colorCounts[hex] = (colorCounts[hex] || 0) + 1;
     }
@@ -3245,6 +3254,11 @@ async function handleBrandScrape(task, job) {
     let hex = c.replace('#','');
     if (hex.length === 3) hex = hex[0]+hex[0]+hex[1]+hex[1]+hex[2]+hex[2];
     if (hex.length < 6) return false;
+    // 8-char hex with alpha — reject fully transparent (alpha=00). Webflow
+    // stylesheets are full of `#xxxxxx00` overlay colors that pass the rgb
+    // checks below but are invisible in render, so they shouldn't count
+    // toward the brand palette.
+    if (hex.length === 8 && parseInt(hex.substr(6,2), 16) === 0) return false;
     const r = parseInt(hex.substr(0,2), 16), g = parseInt(hex.substr(2,2), 16), b = parseInt(hex.substr(4,2), 16);
     // Filter near-white (luminance > 0.92) and near-black (luminance < 0.08)
     const lum = (0.299*r + 0.587*g + 0.114*b) / 255;
@@ -3297,18 +3311,40 @@ async function handleBrandScrape(task, job) {
     }
   }
 
-  // Path 4: Background colors from inline style attributes (cheap fallback)
+  // Path 4: Pixel-extract from the brand mark — runs BEFORE the CSS frequency
+  // scan because Webflow / Wix / Squarespace stylesheets are saturated with
+  // framework default colors (Webflow's `#3898ec` link blue alone appears
+  // hundreds of times in their shared CSS) that would otherwise out-rank
+  // the actual brand mark. We try the resolved logo first, then the Google
+  // Favicon CDN as a fallback — many sites ship a "white" variant logo for
+  // dark-background use, so the logo image itself is colorless even though
+  // the favicon carries the real brand color.
+  {
+    const imageSources = [];
+    if (logoUrl && !logoUrl.startsWith('https://www.google.com/s2/favicons')) imageSources.push(['logo', logoUrl]);
+    if (faviconUrl) imageSources.push(['favicon', faviconUrl]);
+    for (const [label, src] of imageSources) {
+      if (primaryColor && secondaryColor && accentColor) break;
+      try {
+        const imgColors = await extractColorsFromImage(src);
+        if (!imgColors.length) { console.log(`[brand_scrape] ${label} pixel extraction: no usable colors`); continue; }
+        if (!primaryColor   && imgColors[0]) { primaryColor   = imgColors[0]; allColors.push(imgColors[0]); }
+        if (!secondaryColor && imgColors[1]) { secondaryColor = imgColors[1]; allColors.push(imgColors[1]); }
+        if (!accentColor    && imgColors[2]) { accentColor    = imgColors[2]; allColors.push(imgColors[2]); }
+        console.log(`[brand_scrape] ${label} pixel extraction: ${imgColors.length} colors -> ${imgColors.slice(0,3).join(', ')}`);
+      } catch(e) { console.warn(`[brand_scrape] ${label} pixel extraction failed:`, e.message); }
+    }
+  }
+
+  // Path 5: Background colors from inline style attributes (cheap fallback)
   if (!primaryColor) {
     const bgMatches = [...html.matchAll(/background(?:-color)?\s*:\s*(#[0-9a-fA-F]{3,8})/gi)].map(m=>m[1]).filter(isValidColor);
     if (bgMatches[0]) { primaryColor = bgMatches[0]; allColors.push(bgMatches[0]); }
   }
 
-  // Path 5: Frequency scan across ALL CSS we already have (inline + external).
-  // Many modern sites (Tailwind JIT, Webflow, Wix) compile brand colors into
-  // raw `#xxxxxx` / `rgb()` values in selectors like `.bg-emerald-500` or
-  // utility classes — never as a `--primary` variable. Sweeping the entire
-  // stylesheet and ranking by frequency catches those, and we already paid
-  // for the CSS fetches above so this is free.
+  // Path 6: Frequency scan across ALL CSS we already have (inline + external).
+  // Fills any slot still empty after logo extraction. Bucketed by hue so navy
+  // variants don't crowd out the secondary/accent slot.
   if (!primaryColor || !secondaryColor || !accentColor) {
     const cssCorpus = styleBlocks + '\n' + externalCss + '\n' + html;
     const rgbToHex  = (r,g,b) => '#' + [r,g,b].map(n => Math.max(0, Math.min(255, n)).toString(16).padStart(2,'0')).join('');
@@ -3316,41 +3352,30 @@ async function handleBrandScrape(task, job) {
     const bump      = (hex) => { if (!isValidColor(hex)) return; const k = hex.toLowerCase(); counts.set(k, (counts.get(k) || 0) + 1); };
     for (const m of cssCorpus.matchAll(/#[0-9a-fA-F]{3,8}\b/g)) bump(m[0]);
     for (const m of cssCorpus.matchAll(/rgba?\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})/gi)) bump(rgbToHex(+m[1], +m[2], +m[3]));
-    // Bucket near-duplicates so navy variants don't crowd out the secondary slot.
-    // Two hexes are considered the "same hue" when their per-channel distance < 32.
-    const hexDist   = (a,b) => {
-      const ar = parseInt(a.slice(1,3),16), ag = parseInt(a.slice(3,5),16), ab = parseInt(a.slice(5,7),16);
-      const br = parseInt(b.slice(1,3),16), bg = parseInt(b.slice(3,5),16), bb = parseInt(b.slice(5,7),16);
-      return Math.max(Math.abs(ar-br), Math.abs(ag-bg), Math.abs(ab-bb));
+    // Normalize keys so 3-char hexes cluster with their 6-char equivalents.
+    const normHex = (a) => { let h = a.slice(1); if (h.length === 3) h = h[0]+h[0]+h[1]+h[1]+h[2]+h[2]; return '#' + h.slice(0,6); };
+    const hexDist = (a,b) => {
+      const aa = normHex(a), bb = normHex(b);
+      const ar = parseInt(aa.slice(1,3),16), ag = parseInt(aa.slice(3,5),16), ab = parseInt(aa.slice(5,7),16);
+      const br = parseInt(bb.slice(1,3),16), bg = parseInt(bb.slice(3,5),16), bb2 = parseInt(bb.slice(5,7),16);
+      return Math.max(Math.abs(ar-br), Math.abs(ag-bg), Math.abs(ab-bb2));
     };
-    const ranked   = [...counts.entries()].sort((a,b) => b[1] - a[1]).map(([h]) => h);
-    const distinct = [];
+    // De-duplicate so colors already pinned by logo extraction don't get
+    // re-assigned by the frequency scan (e.g. logo green ends up in primary,
+    // frequency would also try to put it in secondary if the same hue is in CSS).
+    const pinned = [primaryColor, secondaryColor, accentColor].filter(Boolean);
+    const ranked = [...counts.entries()].sort((a,b) => b[1] - a[1]).map(([h]) => h);
+    const distinct = pinned.slice();
     for (const h of ranked) {
       if (distinct.every(d => hexDist(d, h) >= 32)) distinct.push(h);
       if (distinct.length >= 6) break;
     }
-    if (!primaryColor   && distinct[0]) { primaryColor   = distinct[0]; allColors.push(distinct[0]); }
-    if (!secondaryColor && distinct[1]) { secondaryColor = distinct[1]; allColors.push(distinct[1]); }
-    if (!accentColor    && distinct[2]) { accentColor    = distinct[2]; allColors.push(distinct[2]); }
-    console.log(`[brand_scrape] CSS frequency scan: ${counts.size} unique colors, top 3 distinct = ${distinct.slice(0,3).join(', ') || 'none'}`);
-  }
-
-  // Path 6: Pixel-extract from the LOGO (more brand-defining than og:image,
-  // which is often a wide marketing banner). Skipped if we already have all
-  // three slots or if the resolved logo is the Google favicon CDN fallback
-  // (those favicons are sized to 256×256 but often render with a generic
-  // background that contaminates the dominant-color count).
-  if (!primaryColor || !secondaryColor || !accentColor) {
-    const logoForPixels = (logoUrl && !logoUrl.startsWith('https://www.google.com/s2/favicons')) ? logoUrl : null;
-    if (logoForPixels) {
-      try {
-        const imgColors = await extractColorsFromImage(logoForPixels);
-        if (!primaryColor   && imgColors[0]) { primaryColor   = imgColors[0]; allColors.push(imgColors[0]); }
-        if (!secondaryColor && imgColors[1]) { secondaryColor = imgColors[1]; allColors.push(imgColors[1]); }
-        if (!accentColor    && imgColors[2]) { accentColor    = imgColors[2]; allColors.push(imgColors[2]); }
-        console.log(`[brand_scrape] Logo pixel extraction: ${imgColors.length} colors from ${logoForPixels.slice(0,80)}`);
-      } catch(e) { console.warn('[brand_scrape] Logo pixel extraction failed:', e.message); }
-    }
+    // distinct now contains pinned-first, then frequency-scan fills.
+    const fillers = distinct.slice(pinned.length);
+    if (!primaryColor   && fillers[0]) { primaryColor   = fillers[0]; allColors.push(fillers[0]); fillers.shift(); }
+    if (!secondaryColor && fillers[0]) { secondaryColor = fillers[0]; allColors.push(fillers[0]); fillers.shift(); }
+    if (!accentColor    && fillers[0]) { accentColor    = fillers[0]; allColors.push(fillers[0]); fillers.shift(); }
+    console.log(`[brand_scrape] CSS frequency scan: ${counts.size} unique colors, fillers used = ${distinct.slice(pinned.length).slice(0,3).join(', ') || 'none'}`);
   }
 
   // Path 7: og:image pixel extraction — last resort, often a hero banner.
