@@ -3124,6 +3124,13 @@ function selectFeaturedImage(url) {
 
 window._reRunPersonalization = runPersonalization;
 function runPersonalization(session) {
+  // Keep the global SESSION in sync with the fresh session on every re-run.
+  // Several downstream readers (_wapGetCandidateImages, applyProspectBranding,
+  // populateBrandGallery's _overrides lookup) hit window.SESSION directly
+  // rather than threading the local `session` argument through, so if we
+  // skipped this assignment a rescan / regenerate would update the gallery
+  // panel but leave the asset picker modal showing the old brand.images list.
+  try { window.SESSION = session; } catch(_) {}
   // Section-level error containment: a throw inside one render block (e.g. a
   // weird LLM output for webinar titles, a null ICP field in the diagnostics
   // panel) used to bubble up to the outer try/catch and silently kill every
@@ -4804,14 +4811,17 @@ async function _brandRescanRun() {
     if (status) { status.textContent = found ? ('✓ ' + found + ' color' + (found === 1 ? '' : 's') + ' found') : '⚠ No colors found'; status.style.color = found ? '#4ade80' : '#fbbf24'; }
     // Refresh SESSION from the job so populateBrandGallery + applyProspectBranding
     // pick up the new brand_data and the cleared overrides. Same pattern as
-    // _brandColorSave.
+    // _brandColorSave. _reRunPersonalization keeps window.SESSION in sync, so
+    // the asset picker's candidate list (_wapGetCandidateImages reads
+    // window.SESSION.brand.images) and its Background-hero swatch gradient
+    // both repaint with the new scrape.
     if (typeof window._reRunPersonalization === 'function' && typeof buildCompatSession === 'function') {
       const freshRes = await fetch('/api/jobs/' + encodeURIComponent(jobId));
       if (freshRes.ok) {
-        const fresh = await freshRes.json();
-        window._reRunPersonalization(buildCompatSession(fresh));
-        // Re-populate the gallery rows with the new colors.
-        if (typeof populateBrandGallery === 'function') populateBrandGallery(buildCompatSession(fresh));
+        const freshSession = buildCompatSession(await freshRes.json());
+        window._reRunPersonalization(freshSession);
+        if (typeof populateBrandGallery === 'function') populateBrandGallery(freshSession);
+        if (typeof _wapRenderSlots === 'function') _wapRenderSlots();
       }
     }
   } catch(e) {

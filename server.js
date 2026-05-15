@@ -3277,7 +3277,8 @@ async function handleBrandScrape(task, job) {
 
   // Path 3: Fetch linked CSS files — KEY FIX for Wix/Webflow/Squarespace
   // Modern builders load all CSS variables from external .css files, never inline.
-  if (!primaryColor) {
+  let externalCss = '';
+  {
     const cssLinks = [...html.matchAll(/<link[^>]+rel=["']stylesheet["'][^>]+href=["']([^"']+\.css[^"']*)["']/gi)]
       .map(m => m[1])
       .map(h => h.startsWith('http') ? h : h.startsWith('//') ? 'https:'+h : `https://${domain}${h.startsWith('/')?h:'/'+h}`)
@@ -3287,7 +3288,8 @@ async function handleBrandScrape(task, job) {
         try { const r = await fetch(url, {signal:AbortSignal.timeout(3000)}); return r.ok ? await r.text() : ''; }
         catch { return ''; }
       }));
-      const ext = parseCssColors(cssTexts.join('\n'));
+      externalCss = cssTexts.join('\n');
+      const ext = parseCssColors(externalCss);
       if (!primaryColor   && ext.primary[0])   { primaryColor   = ext.primary[0];   allColors.push(primaryColor); }
       if (!secondaryColor && ext.secondary[0]) { secondaryColor = ext.secondary[0]; allColors.push(secondaryColor); }
       if (!accentColor    && ext.accent[0])    { accentColor    = ext.accent[0];    allColors.push(accentColor); }
@@ -3295,23 +3297,73 @@ async function handleBrandScrape(task, job) {
     }
   }
 
-  // Path 4: Background colors from inline style attributes (last resort)
+  // Path 4: Background colors from inline style attributes (cheap fallback)
   if (!primaryColor) {
     const bgMatches = [...html.matchAll(/background(?:-color)?\s*:\s*(#[0-9a-fA-F]{3,8})/gi)].map(m=>m[1]).filter(isValidColor);
     if (bgMatches[0]) { primaryColor = bgMatches[0]; allColors.push(bgMatches[0]); }
   }
 
-  // Path 5: Extract dominant colors from hero/og:image pixels (no external API)
-  if (!primaryColor) {
+  // Path 5: Frequency scan across ALL CSS we already have (inline + external).
+  // Many modern sites (Tailwind JIT, Webflow, Wix) compile brand colors into
+  // raw `#xxxxxx` / `rgb()` values in selectors like `.bg-emerald-500` or
+  // utility classes — never as a `--primary` variable. Sweeping the entire
+  // stylesheet and ranking by frequency catches those, and we already paid
+  // for the CSS fetches above so this is free.
+  if (!primaryColor || !secondaryColor || !accentColor) {
+    const cssCorpus = styleBlocks + '\n' + externalCss + '\n' + html;
+    const rgbToHex  = (r,g,b) => '#' + [r,g,b].map(n => Math.max(0, Math.min(255, n)).toString(16).padStart(2,'0')).join('');
+    const counts    = new Map();
+    const bump      = (hex) => { if (!isValidColor(hex)) return; const k = hex.toLowerCase(); counts.set(k, (counts.get(k) || 0) + 1); };
+    for (const m of cssCorpus.matchAll(/#[0-9a-fA-F]{3,8}\b/g)) bump(m[0]);
+    for (const m of cssCorpus.matchAll(/rgba?\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})/gi)) bump(rgbToHex(+m[1], +m[2], +m[3]));
+    // Bucket near-duplicates so navy variants don't crowd out the secondary slot.
+    // Two hexes are considered the "same hue" when their per-channel distance < 32.
+    const hexDist   = (a,b) => {
+      const ar = parseInt(a.slice(1,3),16), ag = parseInt(a.slice(3,5),16), ab = parseInt(a.slice(5,7),16);
+      const br = parseInt(b.slice(1,3),16), bg = parseInt(b.slice(3,5),16), bb = parseInt(b.slice(5,7),16);
+      return Math.max(Math.abs(ar-br), Math.abs(ag-bg), Math.abs(ab-bb));
+    };
+    const ranked   = [...counts.entries()].sort((a,b) => b[1] - a[1]).map(([h]) => h);
+    const distinct = [];
+    for (const h of ranked) {
+      if (distinct.every(d => hexDist(d, h) >= 32)) distinct.push(h);
+      if (distinct.length >= 6) break;
+    }
+    if (!primaryColor   && distinct[0]) { primaryColor   = distinct[0]; allColors.push(distinct[0]); }
+    if (!secondaryColor && distinct[1]) { secondaryColor = distinct[1]; allColors.push(distinct[1]); }
+    if (!accentColor    && distinct[2]) { accentColor    = distinct[2]; allColors.push(distinct[2]); }
+    console.log(`[brand_scrape] CSS frequency scan: ${counts.size} unique colors, top 3 distinct = ${distinct.slice(0,3).join(', ') || 'none'}`);
+  }
+
+  // Path 6: Pixel-extract from the LOGO (more brand-defining than og:image,
+  // which is often a wide marketing banner). Skipped if we already have all
+  // three slots or if the resolved logo is the Google favicon CDN fallback
+  // (those favicons are sized to 256×256 but often render with a generic
+  // background that contaminates the dominant-color count).
+  if (!primaryColor || !secondaryColor || !accentColor) {
+    const logoForPixels = (logoUrl && !logoUrl.startsWith('https://www.google.com/s2/favicons')) ? logoUrl : null;
+    if (logoForPixels) {
+      try {
+        const imgColors = await extractColorsFromImage(logoForPixels);
+        if (!primaryColor   && imgColors[0]) { primaryColor   = imgColors[0]; allColors.push(imgColors[0]); }
+        if (!secondaryColor && imgColors[1]) { secondaryColor = imgColors[1]; allColors.push(imgColors[1]); }
+        if (!accentColor    && imgColors[2]) { accentColor    = imgColors[2]; allColors.push(imgColors[2]); }
+        console.log(`[brand_scrape] Logo pixel extraction: ${imgColors.length} colors from ${logoForPixels.slice(0,80)}`);
+      } catch(e) { console.warn('[brand_scrape] Logo pixel extraction failed:', e.message); }
+    }
+  }
+
+  // Path 7: og:image pixel extraction — last resort, often a hero banner.
+  if (!primaryColor || !secondaryColor || !accentColor) {
     const imgUrl = ogImage ? resolveUrl(ogImage) : null;
     if (imgUrl) {
       try {
         const imgColors = await extractColorsFromImage(imgUrl);
-        if (imgColors.length >= 1 && !primaryColor)   { primaryColor   = imgColors[0]; allColors.push(imgColors[0]); }
-        if (imgColors.length >= 2 && !secondaryColor)  { secondaryColor = imgColors[1]; allColors.push(imgColors[1]); }
-        if (imgColors.length >= 3 && !accentColor)     { accentColor    = imgColors[2]; allColors.push(imgColors[2]); }
-        console.log(`[brand_scrape] Image color extraction: ${imgColors.length} colors from og:image`);
-      } catch(e) { console.warn('[brand_scrape] Image color extraction failed:', e.message); }
+        if (!primaryColor   && imgColors[0]) { primaryColor   = imgColors[0]; allColors.push(imgColors[0]); }
+        if (!secondaryColor && imgColors[1]) { secondaryColor = imgColors[1]; allColors.push(imgColors[1]); }
+        if (!accentColor    && imgColors[2]) { accentColor    = imgColors[2]; allColors.push(imgColors[2]); }
+        console.log(`[brand_scrape] og:image pixel extraction: ${imgColors.length} colors`);
+      } catch(e) { console.warn('[brand_scrape] og:image pixel extraction failed:', e.message); }
     }
   }
 
