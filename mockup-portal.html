@@ -412,6 +412,11 @@ html[data-mode="prospect"] .rep-only { display: none !important; }
 .slide-1-glow-br { position: absolute; bottom: -60px; right: -60px; width: 300px; height: 300px; background: radial-gradient(circle, var(--prospect-secondary-alpha, rgba(16,185,129,0.10)) 0%, transparent 70%); pointer-events: none; z-index: 1; }
 .slide-1-body { flex: 1; display: flex; flex-direction: column; justify-content: center; padding: 48px 52px 24px; position: relative; z-index: 2; }
 .slide-1-tag { font-size: 11px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: var(--prospect-primary, #34d399); margin-bottom: 20px; max-width: 640px; line-height: 1.4; }
+/* Brand-only hero — gradient background IS --prospect-primary, so the
+   primary-colored tag text would be invisible against it. Force white +
+   shadow so the for_line stays legible regardless of which brand color
+   the rep picks. */
+.slide-1-brand-only .slide-1-tag { color: rgba(255,255,255,0.95); text-shadow: 0 1px 4px rgba(0,0,0,0.55); }
 .slide-1-title { font-size: 34px; font-weight: 700; color: #ffffff; line-height: 1.2; letter-spacing: -0.025em; max-width: 720px; margin-bottom: 0; text-shadow: 0 2px 16px rgba(0,0,0,0.7); }
 /* Footer strip is a solid dark band so the host name, title, "Presented for…"
    attribution, and the stats column are always legible regardless of which
@@ -2338,28 +2343,30 @@ function applyProspectBranding(brandData) {
 
   // 3. CSS color variables — applied to webinar UI accents
   // Rep overrides (set via the Brand Assets gallery in edit mode) win over
-  // scraped colors. Saved as webinar_primary_color / webinar_secondary_color
-  // / webinar_accent_color on extracted_data._overrides.
+  // scraped colors AND bypass the isUselessColor filter — that filter exists
+  // to ignore bad scrape output (#000 / near-grays from framework CSS), not
+  // to second-guess a rep's explicit choice. A rep who pastes #242522 wants
+  // that hex applied verbatim even though it's a low-saturation near-black.
   const _colorOv = (typeof SESSION !== 'undefined' && SESSION?.extracted?._overrides) || {};
   const _ovPrimary   = _colorOv.webinar_primary_color   || null;
   const _ovSecondary = _colorOv.webinar_secondary_color || null;
   const _ovAccent    = _colorOv.webinar_accent_color    || null;
-  // Use primary_color unless it's near-white/black, then try secondary, then accent, then all_colors
-  let effectivePrimary = null;
-  if (_ovPrimary && !isUselessColor(_ovPrimary)) effectivePrimary = _ovPrimary;
-  else if (brandData?.primary_color && !isUselessColor(brandData.primary_color)) effectivePrimary = brandData.primary_color;
-  else if (_ovSecondary && !isUselessColor(_ovSecondary)) effectivePrimary = _ovSecondary;
-  else if (brandData?.secondary_color && !isUselessColor(brandData.secondary_color)) effectivePrimary = brandData.secondary_color;
-  else if (_ovAccent && !isUselessColor(_ovAccent)) effectivePrimary = _ovAccent;
-  else if (brandData?.accent_color && !isUselessColor(brandData.accent_color)) effectivePrimary = brandData.accent_color;
-  else if (brandData?.all_colors?.length) {
-    effectivePrimary = brandData.all_colors.find(c => !isUselessColor(c)) || null;
-  }
-  let effectiveSecondary = null;
-  if (effectivePrimary) {
-    const candidates = [_ovSecondary, brandData?.secondary_color, _ovAccent, brandData?.accent_color, ...(brandData?.all_colors || [])];
-    effectiveSecondary = candidates.find(c => c && c !== effectivePrimary && !isUselessColor(c)) || effectivePrimary;
-  }
+  // Per-slot resolution: rep override wins (no filter), else scraped (filtered).
+  // Slots chain in primary → secondary → accent order so we still get a usable
+  // primary when a slot resolves to null.
+  const slotColor = (override, scraped) => {
+    if (override) return override;
+    if (scraped && !isUselessColor(scraped)) return scraped;
+    return null;
+  };
+  const candidates = [
+    slotColor(_ovPrimary,   brandData?.primary_color),
+    slotColor(_ovSecondary, brandData?.secondary_color),
+    slotColor(_ovAccent,    brandData?.accent_color),
+    ...((brandData?.all_colors || []).filter(c => !isUselessColor(c))),
+  ].filter(Boolean);
+  const effectivePrimary   = candidates[0] || null;
+  const effectiveSecondary = candidates.find(c => c !== effectivePrimary) || effectivePrimary;
 
   if (effectivePrimary) {
     document.documentElement.style.setProperty('--prospect-primary', effectivePrimary);
@@ -2399,6 +2406,10 @@ function applyProspectBranding(brandData) {
     slideEl.style.backgroundImage = `linear-gradient(135deg, ${p2}, ${s2})`;
     slideEl.style.backgroundSize  = '';
     slideEl.style.backgroundPosition = '';
+    // Mark the slide as brand-only so .slide-1-tag (the for_line subtitle)
+    // gets the high-contrast white+shadow treatment via CSS — otherwise its
+    // var(--prospect-primary) color matches the gradient and disappears.
+    slideEl.classList.add('slide-1-brand-only');
     if (overlayEl) overlayEl.style.display = 'none';  // no gradient overlay needed — slide IS the gradient
     // Inject (or refresh) a company-name watermark layer
     let wm = slideEl.querySelector('.slide-1-brand-wm');
@@ -2416,8 +2427,9 @@ function applyProspectBranding(brandData) {
     }
     console.log('[Deal Forge] Hero set to BRAND-ONLY mode (gradient + company name)');
   } else if (heroUrl && slideEl) {
-    // Remove any leftover brand-only watermark from a prior render
+    // Remove any leftover brand-only watermark + class from a prior render
     slideEl.querySelector('.slide-1-brand-wm')?.remove();
+    slideEl.classList.remove('slide-1-brand-only');
     slideEl.style.backgroundImage = `url('${heroUrl}')`;
     slideEl.style.backgroundSize = 'cover';
     slideEl.style.backgroundPosition = 'center';
@@ -2432,8 +2444,9 @@ function applyProspectBranding(brandData) {
     }
     console.log('[Deal Forge] Hero image applied to webinar slide:', heroUrl, _ov.webinar_hero_image_url ? '(rep override)' : '');
   } else if (slideEl) {
-    // No hero at all — also clear any stale watermark
+    // No hero at all — also clear any stale watermark + brand-only class
     slideEl.querySelector('.slide-1-brand-wm')?.remove();
+    slideEl.classList.remove('slide-1-brand-only');
   }
 
   // 5. Logo on slide 1 — rep override → brand_data.logo_url
@@ -3012,23 +3025,25 @@ function toggleLeadDetail(row) {
 
 // ── Populate Brand Gallery Panel (edit mode only) ──────────────────────────────
 function populateBrandGallery(session) {
-  const brand   = session.brand || null;
+  // Default brand to {} (not null) so the downstream blocks render without
+  // throwing on undefined property reads when the job has no brand_data yet
+  // or when a manual rescan returned scraped:false. The colors-list block
+  // always renders three editable rows in edit mode, even when no colors
+  // were extracted — without that the rep can't manually set colors after a
+  // failed scrape because there's nothing on screen to click.
+  const brand   = session.brand || {};
   const panel   = document.getElementById('brand-gallery-panel');
   const isEdit  = new URLSearchParams(window.location.search).get('edit') === 'true';
   if (!panel || !isEdit) return;
   panel.style.display = 'block';
 
-  const domainLabel = (brand && brand.domain) || session.domain || '';
+  const domainLabel = brand.domain || session.domain || '';
   if (domainLabel) {
     const domainEl = document.getElementById('brand-gallery-domain');
     if (domainEl) domainEl.textContent = domainLabel;
   }
 
-  // Rep-only rescan row needs to render even when brand_scrape failed (so the
-  // rep can fix the website and try again). Wire it before the early return.
   _initBrandRescan(session);
-
-  if (!brand || !brand.scraped) return;
 
   // Logo
   const logoPreview = document.getElementById('brand-logo-preview');
@@ -4633,6 +4648,12 @@ function _brandColorEdit(field, currentHex, anchorEl) {
       + '<div id="brand-hex-err" style="font-size:10px;color:#f87171;margin-top:4px;min-height:12px;"></div>';
     document.body.appendChild(pop);
   }
+  // If a previous open is still wired, dispose of its document listeners
+  // before we bind new ones. Without this, double-clicking the same Edit
+  // button (or any reopen flow where the click target equals the original
+  // anchorEl so the outside-click detector skips itself) accumulates
+  // mousedown/keydown listeners on document.
+  if (typeof pop._dispose === 'function') { try { pop._dispose(); } catch(_) {} }
   const input  = pop.querySelector('#brand-hex-input');
   const saveBt = pop.querySelector('#brand-hex-save');
   const wheel  = pop.querySelector('#brand-hex-wheel');
@@ -4669,6 +4690,7 @@ function _brandColorEdit(field, currentHex, anchorEl) {
     pop.style.display = 'none';
     document.removeEventListener('mousedown', onOutside, true);
     document.removeEventListener('keydown', onKey, true);
+    if (pop._dispose === close) pop._dispose = null;
   };
   const onOutside = (e) => { if (!pop.contains(e.target) && e.target !== anchorEl) close(); };
   const onKey     = (e) => {
@@ -4689,6 +4711,7 @@ function _brandColorEdit(field, currentHex, anchorEl) {
   };
   document.addEventListener('mousedown', onOutside, true);
   document.addEventListener('keydown', onKey, true);
+  pop._dispose = close;
   // Focus + select the hex so the rep can paste straight away.
   setTimeout(() => { input.focus(); input.select(); }, 0);
 }

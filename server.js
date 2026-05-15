@@ -5001,8 +5001,26 @@ const server = http.createServer(async (req, res) => {
         'webinar_primary_color','webinar_secondary_color','webinar_accent_color',
       ];
       const safeOverrides = {};
+      // Color override values are inlined into onclick="..." attributes in
+      // populateBrandGallery's color-row template, so the value must be a
+      // strict 6-char hex (or empty string to clear). Anything else is
+      // rejected outright — defense-in-depth against an unsanitized override
+      // making it into the rendered HTML.
+      const COLOR_FIELDS = ['webinar_primary_color','webinar_secondary_color','webinar_accent_color'];
       for (const k of ALLOWED) {
-        if (body[k] !== undefined) safeOverrides[k] = body[k];
+        if (body[k] === undefined) continue;
+        let v = body[k];
+        if (COLOR_FIELDS.includes(k)) {
+          if (v == null) v = '';
+          v = String(v).trim();
+          if (v !== '' && !/^#[0-9a-f]{6}$/i.test(v)) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: `Invalid hex for ${k}: ${v}. Expected #rrggbb or empty.` }));
+            return;
+          }
+          v = v.toLowerCase();
+        }
+        safeOverrides[k] = v;
       }
       if (!Object.keys(safeOverrides).length) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
