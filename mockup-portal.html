@@ -85,6 +85,41 @@ html[data-mode="prospect"] .rep-only { display: none !important; }
 .filter-revenue-label { font-size: 10px; color: #71717a; text-transform: uppercase; letter-spacing: 0.04em; }
 .filter-add-select { width: auto; min-width: 150px; cursor: pointer; appearance: none; -webkit-appearance: none; padding-right: 26px; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' fill='none' stroke='%23a1a1aa' viewBox='0 0 24 24'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M19 9l-7 7-7-7'/%3E%3C/svg%3E"); background-position: right 8px center; background-repeat: no-repeat; }
 .filter-add-select option { background: #18181b; color: #d1d5db; }
+
+/* Custom typeahead dropdown for Apollo-backed inputs (titles / industry /
+   locations). Replaces the native <datalist> which renders in OS-system
+   styling and looks out-of-place against the dark Deal Forge UI. */
+.filter-input-wrap { position: relative; display: inline-block; }
+.filter-suggest-dropdown {
+  position: absolute; top: calc(100% + 4px); left: 0;
+  min-width: 220px; max-width: 320px; max-height: 260px; overflow-y: auto;
+  background: #18181b;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 8px;
+  padding: 4px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+  z-index: 100;
+}
+.filter-suggest-dropdown[hidden] { display: none; }
+.filter-suggest-option {
+  padding: 6px 10px;
+  font-size: 12px; color: #d4d4d8;
+  cursor: pointer;
+  border-radius: 4px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.filter-suggest-option:hover, .filter-suggest-option.active {
+  background: rgba(245,158,11,0.12);
+  color: #fbbf24;
+}
+.filter-suggest-empty {
+  padding: 8px 10px;
+  font-size: 11px; color: #71717a; font-style: italic;
+}
+.filter-suggest-loading {
+  padding: 8px 10px;
+  font-size: 11px; color: #71717a;
+}
 .filter-actions { display: none; gap: 8px; align-items: center; margin-top: 10px; }
 .filter-actions.show { display: flex; }
 .filter-action-btn { font-size: 11px; font-weight: 600; padding: 6px 14px; border-radius: 8px; cursor: pointer; border: 1px solid; font-family: inherit; transition: all 100ms; }
@@ -4258,19 +4293,24 @@ function renderFilterTags() {
     if (!editMode) return '';
     return '<input class="filter-add-input" style="display:inline-block" placeholder="+ ' + placeholder + '" onkeydown="if(event.key===\'Enter\'){addFilter(\'' + group + '\',this.value);this.value=\'\'}">';
   }
-  // Same as makeAddInput, but the input is paired with a <datalist> populated
-  // by debounced calls to /api/apollo/suggest. Native browser autocomplete
-  // handles the dropdown UI; Enter still adds whatever the rep typed, so they
-  // can pick a suggestion OR override with freeform input. Apollo credit per
-  // miss (24 h cache).
+  // Like makeAddInput, but the input is paired with a custom dark-themed
+  // dropdown populated by debounced calls to /api/apollo/suggest. Enter on a
+  // highlighted option picks it; Enter with nothing highlighted adds whatever
+  // the rep typed (freeform override still works). Arrow keys navigate; click
+  // or Escape closes.
   function makeAddInputWithSuggest(group, placeholder, suggestType) {
     if (!editMode) return '';
-    var listId = 'apollo-suggest-' + group;
-    return '<input class="filter-add-input" style="display:inline-block" list="' + listId + '" '
-      + 'placeholder="+ ' + placeholder + '" '
-      + 'oninput="fetchApolloSuggestions(\'' + suggestType + '\', this.value, \'' + listId + '\')" '
-      + 'onkeydown="if(event.key===\'Enter\'){addFilter(\'' + group + '\',this.value);this.value=\'\'}">'
-      + '<datalist id="' + listId + '"></datalist>';
+    var dropId = 'apollo-drop-' + group;
+    return '<span class="filter-input-wrap">'
+      + '<input class="filter-add-input" style="display:inline-block" '
+      +   'data-suggest-type="' + suggestType + '" data-group="' + group + '" data-drop="' + dropId + '" '
+      +   'placeholder="+ ' + placeholder + '" '
+      +   'oninput="onSuggestInput(this)" '
+      +   'onfocus="onSuggestFocus(this)" '
+      +   'onblur="onSuggestBlur(this)" '
+      +   'onkeydown="onSuggestKey(event, this)">'
+      + '<div class="filter-suggest-dropdown" id="' + dropId + '" hidden></div>'
+      + '</span>';
   }
   // Dropdown variant for Apollo-canonical enums. Renders a <select> showing
   // only the options not yet picked; on change, adds the value as a chip via
@@ -4379,39 +4419,113 @@ function renderFilterTags() {
   row.innerHTML = html;
 }
 
-// Debounced Apollo suggestion fetcher. Bound to <input oninput=...> in the
-// chip rows. Populates the paired <datalist> with up to 8 native-autocomplete
-// options. 300 ms debounce + per-(type,q) client cache means a rep typing
-// "ce" → "ceo" → "ceos" makes at most 3 network calls (often 1 after warm-up
-// thanks to the server's 24 h cache on the same key).
+// Custom Apollo-typeahead dropdown handlers. Bound on the chip-row inputs
+// via data-* attributes + the on{Input,Focus,Blur,Key} callbacks below.
+// 300 ms debounce on /api/apollo/suggest + per-(type,q) client cache means a
+// rep typing "ce" → "ceo" → "ceos" makes at most 3 network calls. Custom UI
+// instead of native <datalist> so the dropdown matches the dark Deal Forge
+// styling instead of the OS-system autocomplete chrome.
 window._apolloSuggestCache = window._apolloSuggestCache || {};
 window._apolloSuggestTimers = window._apolloSuggestTimers || {};
-function fetchApolloSuggestions(type, q, listId) {
-  q = (q || '').trim();
-  var dl = document.getElementById(listId);
-  if (!dl) return;
-  if (q.length < 2) { dl.innerHTML = ''; return; }
+
+function onSuggestInput(input) {
+  var type = input.dataset.suggestType;
+  var dropId = input.dataset.drop;
+  var q = (input.value || '').trim();
+  var drop = document.getElementById(dropId);
+  if (!drop) return;
+  if (q.length < 2) { drop.innerHTML = ''; drop.hidden = true; return; }
   var key = type + ':' + q.toLowerCase();
   if (window._apolloSuggestCache[key]) {
-    _renderApolloDatalist(dl, window._apolloSuggestCache[key]);
+    _renderSuggestDropdown(drop, window._apolloSuggestCache[key], input);
     return;
   }
-  clearTimeout(window._apolloSuggestTimers[listId]);
-  window._apolloSuggestTimers[listId] = setTimeout(function() {
+  // Render an interim "loading" state immediately so the dropdown opens
+  // visibly during the 300 ms debounce — beats waiting in silence.
+  drop.innerHTML = '<div class="filter-suggest-loading">Searching Apollo…</div>';
+  drop.hidden = false;
+  clearTimeout(window._apolloSuggestTimers[dropId]);
+  window._apolloSuggestTimers[dropId] = setTimeout(function() {
     fetch('/api/apollo/suggest?type=' + encodeURIComponent(type) + '&q=' + encodeURIComponent(q))
       .then(function(r){ return r.ok ? r.json() : { suggestions: [] }; })
       .then(function(d){
         var list = Array.isArray(d.suggestions) ? d.suggestions : [];
         window._apolloSuggestCache[key] = list;
-        _renderApolloDatalist(dl, list);
+        if (input.value.trim().toLowerCase() === q.toLowerCase()) {
+          // Only render if the rep hasn't typed something else meanwhile.
+          _renderSuggestDropdown(drop, list, input);
+        }
       })
       .catch(function(){ /* silent — typeahead is best-effort */ });
   }, 300);
 }
-function _renderApolloDatalist(dl, suggestions) {
-  dl.innerHTML = suggestions.map(function(s){
-    return '<option value="' + String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;') + '"></option>';
+
+function onSuggestFocus(input) {
+  // Re-open the dropdown if it already has populated options.
+  var drop = document.getElementById(input.dataset.drop);
+  if (drop && drop.childElementCount > 0) drop.hidden = false;
+}
+
+function onSuggestBlur(input) {
+  // Delay the hide so an mousedown→click on an option fires before we close.
+  setTimeout(function() {
+    var drop = document.getElementById(input.dataset.drop);
+    if (drop) drop.hidden = true;
+  }, 150);
+}
+
+function onSuggestKey(e, input) {
+  var drop = document.getElementById(input.dataset.drop);
+  var opts = drop ? drop.querySelectorAll('.filter-suggest-option') : [];
+  var activeIdx = -1;
+  for (var i = 0; i < opts.length; i++) if (opts[i].classList.contains('active')) activeIdx = i;
+  if (e.key === 'ArrowDown' && opts.length) {
+    e.preventDefault();
+    drop.hidden = false;
+    var next = (activeIdx + 1) % opts.length;
+    for (var j = 0; j < opts.length; j++) opts[j].classList.toggle('active', j === next);
+    opts[next].scrollIntoView({ block: 'nearest' });
+  } else if (e.key === 'ArrowUp' && opts.length) {
+    e.preventDefault();
+    var prev = activeIdx <= 0 ? opts.length - 1 : activeIdx - 1;
+    for (var k = 0; k < opts.length; k++) opts[k].classList.toggle('active', k === prev);
+    opts[prev].scrollIntoView({ block: 'nearest' });
+  } else if (e.key === 'Enter') {
+    e.preventDefault();
+    var picked = (activeIdx >= 0 && opts[activeIdx]) ? opts[activeIdx].dataset.value : input.value;
+    if (picked) addFilter(input.dataset.group, picked);
+    input.value = '';
+    if (drop) drop.hidden = true;
+  } else if (e.key === 'Escape') {
+    if (drop) drop.hidden = true;
+  }
+}
+
+function _renderSuggestDropdown(drop, suggestions, input) {
+  if (!suggestions || !suggestions.length) {
+    drop.innerHTML = '<div class="filter-suggest-empty">No matches — press Enter to add as-is</div>';
+    drop.hidden = false;
+    return;
+  }
+  var group = input.dataset.group;
+  // onmousedown preventDefault stops the input losing focus before our click
+  // fires (which would otherwise hide the dropdown via onSuggestBlur).
+  drop.innerHTML = suggestions.map(function(s) {
+    var attr = String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+    return '<div class="filter-suggest-option" data-value="' + attr + '" '
+      + 'onmousedown="event.preventDefault();" '
+      + 'onclick="onSuggestPick(this, \'' + group + '\')">' + escHtml(s) + '</div>';
   }).join('');
+  drop.hidden = false;
+}
+
+function onSuggestPick(optEl, group) {
+  var wrap = optEl.closest('.filter-input-wrap');
+  var input = wrap ? wrap.querySelector('.filter-add-input') : null;
+  addFilter(group, optEl.dataset.value);
+  if (input) input.value = '';
+  var drop = optEl.parentElement;
+  if (drop) drop.hidden = true;
 }
 
 function setRevenue(side, valStr) {
