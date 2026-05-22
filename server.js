@@ -2367,6 +2367,38 @@ async function guaranteedLeadSearch(sanitizedPayload, confidenceMap, relaxationO
   };
 }
 
+// ── Apollo typeahead for the Titles chip row ──────────────────────────────────
+// Titles are an open free-text space and Apollo expands variants server-side
+// (e.g. "ceo" → "Chief Executive Officer", "CEO and Founder"). The /suggest
+// endpoint surfaces those variants so the rep can pick what Apollo actually
+// recognizes. Each miss costs 1 Apollo credit; an in-memory 24 h cache makes
+// rapid keystrokes (`c` → `ce` → `ceo`) amortize to ~1 credit per unique q.
+// Locations are NOT served here — they're a fixed country list, handled
+// client-side, no credits needed.
+const APOLLO_SUGGEST_CACHE = new Map();
+const APOLLO_SUGGEST_TTL_MS = 24 * 60 * 60 * 1000;
+
+async function suggestTitles(q) {
+  const APOLLO_KEY = process.env.APOLLO_API_KEY;
+  if (!APOLLO_KEY || !q) return [];
+  try {
+    const r = await fetch('https://api.apollo.io/api/v1/mixed_people/api_search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'x-api-key': APOLLO_KEY },
+      body: JSON.stringify({ per_page: 10, page: 1, person_titles: [q] }),
+      signal: AbortSignal.timeout(8000)
+    });
+    if (!r.ok) return [];
+    const data = await r.json();
+    const out = new Set();
+    (data.people || []).forEach(p => { if (p.title) out.add(String(p.title).trim()); });
+    return Array.from(out).slice(0, 8);
+  } catch (e) {
+    console.warn('[suggestTitles]', e.message);
+    return [];
+  }
+}
+
 async function fetchLeadsFromApollo(icp, progressCb) {
   const APOLLO_KEY = process.env.APOLLO_API_KEY;
   if (!APOLLO_KEY) { console.log('[Apollo] No API key — skipping'); return null; }
@@ -2378,10 +2410,13 @@ async function fetchLeadsFromApollo(icp, progressCb) {
   // string is for the UI; we no longer derive employee ranges from it because the
   // mapping is fragile (e.g. "Independent practitioners to small RIA firms" used
   // to map to "1,10" which is much tighter than the ICP actually implied).
+  // Fan out the synthetic "European Union" / "Europe" chip to all 27 member
+  // states before sending to Apollo (Apollo doesn't recognize "European Union"
+  // as a single location). Applied identically to both location fields so
+  // Person Location and Company Location chips behave the same way.
+  const expandEU = list => list.flatMap(g => (/^european union$/i.test(g) || /^europe$/i.test(g)) ? EU_COUNTRIES : [g]).filter((g, i, a) => a.indexOf(g) === i);
   const rawGeo = Array.isArray(icp?.apollo_geography) && icp.apollo_geography.length ? icp.apollo_geography : null;
-  const apolloGeo = rawGeo
-    ? rawGeo.flatMap(g => (/^european union$/i.test(g) || /^europe$/i.test(g)) ? EU_COUNTRIES : [g]).filter((g, i, a) => a.indexOf(g) === i)
-    : [];
+  const apolloGeo = rawGeo ? expandEU(rawGeo) : [];
 
   const sizeRanges = (Array.isArray(icp?.apollo_employee_ranges) && icp.apollo_employee_ranges.length)
     ? icp.apollo_employee_ranges
@@ -2423,7 +2458,7 @@ async function fetchLeadsFromApollo(icp, progressCb) {
   // person_locations is the contact's location, separate from organization_locations
   // (the company HQ). Reps who want US-based people at global-HQ companies set this.
   if (Array.isArray(icp?.apollo_person_locations) && icp.apollo_person_locations.length) {
-    legacyPayload.person_locations = icp.apollo_person_locations;
+    legacyPayload.person_locations = expandEU(icp.apollo_person_locations);
   }
   // revenue_range filters by org annual revenue in USD. Verified on
   // mixed_people/api_search — $1M–$50M cuts a baseline 91K pool to 46K.
@@ -3991,6 +4026,39 @@ const server = http.createServer(async (req, res) => {
   // ══════════════════════════════════════════════════════════════════════════
   // PHASE 2 — CALL LIBRARY API
   // ══════════════════════════════════════════════════════════════════════════
+
+  // ── GET /api/apollo/suggest?type=title&q=... — title typeahead ────────────
+  // Calls Apollo to surface canonical title variants for the chip input. Miss
+  // costs 1 Apollo credit; 24 h in-memory cache amortizes repeated prefixes.
+  if (req.method === 'GET' && urlPath === '/api/apollo/suggest') {
+    setCors(res);
+    try {
+      const qs = new URLSearchParams(req.url.includes('?') ? req.url.split('?')[1] : '');
+      const type = (qs.get('type') || '').toLowerCase();
+      const q = (qs.get('q') || '').trim();
+      if (type !== 'title' || q.length < 2) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ suggestions: [] }));
+        return;
+      }
+      const cacheKey = `${type}:${q.toLowerCase()}`;
+      const cached = APOLLO_SUGGEST_CACHE.get(cacheKey);
+      if (cached && (Date.now() - cached.at) < APOLLO_SUGGEST_TTL_MS) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ suggestions: cached.value, cached: true }));
+        return;
+      }
+      const suggestions = await suggestTitles(q);
+      APOLLO_SUGGEST_CACHE.set(cacheKey, { value: suggestions, at: Date.now() });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ suggestions }));
+    } catch (e) {
+      console.warn('[GET /api/apollo/suggest]', e.message);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ suggestions: [] }));
+    }
+    return;
+  }
 
   // ── POST /api/calls/sync — pull recent Fireflies transcripts into `calls` table ──
   // Called manually from the Call Library tab, and by the 6-hour background cron.

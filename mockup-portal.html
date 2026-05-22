@@ -4226,6 +4226,40 @@ var APOLLO_SENIORITIES = [
   { value: 'intern',    label: 'Intern' }
 ];
 
+// Country list for Company Location and Person Location chip rows. Values are
+// the Apollo-canonical country names (Apollo accepts these in
+// organization_locations / person_locations verbatim). Plus a synthetic
+// "European Union" entry that the server fans out to all 27 member states.
+var APOLLO_COUNTRIES = [
+  'United States','Canada','United Kingdom','European Union','Australia','New Zealand',
+  'Afghanistan','Albania','Algeria','Andorra','Angola','Argentina','Armenia','Austria',
+  'Azerbaijan','Bahamas','Bahrain','Bangladesh','Barbados','Belarus','Belgium','Belize',
+  'Benin','Bhutan','Bolivia','Bosnia and Herzegovina','Botswana','Brazil','Brunei',
+  'Bulgaria','Burkina Faso','Burundi','Cambodia','Cameroon','Cape Verde',
+  'Central African Republic','Chad','Chile','China','Colombia','Comoros','Costa Rica',
+  'Croatia','Cuba','Cyprus','Czech Republic','Denmark','Djibouti','Dominica',
+  'Dominican Republic','Ecuador','Egypt','El Salvador','Equatorial Guinea','Eritrea',
+  'Estonia','Eswatini','Ethiopia','Fiji','Finland','France','Gabon','Gambia','Georgia',
+  'Germany','Ghana','Greece','Grenada','Guatemala','Guinea','Guinea-Bissau','Guyana',
+  'Haiti','Honduras','Hong Kong','Hungary','Iceland','India','Indonesia','Iran','Iraq',
+  'Ireland','Israel','Italy','Ivory Coast','Jamaica','Japan','Jordan','Kazakhstan',
+  'Kenya','Kiribati','Kosovo','Kuwait','Kyrgyzstan','Laos','Latvia','Lebanon','Lesotho',
+  'Liberia','Libya','Liechtenstein','Lithuania','Luxembourg','Madagascar','Malawi',
+  'Malaysia','Maldives','Mali','Malta','Marshall Islands','Mauritania','Mauritius',
+  'Mexico','Micronesia','Moldova','Monaco','Mongolia','Montenegro','Morocco',
+  'Mozambique','Myanmar','Namibia','Nauru','Nepal','Netherlands','Nicaragua','Niger',
+  'Nigeria','North Korea','North Macedonia','Norway','Oman','Pakistan','Palau',
+  'Palestine','Panama','Papua New Guinea','Paraguay','Peru','Philippines','Poland',
+  'Portugal','Qatar','Romania','Russia','Rwanda','Saint Kitts and Nevis','Saint Lucia',
+  'Saint Vincent and the Grenadines','Samoa','San Marino','Saudi Arabia','Senegal',
+  'Serbia','Seychelles','Sierra Leone','Singapore','Slovakia','Slovenia',
+  'Solomon Islands','Somalia','South Africa','South Korea','South Sudan','Spain',
+  'Sri Lanka','Sudan','Suriname','Sweden','Switzerland','Syria','Taiwan','Tajikistan',
+  'Tanzania','Thailand','Timor-Leste','Togo','Tonga','Trinidad and Tobago','Tunisia',
+  'Turkey','Turkmenistan','Tuvalu','Uganda','Ukraine','United Arab Emirates','Uruguay',
+  'Uzbekistan','Vanuatu','Vatican City','Venezuela','Vietnam','Yemen','Zambia','Zimbabwe'
+].map(function(c){ return { value: c, label: c }; });
+
 function renderFilterTags() {
   var row = document.querySelector('.tam-filters-row');
   if (!row || !window._icpEditData) return;
@@ -4250,6 +4284,20 @@ function renderFilterTags() {
   function makeAddInput(group, placeholder) {
     if (!editMode) return '';
     return '<input class="filter-add-input" style="display:inline-block" placeholder="+ ' + placeholder + '" onkeydown="if(event.key===\'Enter\'){addFilter(\'' + group + '\',this.value);this.value=\'\'}">';
+  }
+  // Same as makeAddInput, but the input is paired with a <datalist> populated
+  // by debounced calls to /api/apollo/suggest. Native browser autocomplete
+  // handles the dropdown UI; Enter still adds whatever the rep typed, so they
+  // can pick a suggestion OR override with freeform input. Apollo credit per
+  // miss (24 h cache).
+  function makeAddInputWithSuggest(group, placeholder, suggestType) {
+    if (!editMode) return '';
+    var listId = 'apollo-suggest-' + group;
+    return '<input class="filter-add-input" style="display:inline-block" list="' + listId + '" '
+      + 'placeholder="+ ' + placeholder + '" '
+      + 'oninput="fetchApolloSuggestions(\'' + suggestType + '\', this.value, \'' + listId + '\')" '
+      + 'onkeydown="if(event.key===\'Enter\'){addFilter(\'' + group + '\',this.value);this.value=\'\'}">'
+      + '<datalist id="' + listId + '"></datalist>';
   }
   // Dropdown variant for Apollo-canonical enums. Renders a <select> showing
   // only the options not yet picked; on change, adds the value as a chip via
@@ -4281,7 +4329,7 @@ function renderFilterTags() {
   if (d.apollo_titles && d.apollo_titles.length) {
     titlesChips += d.apollo_titles.map(function(v){ return makeTag(v, 'apollo_titles'); }).join('');
   }
-  titlesChips += makeAddInput('apollo_titles', 'Add title…');
+  titlesChips += makeAddInputWithSuggest('apollo_titles', 'Add title…', 'title');
   html += makeRow('Titles', titlesChips);
 
   // Employee Ranges — this is the actual size filter sent to Apollo as
@@ -4310,7 +4358,7 @@ function renderFilterTags() {
   if (d.apollo_geography && d.apollo_geography.length) {
     geoChips += d.apollo_geography.map(function(v){ return makeTag(v, 'apollo_geography'); }).join('');
   }
-  geoChips += makeAddInput('apollo_geography', 'Add company location…');
+  geoChips += makeAddSelect('apollo_geography', APOLLO_COUNTRIES, 'Add country');
   html += makeRow('Company Location', geoChips);
 
   // Person Location — where the *contact* lives, separate from company HQ.
@@ -4320,7 +4368,7 @@ function renderFilterTags() {
   if (d.apollo_person_locations && d.apollo_person_locations.length) {
     ploChips += d.apollo_person_locations.map(function(v){ return makeTag(v, 'apollo_person_locations'); }).join('');
   }
-  ploChips += makeAddInput('apollo_person_locations', 'Add person location…');
+  ploChips += makeAddSelect('apollo_person_locations', APOLLO_COUNTRIES, 'Add country');
   html += makeRow('Person Location', ploChips);
 
   // Seniorities
@@ -4356,6 +4404,41 @@ function renderFilterTags() {
   }
 
   row.innerHTML = html;
+}
+
+// Debounced Apollo suggestion fetcher. Bound to <input oninput=...> in the
+// chip rows. Populates the paired <datalist> with up to 8 native-autocomplete
+// options. 300 ms debounce + per-(type,q) client cache means a rep typing
+// "ce" → "ceo" → "ceos" makes at most 3 network calls (often 1 after warm-up
+// thanks to the server's 24 h cache on the same key).
+window._apolloSuggestCache = window._apolloSuggestCache || {};
+window._apolloSuggestTimers = window._apolloSuggestTimers || {};
+function fetchApolloSuggestions(type, q, listId) {
+  q = (q || '').trim();
+  var dl = document.getElementById(listId);
+  if (!dl) return;
+  if (q.length < 2) { dl.innerHTML = ''; return; }
+  var key = type + ':' + q.toLowerCase();
+  if (window._apolloSuggestCache[key]) {
+    _renderApolloDatalist(dl, window._apolloSuggestCache[key]);
+    return;
+  }
+  clearTimeout(window._apolloSuggestTimers[listId]);
+  window._apolloSuggestTimers[listId] = setTimeout(function() {
+    fetch('/api/apollo/suggest?type=' + encodeURIComponent(type) + '&q=' + encodeURIComponent(q))
+      .then(function(r){ return r.ok ? r.json() : { suggestions: [] }; })
+      .then(function(d){
+        var list = Array.isArray(d.suggestions) ? d.suggestions : [];
+        window._apolloSuggestCache[key] = list;
+        _renderApolloDatalist(dl, list);
+      })
+      .catch(function(){ /* silent — typeahead is best-effort */ });
+  }, 300);
+}
+function _renderApolloDatalist(dl, suggestions) {
+  dl.innerHTML = suggestions.map(function(s){
+    return '<option value="' + String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;') + '"></option>';
+  }).join('');
 }
 
 function setRevenue(side, valStr) {
