@@ -2370,7 +2370,7 @@ async function guaranteedLeadSearch(sanitizedPayload, confidenceMap, relaxationO
 // ── Apollo chip-row typeahead corpus ──────────────────────────────────────────
 // All three open-ended chip dimensions (title, industry, location) read their
 // suggestions from the sales_assets.apollo_suggestions Supabase table. A
-// weekly sync (POST /api/admin/apollo-sync-corpus) seeds the table by running
+// monthly sync (POST /api/admin/apollo-sync-corpus) seeds the table by running
 // curated Apollo searches; cold misses (queries the corpus doesn't cover) hit
 // Apollo live and insert the result for next time. The 24 h in-memory cache
 // stays in front of everything to absorb repeated keystrokes.
@@ -2412,7 +2412,7 @@ async function insertNewSuggestionsToCorpus(type, values) {
   }
 }
 
-// Weekly corpus refresh. Runs ~25 seed queries per dimension against Apollo,
+// Monthly corpus refresh. Runs ~25 seed queries per dimension against Apollo,
 // counts how often each value shows up across the seed set, and replaces the
 // table contents for that type. Replacement (vs upsert) lets us drop stale
 // values Apollo no longer surfaces. Cost: ~75 Apollo credits per full run.
@@ -4228,7 +4228,7 @@ const server = http.createServer(async (req, res) => {
   // Resolution order:
   //   1. In-memory cache (24 h) for repeated keystrokes within a session.
   //   2. Supabase corpus (sales_assets.apollo_suggestions) — populated by the
-  //      weekly sync. Zero Apollo credits, sub-100 ms read.
+  //      monthly sync. Zero Apollo credits, sub-100 ms read.
   //   3. Live Apollo call as cold-miss fallback. Result is written back to
   //      the corpus (ignore-duplicates) so the next rep gets it free.
   if (req.method === 'GET' && urlPath === '/api/apollo/suggest') {
@@ -4270,10 +4270,36 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // ── POST /api/admin/apollo-sync-corpus — weekly Apollo corpus refresh ─────
+  // ── GET /api/admin/apollo-corpus-stats — per-type counts + last sync ──────
+  // Powers the manual-trigger panel in the Settings page so the admin can see
+  // how many suggestions are cached and how stale they are.
+  if (req.method === 'GET' && urlPath === '/api/admin/apollo-corpus-stats') {
+    setCors(res);
+    try {
+      const r = await supabaseRequest('GET',
+        '/rest/v1/apollo_suggestions?select=type,synced_at&order=synced_at.desc');
+      const rows = Array.isArray(r.body) ? r.body : [];
+      const stats = { title: 0, industry: 0, location: 0, last_synced_at: null };
+      rows.forEach(row => {
+        if (stats[row.type] !== undefined) stats[row.type]++;
+        if (!stats.last_synced_at || row.synced_at > stats.last_synced_at) {
+          stats.last_synced_at = row.synced_at;
+        }
+      });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(stats));
+    } catch (e) {
+      console.error('[GET /api/admin/apollo-corpus-stats]', e.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  // ── POST /api/admin/apollo-sync-corpus — monthly Apollo corpus refresh ────
   // Runs ~75 curated seed queries against Apollo and replaces the contents
   // of sales_assets.apollo_suggestions for each type. Idempotent. Trigger
-  // weekly via Render cron or call manually after deploys.
+  // monthly via Render cron, or manually from the Settings page button.
   if (req.method === 'POST' && urlPath === '/api/admin/apollo-sync-corpus') {
     setCors(res);
     try {

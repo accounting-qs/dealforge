@@ -199,6 +199,7 @@ h1{font-size:28px;font-weight:700;letter-spacing:-0.025em;color:#fff;margin:0 0 
   <div class="section-tabs">
     <button class="section-tab active" data-section="prompts" onclick="switchSection('prompts', event)">Prompts</button>
     <button class="section-tab" data-section="copy-brain" onclick="switchSection('copy-brain', event)">Copy Brain</button>
+    <button class="section-tab" data-section="apollo-corpus" onclick="switchSection('apollo-corpus', event)">Apollo Corpus</button>
   </div>
 
   <!-- ── Prompts section ────────────────────────────────────────────────── -->
@@ -275,6 +276,32 @@ h1{font-size:28px;font-weight:700;letter-spacing:-0.025em;color:#fff;margin:0 0 
       </div>
     </div>
   </div>
+
+  <!-- ── Apollo Corpus section ──────────────────────────────────────────── -->
+  <div class="section" id="section-apollo-corpus">
+    <div class="cb-card">
+      <div class="cb-head">
+        <div class="cb-head-title">
+          <strong>Apollo Suggestion Corpus</strong>
+          <span>Backs the title / industry / location chip-row typeahead</span>
+        </div>
+      </div>
+      <div class="cb-body">
+        <p style="font-size:12px;color:#71717a;line-height:1.6;margin:0 0 14px;">
+          The lead-list chip rows read their autocomplete from a Supabase corpus instead of hitting Apollo on every keystroke. The corpus is refreshed by running ~75 curated seed queries (titles, industries, locations) against Apollo and replacing the stored values per type. Cold-miss queries (something the rep typed that isn't in the corpus yet) fall through to live Apollo and write the result back, so the corpus self-enriches between syncs.
+          <br><br>
+          <strong style="color:#a1a1aa;">Cost:</strong> ~75 Apollo credits per full sync. Recommended cadence: <strong style="color:#a1a1aa;">monthly</strong>.
+        </p>
+        <div id="apollo-corpus-stats" style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-bottom:14px;">
+          <div class="loading" style="grid-column:1/-1;">Loading stats…</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:12px;">
+          <button class="cb-add-btn" id="apollo-sync-btn" onclick="apolloSyncRun()">🔄 Run sync now</button>
+          <span id="apollo-sync-status" style="font-size:11px;color:#71717a;"></span>
+        </div>
+      </div>
+    </div>
+  </div>
 </div>
 
 <div class="toast" id="toast"></div>
@@ -298,6 +325,61 @@ function switchSection(name, event) {
   if (name === 'copy-brain' && !window._cbLoaded) {
     cbLoad();
     window._cbLoaded = true;
+  }
+  if (name === 'apollo-corpus') {
+    apolloLoadStats();
+  }
+}
+
+// ── Apollo Corpus admin panel ───────────────────────────────────────────────
+function apolloFmtAgo(iso) {
+  if (!iso) return 'never';
+  var t = new Date(iso).getTime();
+  if (!isFinite(t)) return 'never';
+  var s = Math.floor((Date.now() - t) / 1000);
+  if (s < 60)        return s + 's ago';
+  if (s < 3600)      return Math.floor(s / 60) + 'm ago';
+  if (s < 86400)     return Math.floor(s / 3600) + 'h ago';
+  return Math.floor(s / 86400) + 'd ago';
+}
+async function apolloLoadStats() {
+  var el = document.getElementById('apollo-corpus-stats');
+  el.innerHTML = '<div class="loading" style="grid-column:1/-1;">Loading stats…</div>';
+  try {
+    var r = await fetch('/api/admin/apollo-corpus-stats');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    var s = await r.json();
+    var card = (label, n) => '<div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:12px 14px;">'
+      + '<div style="font-size:10px;color:#52525b;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:4px;">' + label + '</div>'
+      + '<div style="font-size:20px;font-weight:700;color:#e4e4e7;">' + (n||0).toLocaleString() + '</div>'
+      + '</div>';
+    el.innerHTML = card('Titles', s.title) + card('Industries', s.industry) + card('Locations', s.location);
+    var status = document.getElementById('apollo-sync-status');
+    status.textContent = 'Last sync: ' + apolloFmtAgo(s.last_synced_at);
+  } catch (e) {
+    el.innerHTML = '<div style="grid-column:1/-1;color:#fca5a5;font-size:12px;">Failed to load stats: ' + esc(e.message) + '</div>';
+  }
+}
+async function apolloSyncRun() {
+  if (!confirm('Run the Apollo corpus sync now? This burns ~75 Apollo credits and takes 1–2 minutes.')) return;
+  var btn = document.getElementById('apollo-sync-btn');
+  var status = document.getElementById('apollo-sync-status');
+  btn.disabled = true;
+  var origText = btn.textContent;
+  btn.textContent = '⏳ Syncing…';
+  status.textContent = 'Querying Apollo for ~75 seed values…';
+  try {
+    var r = await fetch('/api/admin/apollo-sync-corpus', { method: 'POST' });
+    var data = await r.json().catch(function(){ return {}; });
+    if (!r.ok || data.ok === false) throw new Error(data.error || ('HTTP ' + r.status));
+    showToast('Sync complete · titles ' + (data.title||0) + ' · industries ' + (data.industry||0) + ' · locations ' + (data.location||0));
+    await apolloLoadStats();
+  } catch (e) {
+    showToast('Sync failed: ' + e.message);
+    status.textContent = 'Sync failed.';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = origText;
   }
 }
 
