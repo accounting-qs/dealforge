@@ -2399,6 +2399,58 @@ async function suggestTitles(q) {
   }
 }
 
+// Industry suggestions live off /v1/organizations/search (which, unlike the
+// people endpoint, returns full industry + keyword strings — the people
+// endpoint masks them as has_industry:true). Ranking strategy:
+//   1. Count how often each industry/keyword appears across the top 25 orgs
+//      matching the rep's query. Frequent values are more topical.
+//   2. Boost values that literally contain the rep's query (so typing "wealth"
+//      surfaces "wealth management" ahead of the broader "financial services"
+//      that's also represented).
+// Without this, naive iteration order surfaces whatever industry the *first*
+// few orgs happen to be tagged with — often noise like "publishing" or
+// "international affairs" creeping in for unrelated queries.
+async function suggestIndustries(q) {
+  const APOLLO_KEY = process.env.APOLLO_API_KEY;
+  if (!APOLLO_KEY || !q) return [];
+  try {
+    const r = await fetch('https://api.apollo.io/v1/organizations/search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'x-api-key': APOLLO_KEY },
+      body: JSON.stringify({ q_organization_keyword_tags: [q], per_page: 25 }),
+      signal: AbortSignal.timeout(8000)
+    });
+    if (!r.ok) return [];
+    const data = await r.json();
+    const qTokens = q.toLowerCase().split(/\s+/).filter(Boolean);
+    const matchesQuery = s => qTokens.some(t => String(s).toLowerCase().includes(t));
+    const counts = new Map();
+    const bump = s => {
+      if (!s) return;
+      const v = String(s).trim();
+      if (!v) return;
+      counts.set(v, (counts.get(v) || 0) + 1);
+    };
+    (data.organizations || []).forEach(o => {
+      bump(o.industry);
+      if (Array.isArray(o.industries)) o.industries.forEach(bump);
+      if (Array.isArray(o.keywords)) o.keywords.forEach(s => { if (matchesQuery(s)) bump(s); });
+    });
+    return [...counts.entries()]
+      .sort((a, b) => {
+        const am = matchesQuery(a[0]) ? 1 : 0;
+        const bm = matchesQuery(b[0]) ? 1 : 0;
+        if (am !== bm) return bm - am; // query-matching values first
+        return b[1] - a[1];             // then by frequency
+      })
+      .slice(0, 8)
+      .map(([s]) => s);
+  } catch (e) {
+    console.warn('[suggestIndustries]', e.message);
+    return [];
+  }
+}
+
 async function fetchLeadsFromApollo(icp, progressCb) {
   const APOLLO_KEY = process.env.APOLLO_API_KEY;
   if (!APOLLO_KEY) { console.log('[Apollo] No API key — skipping'); return null; }
@@ -4036,7 +4088,7 @@ const server = http.createServer(async (req, res) => {
       const qs = new URLSearchParams(req.url.includes('?') ? req.url.split('?')[1] : '');
       const type = (qs.get('type') || '').toLowerCase();
       const q = (qs.get('q') || '').trim();
-      if (type !== 'title' || q.length < 2) {
+      if (!['title', 'industry'].includes(type) || q.length < 2) {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ suggestions: [] }));
         return;
@@ -4048,7 +4100,7 @@ const server = http.createServer(async (req, res) => {
         res.end(JSON.stringify({ suggestions: cached.value, cached: true }));
         return;
       }
-      const suggestions = await suggestTitles(q);
+      const suggestions = type === 'industry' ? await suggestIndustries(q) : await suggestTitles(q);
       APOLLO_SUGGEST_CACHE.set(cacheKey, { value: suggestions, at: Date.now() });
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ suggestions }));

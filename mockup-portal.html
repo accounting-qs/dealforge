@@ -4350,7 +4350,7 @@ function renderFilterTags() {
   if (Array.isArray(d.apollo_keyword) && d.apollo_keyword.length) {
     indChips += d.apollo_keyword.map(function(v){ return makeTag(v, 'apollo_keyword'); }).join('');
   }
-  indChips += makeAddInput('apollo_keyword', 'e.g. property management');
+  indChips += makeAddInputWithSuggest('apollo_keyword', 'e.g. property management', 'industry');
   html += makeRow('Industry', indChips);
 
   // Geographies — company HQ location (Apollo's organization_locations).
