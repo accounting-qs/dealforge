@@ -5062,8 +5062,16 @@ const server = http.createServer(async (req, res) => {
       const existingIcp = existingData.icp || {};
       const ICP_FIELDS = ['apollo_titles', 'apollo_keyword', 'apollo_geography', 'apollo_employee_ranges', 'person_seniorities', 'apollo_person_locations', 'apollo_revenue_range', 'target_audience_type'];
       const updatedIcp = { ...existingIcp };
+      // Track whether the rep actually changed something so we can clear stale
+      // TAM overrides only on real edits (not on a no-op Save Filters click).
+      let anyIcpFieldChanged = false;
       for (const k of ICP_FIELDS) {
-        if (body[k] !== undefined) updatedIcp[k] = body[k];
+        if (body[k] !== undefined) {
+          if (JSON.stringify(existingIcp[k]) !== JSON.stringify(body[k])) {
+            anyIcpFieldChanged = true;
+          }
+          updatedIcp[k] = body[k];
+        }
       }
       // Mirror apollo_keyword → icp.industry so legacy display callers
       // (calendar header, case-studies filter, ROI templates) stay in sync
@@ -5087,12 +5095,26 @@ const server = http.createServer(async (req, res) => {
       // legacy-build path) would silently re-inject filters the rep removed.
       delete updatedIcp.apollo_payload;
       const updatedData = { ...existingData, icp: updatedIcp };
+      // When ICP filters actually change, the rep's manual TAM override (and
+      // the derived monthly outreach) becomes stale — they reflect a pool that
+      // no longer matches the filter set. Clear those two overrides so the
+      // next rerun-apollo surfaces fresh Apollo-derived numbers. Other
+      // overrides (LTV, show rate, close rate, webinar title) are independent
+      // of the filter set and stay put.
+      if (anyIcpFieldChanged && updatedData._overrides) {
+        const { tam_total, recommended_outreach, ...keptOverrides } = updatedData._overrides;
+        if (Object.keys(keptOverrides).length > 0) {
+          updatedData._overrides = keptOverrides;
+        } else {
+          delete updatedData._overrides;
+        }
+      }
       const r = await supabaseRequest('PATCH', `/rest/v1/jobs?id=eq.${jobId}`,
         { extracted_data: updatedData, updated_at: new Date().toISOString() },
         { 'Prefer': 'return=minimal' }
       );
       if (r.status >= 400) throw new Error(`Supabase PATCH failed: ${r.status}`);
-      console.log(`[PATCH /api/jobs/${jobId}/icp] Updated ICP filters`);
+      console.log(`[PATCH /api/jobs/${jobId}/icp] Updated ICP filters${anyIcpFieldChanged ? ' (cleared stale tam_total/recommended_outreach overrides)' : ''}`);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true, icp: updatedIcp }));
     } catch(e) {

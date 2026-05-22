@@ -83,6 +83,8 @@ html[data-mode="prospect"] .rep-only { display: none !important; }
 .filter-num-input { display: inline-block; width: 64px; -moz-appearance: textfield; }
 .filter-num-input::-webkit-outer-spin-button, .filter-num-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 .filter-revenue-label { font-size: 10px; color: #71717a; text-transform: uppercase; letter-spacing: 0.04em; }
+.filter-add-select { width: auto; min-width: 150px; cursor: pointer; appearance: none; -webkit-appearance: none; padding-right: 26px; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' fill='none' stroke='%23a1a1aa' viewBox='0 0 24 24'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M19 9l-7 7-7-7'/%3E%3C/svg%3E"); background-position: right 8px center; background-repeat: no-repeat; }
+.filter-add-select option { background: #18181b; color: #d1d5db; }
 .filter-actions { display: none; gap: 8px; align-items: center; margin-top: 10px; }
 .filter-actions.show { display: flex; }
 .filter-action-btn { font-size: 11px; font-weight: 600; padding: 6px 14px; border-radius: 8px; cursor: pointer; border: 1px solid; font-family: inherit; transition: all 100ms; }
@@ -4196,6 +4198,34 @@ function runPersonalization(session) {
 // ── Editable ICP Filter Tags ──────────────────────────────────────────────────
 function escHtml(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
 
+// Apollo-canonical enums. Free-text fields (titles, locations, industry) stay
+// free-text; these are the dimensions where Apollo rejects non-matching strings
+// outright. Values are exactly what Apollo's mixed_people/api_search accepts;
+// labels are the human-readable form shown in the chip add-dropdown.
+var APOLLO_EMPLOYEE_RANGES = [
+  { value: '1,10',       label: '1–10' },
+  { value: '11,50',      label: '11–50' },
+  { value: '51,200',     label: '51–200' },
+  { value: '201,500',    label: '201–500' },
+  { value: '501,1000',   label: '501–1,000' },
+  { value: '1001,5000',  label: '1,001–5,000' },
+  { value: '5001,10000', label: '5,001–10,000' },
+  { value: '10001+',     label: '10,000+' }
+];
+var APOLLO_SENIORITIES = [
+  { value: 'owner',     label: 'Owner' },
+  { value: 'founder',   label: 'Founder' },
+  { value: 'c_suite',   label: 'C-Suite' },
+  { value: 'partner',   label: 'Partner' },
+  { value: 'vp',        label: 'VP' },
+  { value: 'head',      label: 'Head' },
+  { value: 'director',  label: 'Director' },
+  { value: 'manager',   label: 'Manager' },
+  { value: 'senior',    label: 'Senior' },
+  { value: 'entry',     label: 'Entry-level' },
+  { value: 'intern',    label: 'Intern' }
+];
+
 function renderFilterTags() {
   var row = document.querySelector('.tam-filters-row');
   if (!row || !window._icpEditData) return;
@@ -4203,13 +4233,40 @@ function renderFilterTags() {
   var editMode = window._filterEditMode;
   var editClass = editMode ? ' editable' : '';
 
+  function labelFor(group, val) {
+    var src = null;
+    if (group === 'apollo_employee_ranges') src = APOLLO_EMPLOYEE_RANGES;
+    else if (group === 'person_seniorities') src = APOLLO_SENIORITIES;
+    if (src) {
+      var hit = src.find(function(o){ return o.value === val; });
+      if (hit) return hit.label;
+    }
+    return val;
+  }
   function makeTag(val, group) {
     var removeBtn = '<span class="ft-remove" onclick="removeFilter(\'' + escHtml(group) + '\',\'' + escHtml(val).replace(/'/g,"&#39;") + '\')">&times;</span>';
-    return '<span class="filter-tag' + editClass + '">' + escHtml(val) + removeBtn + '</span>';
+    return '<span class="filter-tag' + editClass + '">' + escHtml(labelFor(group, val)) + removeBtn + '</span>';
   }
   function makeAddInput(group, placeholder) {
     if (!editMode) return '';
     return '<input class="filter-add-input" style="display:inline-block" placeholder="+ ' + placeholder + '" onkeydown="if(event.key===\'Enter\'){addFilter(\'' + group + '\',this.value);this.value=\'\'}">';
+  }
+  // Dropdown variant for Apollo-canonical enums. Renders a <select> showing
+  // only the options not yet picked; on change, adds the value as a chip via
+  // addFilter and resets the dropdown. Hidden in display mode.
+  function makeAddSelect(group, options, placeholder) {
+    if (!editMode) return '';
+    var current = Array.isArray(d[group]) ? d[group] : [];
+    var remaining = options.filter(function(opt){ return current.indexOf(opt.value) === -1; });
+    if (!remaining.length) return ''; // every option already chosen
+    var optsHtml = remaining.map(function(opt){
+      return '<option value="' + escHtml(opt.value) + '">' + escHtml(opt.label) + '</option>';
+    }).join('');
+    return '<select class="filter-add-input filter-add-select" style="display:inline-block" '
+      + 'onchange="if(this.value){addFilter(\'' + group + '\',this.value);this.value=\'\';}">'
+      + '<option value="">+ ' + escHtml(placeholder) + '</option>'
+      + optsHtml
+      + '</select>';
   }
   function makeRow(label, chipsHtml) {
     if (!chipsHtml) return '';
@@ -4235,7 +4292,7 @@ function renderFilterTags() {
   if (d.apollo_employee_ranges && d.apollo_employee_ranges.length) {
     empChips += d.apollo_employee_ranges.map(function(v){ return makeTag(v, 'apollo_employee_ranges'); }).join('');
   }
-  empChips += makeAddInput('apollo_employee_ranges', 'e.g. 11,50');
+  empChips += makeAddSelect('apollo_employee_ranges', APOLLO_EMPLOYEE_RANGES, 'Add employee range');
   html += makeRow('Employee Ranges', empChips);
 
   // Industry — multi-tag OR. Apollo's q_organization_keyword_tags arrays OR
@@ -4271,7 +4328,7 @@ function renderFilterTags() {
   if (d.person_seniorities && d.person_seniorities.length) {
     senChips += d.person_seniorities.map(function(v){ return makeTag(v, 'person_seniorities'); }).join('');
   }
-  senChips += makeAddInput('person_seniorities', 'e.g. director');
+  senChips += makeAddSelect('person_seniorities', APOLLO_SENIORITIES, 'Add seniority');
   html += makeRow('Seniorities', senChips);
 
   // Revenue range — two numeric inputs (whole $M). Custom row (not a chip
