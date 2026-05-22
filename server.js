@@ -2367,16 +2367,108 @@ async function guaranteedLeadSearch(sanitizedPayload, confidenceMap, relaxationO
   };
 }
 
-// ── Apollo typeahead for the Titles chip row ──────────────────────────────────
-// Titles are an open free-text space and Apollo expands variants server-side
-// (e.g. "ceo" → "Chief Executive Officer", "CEO and Founder"). The /suggest
-// endpoint surfaces those variants so the rep can pick what Apollo actually
-// recognizes. Each miss costs 1 Apollo credit; an in-memory 24 h cache makes
-// rapid keystrokes (`c` → `ce` → `ceo`) amortize to ~1 credit per unique q.
-// Locations are NOT served here — they're a fixed country list, handled
-// client-side, no credits needed.
+// ── Apollo chip-row typeahead corpus ──────────────────────────────────────────
+// All three open-ended chip dimensions (title, industry, location) read their
+// suggestions from the sales_assets.apollo_suggestions Supabase table. A
+// weekly sync (POST /api/admin/apollo-sync-corpus) seeds the table by running
+// curated Apollo searches; cold misses (queries the corpus doesn't cover) hit
+// Apollo live and insert the result for next time. The 24 h in-memory cache
+// stays in front of everything to absorb repeated keystrokes.
 const APOLLO_SUGGEST_CACHE = new Map();
 const APOLLO_SUGGEST_TTL_MS = 24 * 60 * 60 * 1000;
+
+// Corpus read: substring search on lowercased value, ordered by frequency.
+// PostgREST wildcard syntax is `*query*`; the value_lower column is a STORED
+// GENERATED column so the index covers it.
+async function getSuggestionsFromCorpus(type, q, limit = 8) {
+  try {
+    const path = `/rest/v1/apollo_suggestions?type=eq.${encodeURIComponent(type)}`
+      + `&value_lower=ilike.*${encodeURIComponent(q.toLowerCase())}*`
+      + `&order=frequency.desc&limit=${limit}`;
+    const r = await supabaseRequest('GET', path);
+    if (r.status !== 200 || !Array.isArray(r.body)) return [];
+    return r.body.map(row => row.value);
+  } catch (e) {
+    console.warn('[getSuggestionsFromCorpus]', e.message);
+    return [];
+  }
+}
+
+// Live-fallback insert: only adds values that aren't already in the corpus.
+// Existing rows keep their frequency (set by the last sync) — we never
+// downgrade a high-frequency row to 1 just because a rep typed it once.
+async function insertNewSuggestionsToCorpus(type, values) {
+  if (!Array.isArray(values) || !values.length) return;
+  const rows = values
+    .map(v => String(v || '').trim())
+    .filter(Boolean)
+    .map(value => ({ type, value, frequency: 1 }));
+  if (!rows.length) return;
+  try {
+    await supabaseRequest('POST', '/rest/v1/apollo_suggestions', rows,
+      { 'Prefer': 'resolution=ignore-duplicates,return=minimal' });
+  } catch (e) {
+    console.warn('[insertNewSuggestionsToCorpus]', e.message);
+  }
+}
+
+// Weekly corpus refresh. Runs ~25 seed queries per dimension against Apollo,
+// counts how often each value shows up across the seed set, and replaces the
+// table contents for that type. Replacement (vs upsert) lets us drop stale
+// values Apollo no longer surfaces. Cost: ~75 Apollo credits per full run.
+const APOLLO_TITLE_SEEDS = [
+  'ceo','cfo','cto','coo','cmo','cro','cio','chief executive','chief operating',
+  'founder','co-founder','partner','managing partner','managing director',
+  'vp sales','vp marketing','vp engineering','head of sales','head of marketing',
+  'director','manager','engineer','consultant','principal','analyst','advisor'
+];
+const APOLLO_INDUSTRY_SEEDS = [
+  'software','saas','real estate','property management','financial services',
+  'wealth management','insurance','banking','investment','healthcare',
+  'pharmaceuticals','biotech','medical','manufacturing','construction','retail',
+  'ecommerce','consulting','management consulting','marketing','advertising',
+  'logistics','transportation','education','training','media','publishing'
+];
+const APOLLO_LOCATION_SEEDS = [
+  'united states','united kingdom','canada','australia','new zealand','ireland',
+  'germany','france','spain','italy','netherlands','sweden','switzerland',
+  'norway','denmark','poland','austria','belgium',
+  'india','japan','singapore','hong kong','china','south korea',
+  'brazil','mexico','south africa','israel','united arab emirates'
+];
+
+async function syncApolloSuggestionsCorpus() {
+  const stats = { title: 0, industry: 0, location: 0, started_at: new Date().toISOString() };
+  for (const [type, seeds, fetcher] of [
+    ['title',    APOLLO_TITLE_SEEDS,    suggestTitles],
+    ['industry', APOLLO_INDUSTRY_SEEDS, suggestIndustries],
+    ['location', APOLLO_LOCATION_SEEDS, suggestLocations]
+  ]) {
+    const counts = new Map();
+    for (const seed of seeds) {
+      const list = await fetcher(seed);
+      list.forEach(v => {
+        const clean = String(v || '').trim();
+        if (clean) counts.set(clean, (counts.get(clean) || 0) + 1);
+      });
+    }
+    if (!counts.size) continue;
+    // Replace-all for this type: delete first, then bulk insert.
+    await supabaseRequest('DELETE', `/rest/v1/apollo_suggestions?type=eq.${type}`,
+      null, { 'Prefer': 'return=minimal' });
+    const rows = [...counts.entries()].map(([value, frequency]) => ({ type, value, frequency }));
+    // Chunk inserts at 500 rows so a fat sync doesn't slam PostgREST.
+    for (let i = 0; i < rows.length; i += 500) {
+      await supabaseRequest('POST', '/rest/v1/apollo_suggestions',
+        rows.slice(i, i + 500),
+        { 'Prefer': 'resolution=ignore-duplicates,return=minimal' });
+    }
+    stats[type] = rows.length;
+  }
+  stats.finished_at = new Date().toISOString();
+  console.log('[apollo-corpus-sync] complete', stats);
+  return stats;
+}
 
 async function suggestTitles(q) {
   const APOLLO_KEY = process.env.APOLLO_API_KEY;
@@ -4132,9 +4224,13 @@ const server = http.createServer(async (req, res) => {
   // PHASE 2 — CALL LIBRARY API
   // ══════════════════════════════════════════════════════════════════════════
 
-  // ── GET /api/apollo/suggest?type=title&q=... — title typeahead ────────────
-  // Calls Apollo to surface canonical title variants for the chip input. Miss
-  // costs 1 Apollo credit; 24 h in-memory cache amortizes repeated prefixes.
+  // ── GET /api/apollo/suggest?type=title|industry|location&q=... ────────────
+  // Resolution order:
+  //   1. In-memory cache (24 h) for repeated keystrokes within a session.
+  //   2. Supabase corpus (sales_assets.apollo_suggestions) — populated by the
+  //      weekly sync. Zero Apollo credits, sub-100 ms read.
+  //   3. Live Apollo call as cold-miss fallback. Result is written back to
+  //      the corpus (ignore-duplicates) so the next rep gets it free.
   if (req.method === 'GET' && urlPath === '/api/apollo/suggest') {
     setCors(res);
     try {
@@ -4150,19 +4246,46 @@ const server = http.createServer(async (req, res) => {
       const cached = APOLLO_SUGGEST_CACHE.get(cacheKey);
       if (cached && (Date.now() - cached.at) < APOLLO_SUGGEST_TTL_MS) {
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ suggestions: cached.value, cached: true }));
+        res.end(JSON.stringify({ suggestions: cached.value, source: 'memory' }));
         return;
       }
-      const suggestions = type === 'industry' ? await suggestIndustries(q)
-        : type === 'location' ? await suggestLocations(q)
-        : await suggestTitles(q);
+      let suggestions = await getSuggestionsFromCorpus(type, q);
+      let source = 'corpus';
+      if (suggestions.length === 0) {
+        // Corpus miss — fall back to live Apollo and seed the corpus for next time.
+        suggestions = type === 'industry' ? await suggestIndustries(q)
+          : type === 'location' ? await suggestLocations(q)
+          : await suggestTitles(q);
+        source = 'live';
+        if (suggestions.length) insertNewSuggestionsToCorpus(type, suggestions);
+      }
       APOLLO_SUGGEST_CACHE.set(cacheKey, { value: suggestions, at: Date.now() });
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ suggestions }));
+      res.end(JSON.stringify({ suggestions, source }));
     } catch (e) {
       console.warn('[GET /api/apollo/suggest]', e.message);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ suggestions: [] }));
+    }
+    return;
+  }
+
+  // ── POST /api/admin/apollo-sync-corpus — weekly Apollo corpus refresh ─────
+  // Runs ~75 curated seed queries against Apollo and replaces the contents
+  // of sales_assets.apollo_suggestions for each type. Idempotent. Trigger
+  // weekly via Render cron or call manually after deploys.
+  if (req.method === 'POST' && urlPath === '/api/admin/apollo-sync-corpus') {
+    setCors(res);
+    try {
+      const stats = await syncApolloSuggestionsCorpus();
+      // Clear the in-memory cache so the next /suggest call sees fresh data.
+      APOLLO_SUGGEST_CACHE.clear();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, ...stats }));
+    } catch (e) {
+      console.error('[POST /api/admin/apollo-sync-corpus]', e.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: e.message }));
     }
     return;
   }
