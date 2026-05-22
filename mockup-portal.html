@@ -4202,13 +4202,20 @@ function escHtml(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&
 // free-text; these are the dimensions where Apollo rejects non-matching strings
 // outright. Values are exactly what Apollo's mixed_people/api_search accepts;
 // labels are the human-readable form shown in the chip add-dropdown.
+// Apollo's actual employee-range taxonomy as shown in their app UI — 11
+// granularity buckets. Earlier we used a merged-down 8-bucket list which
+// Apollo accepted but didn't correspond 1:1 to a UI bucket, causing chip
+// counts to disagree with Apollo's own UI when reps cross-referenced.
 var APOLLO_EMPLOYEE_RANGES = [
   { value: '1,10',       label: '1–10' },
-  { value: '11,50',      label: '11–50' },
-  { value: '51,200',     label: '51–200' },
+  { value: '11,20',      label: '11–20' },
+  { value: '21,50',      label: '21–50' },
+  { value: '51,100',     label: '51–100' },
+  { value: '101,200',    label: '101–200' },
   { value: '201,500',    label: '201–500' },
   { value: '501,1000',   label: '501–1,000' },
-  { value: '1001,5000',  label: '1,001–5,000' },
+  { value: '1001,2000',  label: '1,001–2,000' },
+  { value: '2001,5000',  label: '2,001–5,000' },
   { value: '5001,10000', label: '5,001–10,000' },
   { value: '10001+',     label: '10,000+' }
 ];
@@ -4225,40 +4232,6 @@ var APOLLO_SENIORITIES = [
   { value: 'entry',     label: 'Entry-level' },
   { value: 'intern',    label: 'Intern' }
 ];
-
-// Country list for Company Location and Person Location chip rows. Values are
-// the Apollo-canonical country names (Apollo accepts these in
-// organization_locations / person_locations verbatim). Plus a synthetic
-// "European Union" entry that the server fans out to all 27 member states.
-var APOLLO_COUNTRIES = [
-  'United States','Canada','United Kingdom','European Union','Australia','New Zealand',
-  'Afghanistan','Albania','Algeria','Andorra','Angola','Argentina','Armenia','Austria',
-  'Azerbaijan','Bahamas','Bahrain','Bangladesh','Barbados','Belarus','Belgium','Belize',
-  'Benin','Bhutan','Bolivia','Bosnia and Herzegovina','Botswana','Brazil','Brunei',
-  'Bulgaria','Burkina Faso','Burundi','Cambodia','Cameroon','Cape Verde',
-  'Central African Republic','Chad','Chile','China','Colombia','Comoros','Costa Rica',
-  'Croatia','Cuba','Cyprus','Czech Republic','Denmark','Djibouti','Dominica',
-  'Dominican Republic','Ecuador','Egypt','El Salvador','Equatorial Guinea','Eritrea',
-  'Estonia','Eswatini','Ethiopia','Fiji','Finland','France','Gabon','Gambia','Georgia',
-  'Germany','Ghana','Greece','Grenada','Guatemala','Guinea','Guinea-Bissau','Guyana',
-  'Haiti','Honduras','Hong Kong','Hungary','Iceland','India','Indonesia','Iran','Iraq',
-  'Ireland','Israel','Italy','Ivory Coast','Jamaica','Japan','Jordan','Kazakhstan',
-  'Kenya','Kiribati','Kosovo','Kuwait','Kyrgyzstan','Laos','Latvia','Lebanon','Lesotho',
-  'Liberia','Libya','Liechtenstein','Lithuania','Luxembourg','Madagascar','Malawi',
-  'Malaysia','Maldives','Mali','Malta','Marshall Islands','Mauritania','Mauritius',
-  'Mexico','Micronesia','Moldova','Monaco','Mongolia','Montenegro','Morocco',
-  'Mozambique','Myanmar','Namibia','Nauru','Nepal','Netherlands','Nicaragua','Niger',
-  'Nigeria','North Korea','North Macedonia','Norway','Oman','Pakistan','Palau',
-  'Palestine','Panama','Papua New Guinea','Paraguay','Peru','Philippines','Poland',
-  'Portugal','Qatar','Romania','Russia','Rwanda','Saint Kitts and Nevis','Saint Lucia',
-  'Saint Vincent and the Grenadines','Samoa','San Marino','Saudi Arabia','Senegal',
-  'Serbia','Seychelles','Sierra Leone','Singapore','Slovakia','Slovenia',
-  'Solomon Islands','Somalia','South Africa','South Korea','South Sudan','Spain',
-  'Sri Lanka','Sudan','Suriname','Sweden','Switzerland','Syria','Taiwan','Tajikistan',
-  'Tanzania','Thailand','Timor-Leste','Togo','Tonga','Trinidad and Tobago','Tunisia',
-  'Turkey','Turkmenistan','Tuvalu','Uganda','Ukraine','United Arab Emirates','Uruguay',
-  'Uzbekistan','Vanuatu','Vatican City','Venezuela','Vietnam','Yemen','Zambia','Zimbabwe'
-].map(function(c){ return { value: c, label: c }; });
 
 function renderFilterTags() {
   var row = document.querySelector('.tam-filters-row');
@@ -4358,7 +4331,7 @@ function renderFilterTags() {
   if (d.apollo_geography && d.apollo_geography.length) {
     geoChips += d.apollo_geography.map(function(v){ return makeTag(v, 'apollo_geography'); }).join('');
   }
-  geoChips += makeAddSelect('apollo_geography', APOLLO_COUNTRIES, 'Add country');
+  geoChips += makeAddInputWithSuggest('apollo_geography', 'Add company location…', 'location');
   html += makeRow('Company Location', geoChips);
 
   // Person Location — where the *contact* lives, separate from company HQ.
@@ -4368,7 +4341,7 @@ function renderFilterTags() {
   if (d.apollo_person_locations && d.apollo_person_locations.length) {
     ploChips += d.apollo_person_locations.map(function(v){ return makeTag(v, 'apollo_person_locations'); }).join('');
   }
-  ploChips += makeAddSelect('apollo_person_locations', APOLLO_COUNTRIES, 'Add country');
+  ploChips += makeAddInputWithSuggest('apollo_person_locations', 'Add person location…', 'location');
   html += makeRow('Person Location', ploChips);
 
   // Seniorities

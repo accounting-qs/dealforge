@@ -2399,6 +2399,59 @@ async function suggestTitles(q) {
   }
 }
 
+// Location suggestions also come from /v1/organizations/search — the people
+// endpoint masks city/state/country at our tier (has_city:true, no actual
+// value), but the orgs endpoint returns them clean. Person Location reuses
+// these suggestions because Apollo masks person-side location data the same
+// way and city/country strings are valid in both organization_locations and
+// person_locations search fields. Each org contributes up to four
+// granularities (country / state,country / city,country / city,state,country)
+// so the rep can pick whichever scope matches their ICP.
+async function suggestLocations(q) {
+  const APOLLO_KEY = process.env.APOLLO_API_KEY;
+  if (!APOLLO_KEY || !q) return [];
+  try {
+    const r = await fetch('https://api.apollo.io/v1/organizations/search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'x-api-key': APOLLO_KEY },
+      body: JSON.stringify({ organization_locations: [q], per_page: 25 }),
+      signal: AbortSignal.timeout(8000)
+    });
+    if (!r.ok) return [];
+    const data = await r.json();
+    const qLower = q.toLowerCase();
+    const matchesQuery = s => String(s).toLowerCase().includes(qLower);
+    const counts = new Map();
+    const bump = s => {
+      if (!s) return;
+      const v = String(s).trim();
+      if (!v) return;
+      counts.set(v, (counts.get(v) || 0) + 1);
+    };
+    (data.organizations || []).forEach(o => {
+      const city = (o.city || '').trim();
+      const state = (o.state || '').trim();
+      const country = (o.country || '').trim();
+      if (country) bump(country);
+      if (state && country) bump(`${state}, ${country}`);
+      if (city && country) bump(`${city}, ${country}`);
+      if (city && state && country) bump(`${city}, ${state}, ${country}`);
+    });
+    return [...counts.entries()]
+      .sort((a, b) => {
+        const am = matchesQuery(a[0]) ? 1 : 0;
+        const bm = matchesQuery(b[0]) ? 1 : 0;
+        if (am !== bm) return bm - am;
+        return b[1] - a[1];
+      })
+      .slice(0, 8)
+      .map(([s]) => s);
+  } catch (e) {
+    console.warn('[suggestLocations]', e.message);
+    return [];
+  }
+}
+
 // Industry suggestions live off /v1/organizations/search (which, unlike the
 // people endpoint, returns full industry + keyword strings — the people
 // endpoint masks them as has_industry:true). Ranking strategy:
@@ -4088,7 +4141,7 @@ const server = http.createServer(async (req, res) => {
       const qs = new URLSearchParams(req.url.includes('?') ? req.url.split('?')[1] : '');
       const type = (qs.get('type') || '').toLowerCase();
       const q = (qs.get('q') || '').trim();
-      if (!['title', 'industry'].includes(type) || q.length < 2) {
+      if (!['title', 'industry', 'location'].includes(type) || q.length < 2) {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ suggestions: [] }));
         return;
@@ -4100,7 +4153,9 @@ const server = http.createServer(async (req, res) => {
         res.end(JSON.stringify({ suggestions: cached.value, cached: true }));
         return;
       }
-      const suggestions = type === 'industry' ? await suggestIndustries(q) : await suggestTitles(q);
+      const suggestions = type === 'industry' ? await suggestIndustries(q)
+        : type === 'location' ? await suggestLocations(q)
+        : await suggestTitles(q);
       APOLLO_SUGGEST_CACHE.set(cacheKey, { value: suggestions, at: Date.now() });
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ suggestions }));
