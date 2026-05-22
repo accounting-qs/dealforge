@@ -288,9 +288,9 @@ h1{font-size:28px;font-weight:700;letter-spacing:-0.025em;color:#fff;margin:0 0 
       </div>
       <div class="cb-body">
         <p style="font-size:12px;color:#71717a;line-height:1.6;margin:0 0 14px;">
-          The lead-list chip rows read their autocomplete from a Supabase corpus instead of hitting Apollo on every keystroke. The corpus is refreshed by running ~75 curated seed queries (titles, industries, locations) against Apollo and replacing the stored values per type. Cold-miss queries (something the rep typed that isn't in the corpus yet) fall through to live Apollo and write the result back, so the corpus self-enriches between syncs.
+          The lead-list chip rows read their autocomplete from a Supabase corpus instead of hitting Apollo on every keystroke. The corpus is refreshed by running ~75 curated seed queries (titles, industries, locations) against Apollo and replacing the stored values per type. Cold-miss queries (something the rep typed that isn't in the corpus yet) fall through to live Apollo and write the result back, so the corpus self-enriches automatically.
           <br><br>
-          <strong style="color:#a1a1aa;">Cost:</strong> ~75 Apollo credits per full sync. Recommended cadence: <strong style="color:#a1a1aa;">monthly</strong>.
+          <strong style="color:#a1a1aa;">Cost:</strong> Apollo's search endpoints don't charge credits, so refresh whenever you like — there's no fixed cadence.
         </p>
         <div id="apollo-corpus-stats" style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-bottom:14px;">
           <div class="loading" style="grid-column:1/-1;">Loading stats…</div>
@@ -361,7 +361,7 @@ async function apolloLoadStats() {
   }
 }
 async function apolloSyncRun() {
-  if (!confirm('Run the Apollo corpus sync now? This burns ~75 Apollo credits and takes 1–2 minutes.')) return;
+  if (!confirm('Run the Apollo corpus sync now? Takes 1–2 minutes.')) return;
   var btn = document.getElementById('apollo-sync-btn');
   var status = document.getElementById('apollo-sync-status');
   btn.disabled = true;

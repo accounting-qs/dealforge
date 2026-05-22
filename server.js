@@ -2369,11 +2369,14 @@ async function guaranteedLeadSearch(sanitizedPayload, confidenceMap, relaxationO
 
 // ── Apollo chip-row typeahead corpus ──────────────────────────────────────────
 // All three open-ended chip dimensions (title, industry, location) read their
-// suggestions from the sales_assets.apollo_suggestions Supabase table. A
-// monthly sync (POST /api/admin/apollo-sync-corpus) seeds the table by running
-// curated Apollo searches; cold misses (queries the corpus doesn't cover) hit
-// Apollo live and insert the result for next time. The 24 h in-memory cache
-// stays in front of everything to absorb repeated keystrokes.
+// suggestions from the sales_assets.apollo_suggestions Supabase table. The
+// corpus is a latency cache, not a cost cache — empirically verified that
+// mixed_people/api_search and organizations/search return masked metadata and
+// don't deplete any of the documented Apollo credit pools (lead_credit etc.).
+// We keep it because the corpus reads at ~50 ms vs ~500 ms live, and because
+// it's resilient if Apollo's API is briefly unreachable. The 24 h in-memory
+// cache stays in front of everything to absorb repeated keystrokes; cold
+// misses fall through to live Apollo and self-enrich the corpus.
 const APOLLO_SUGGEST_CACHE = new Map();
 const APOLLO_SUGGEST_TTL_MS = 24 * 60 * 60 * 1000;
 
@@ -2412,10 +2415,12 @@ async function insertNewSuggestionsToCorpus(type, values) {
   }
 }
 
-// Monthly corpus refresh. Runs ~25 seed queries per dimension against Apollo,
+// Manual corpus refresh. Runs ~25 seed queries per dimension against Apollo,
 // counts how often each value shows up across the seed set, and replaces the
 // table contents for that type. Replacement (vs upsert) lets us drop stale
-// values Apollo no longer surfaces. Cost: ~75 Apollo credits per full run.
+// values Apollo no longer surfaces. Apollo's search endpoints don't charge
+// credits, so this can be re-run freely from the Settings page whenever the
+// corpus needs a refresh.
 const APOLLO_TITLE_SEEDS = [
   'ceo','cfo','cto','coo','cmo','cro','cio','chief executive','chief operating',
   'founder','co-founder','partner','managing partner','managing director',
@@ -4228,9 +4233,9 @@ const server = http.createServer(async (req, res) => {
   // Resolution order:
   //   1. In-memory cache (24 h) for repeated keystrokes within a session.
   //   2. Supabase corpus (sales_assets.apollo_suggestions) — populated by the
-  //      monthly sync. Zero Apollo credits, sub-100 ms read.
+  //      manual sync from Settings. Sub-100 ms read.
   //   3. Live Apollo call as cold-miss fallback. Result is written back to
-  //      the corpus (ignore-duplicates) so the next rep gets it free.
+  //      the corpus (ignore-duplicates) so the next rep sees it instantly.
   if (req.method === 'GET' && urlPath === '/api/apollo/suggest') {
     setCors(res);
     try {
@@ -4296,10 +4301,11 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // ── POST /api/admin/apollo-sync-corpus — monthly Apollo corpus refresh ────
+  // ── POST /api/admin/apollo-sync-corpus — manual Apollo corpus refresh ─────
   // Runs ~75 curated seed queries against Apollo and replaces the contents
-  // of sales_assets.apollo_suggestions for each type. Idempotent. Trigger
-  // monthly via Render cron, or manually from the Settings page button.
+  // of sales_assets.apollo_suggestions for each type. Idempotent. Triggered
+  // from the Settings page button on demand — search endpoints are free, so
+  // there's no fixed cadence to maintain.
   if (req.method === 'POST' && urlPath === '/api/admin/apollo-sync-corpus') {
     setCors(res);
     try {
