@@ -2415,6 +2415,31 @@ async function insertNewSuggestionsToCorpus(type, values) {
   }
 }
 
+// Harvest the distinct job titles off a batch of fetched leads and fold them
+// into the title corpus. This is how the typeahead grows: every lead search
+// returns real, in-market titles at no extra Apollo cost, so the corpus comes
+// to mirror what reps actually search instead of a fixed seed list. Best-effort
+// and fire-and-forget — callers must not await this on the response path.
+// Titles dedupe in-batch here; cross-batch dupes are dropped by the corpus's
+// ignore-duplicates unique constraint, so frequency stays at the seed value.
+function harvestLeadTitlesToCorpus(leads) {
+  try {
+    if (!Array.isArray(leads) || !leads.length) return;
+    const titles = [...new Set(
+      leads
+        .map(l => (l && typeof l.title === 'string') ? l.title.trim() : '')
+        .filter(t => t.length > 1 && t.length <= 80)
+    )];
+    if (!titles.length) return;
+    // No await — corpus inserts are best-effort and never gate the lead result.
+    insertNewSuggestionsToCorpus('title', titles)
+      .then(() => console.log(`[harvestLeadTitlesToCorpus] folded ${titles.length} titles into corpus`))
+      .catch(e => console.warn('[harvestLeadTitlesToCorpus]', e.message));
+  } catch (e) {
+    console.warn('[harvestLeadTitlesToCorpus]', e.message);
+  }
+}
+
 // Manual corpus refresh. Runs ~25 seed queries per dimension against Apollo,
 // counts how often each value shows up across the seed set, and replaces the
 // table contents for that type. Replacement (vs upsert) lets us drop stale
@@ -2425,7 +2450,11 @@ const APOLLO_TITLE_SEEDS = [
   'ceo','cfo','cto','coo','cmo','cro','cio','chief executive','chief operating',
   'founder','co-founder','partner','managing partner','managing director',
   'vp sales','vp marketing','vp engineering','head of sales','head of marketing',
-  'director','manager','engineer','consultant','principal','analyst','advisor'
+  'director','manager','engineer','consultant','principal','analyst','advisor',
+  // Owner / small-business titles — high-frequency rep queries that were missing,
+  // which left "owner"/"self employed" typeahead nearly empty (one stale row).
+  'owner','co-owner','owner operator','self employed','president','vice president',
+  'proprietor','sole proprietor'
 ];
 const APOLLO_INDUSTRY_SEEDS = [
   'software','saas','real estate','property management','financial services',
@@ -2475,21 +2504,40 @@ async function syncApolloSuggestionsCorpus() {
   return stats;
 }
 
+// Title suggestions come from Apollo's own typeahead taxonomy — the exact
+// endpoint the Apollo web app's "Include titles" box calls. It returns clean,
+// normalized title tags ("owner", "owner operator", "owner president", …) ranked
+// by relevance score, NOT free-text scraped off individual people (the old
+// approach, which gave sparse/idiosyncratic results like "Owner - Real Estate
+// Agent"). It lives on app.apollo.io rather than the documented api.apollo.io
+// host, but authenticates with the standard x-api-key header and costs no credits
+// — verified directly (no-auth → 401, api_key-in-query → 422, x-api-key → 200).
+// q_tag_fuzzy_name does the fuzzy matching; kind=person_title scopes it to titles.
+// NOTE: undocumented endpoint — if Apollo ever changes it, the corpus (seeded +
+// lead-harvested) keeps the typeahead working as a fallback.
 async function suggestTitles(q) {
   const APOLLO_KEY = process.env.APOLLO_API_KEY;
   if (!APOLLO_KEY || !q) return [];
   try {
-    const r = await fetch('https://api.apollo.io/api/v1/mixed_people/api_search', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'x-api-key': APOLLO_KEY },
-      body: JSON.stringify({ per_page: 10, page: 1, person_titles: [q] }),
+    const url = 'https://app.apollo.io/api/v1/tags/search'
+      + '?q_tag_fuzzy_name=' + encodeURIComponent(q)
+      + '&kind=person_title&display_mode=fuzzy_select_mode';
+    const r = await fetch(url, {
+      method: 'GET',
+      headers: { 'Accept': 'application/json', 'x-api-key': APOLLO_KEY },
       signal: AbortSignal.timeout(8000)
     });
     if (!r.ok) return [];
     const data = await r.json();
-    const out = new Set();
-    (data.people || []).forEach(p => { if (p.title) out.add(String(p.title).trim()); });
-    return Array.from(out).slice(0, 8);
+    const out = [];
+    const seen = new Set();
+    // Apollo returns tags pre-sorted by score — preserve that order.
+    (data.tags || []).forEach(t => {
+      const v = String(t.display_name || t.cleaned_name || '').trim();
+      const lc = v.toLowerCase();
+      if (v && !seen.has(lc)) { seen.add(lc); out.push(v); }
+    });
+    return out.slice(0, 8);
   } catch (e) {
     console.warn('[suggestTitles]', e.message);
     return [];
@@ -2747,6 +2795,14 @@ async function fetchLeadsFromApollo(icp, progressCb) {
   // shows "—" in the Website and LinkedIn columns even when the data exists in Apollo.
   if (progressCb) await progressCb({ progress: 65, message: 'Hydrating website + company LinkedIn…' });
   await enrichLeadsWithCompanyData(result.leads, progressCb);
+
+  // Harvest real titles from the fetched leads into our own suggestion corpus.
+  // The live typeahead (suggestTitles → Apollo's tags taxonomy) is the primary
+  // source, but harvesting every search's ~25 real, in-market titles for free
+  // enriches the corpus with actual rep-relevant titles and keeps the typeahead
+  // working if Apollo's undocumented endpoint ever changes. Fire-and-forget —
+  // best-effort, never blocks the lead result.
+  harvestLeadTitlesToCorpus(result.leads);
 
   // Expose wasRelaxed and relaxationLog at top level for handleLeadList.
   // wasRelaxed must also be inside `diagnostics` because that's what the
