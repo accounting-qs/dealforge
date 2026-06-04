@@ -548,6 +548,29 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
 /* Slide 2 — 12-Month */
 .roi-timeline-title { font-size: 24px; font-weight: 700; color: #e4e4e7; margin-bottom: 6px; letter-spacing: -0.4px; }
 .roi-timeline-sub { font-size: 14px; color: #71717a; margin-bottom: 32px; }
+
+/* ── 12-Month Revenue Build chart ──────────────────────── */
+.roi-chart-card { background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.07); border-radius: 14px; overflow: hidden; margin-bottom: 16px; }
+.roi-chart-head { padding: 18px 24px 6px; display: flex; justify-content: space-between; align-items: baseline; }
+.roi-chart-title { font-size: 13px; font-weight: 600; color: #e4e4e7; }
+.roi-chart-month { font-size: 12px; font-weight: 600; color: #a1a1aa; }
+.roi-chart-month b { color: #e4e4e7; }
+
+/* Live readout — big numbers that update as you hover the chart */
+.roi-readout { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; padding: 6px 24px 16px; }
+.roi-ro-item { background: rgba(255,255,255,0.025); border: 1px solid rgba(255,255,255,0.06); border-left-width: 3px; border-radius: 10px; padding: 11px 14px; transition: background .12s ease; }
+.roi-ro-item.hot { background: rgba(255,255,255,0.06); }
+.roi-ro-label { font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: #a1a1aa; display: flex; align-items: center; gap: 6px; }
+.roi-ro-dot { width: 9px; height: 9px; border-radius: 3px; flex-shrink: 0; }
+.roi-ro-value { font-size: 26px; font-weight: 800; letter-spacing: -0.03em; margin-top: 4px; font-variant-numeric: tabular-nums; line-height: 1.05; }
+.roi-ro-unit { font-size: 13px; font-weight: 600; color: #71717a; margin-left: 2px; }
+.roi-ro-sub { font-size: 11px; color: #71717a; margin-top: 3px; line-height: 1.3; }
+
+.roi-chart-svg-wrap { padding: 0 12px 14px; }
+.roi-chart-svg-wrap svg { width: 100%; height: auto; display: block; cursor: crosshair; }
+.roi-chart-svg-wrap svg text { font-family: inherit; }
+
+/* ── Monthly Projection table (kept below the chart) ──────── */
 .ramp-card { background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.07); border-radius: 14px; overflow: hidden; }
 .ramp-header { padding: 18px 24px; border-bottom: 1px solid rgba(255,255,255,0.06); display: flex; justify-content: space-between; align-items: baseline; }
 .ramp-title { font-size: 13px; font-weight: 600; color: #e4e4e7; }
@@ -560,6 +583,7 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
 .ramp-table td.has-rev { color: #e4e4e7; font-weight: 500; }
 .ramp-table td.cumul { color: #34b433; font-weight: 600; }
 .ramp-table tr:last-child td { border-bottom: none; }
+.ramp-table tr.hot td { background: rgba(255,255,255,0.04); }
 .ramp-ramp-tag { display: inline-block; font-size: 9px; font-weight: 700; color: #52525b; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.07); border-radius: 4px; padding: 1px 5px; margin-left: 5px; vertical-align: middle; letter-spacing: 0.04em; }
 
 /* ── Onboarding Tab ──────────────────────────────────── */
@@ -1397,6 +1421,32 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
             </div>
           </div>
 
+          <div class="roi-chart-card">
+            <div class="roi-chart-head">
+              <div class="roi-chart-title">Revenue Build — Visual</div>
+              <div class="roi-chart-month" id="roi-ro-month">Hover the chart · showing <b>Month 12</b></div>
+            </div>
+            <!-- Live readout: big numbers update as you hover the chart -->
+            <div class="roi-readout">
+              <div class="roi-ro-item" id="ro-item-rev" style="border-left-color:#34b433;">
+                <div class="roi-ro-label"><span class="roi-ro-dot" style="background:#34b433;"></span>Cumulative revenue</div>
+                <div class="roi-ro-value" id="ro-rev" style="color:#34b433;">—</div>
+                <div class="roi-ro-sub" id="ro-rev-sub">Total revenue earned to date</div>
+              </div>
+              <div class="roi-ro-item" id="ro-item-calls" style="border-left-color:#60a5fa;">
+                <div class="roi-ro-label"><span class="roi-ro-dot" style="background:#60a5fa;"></span>Sales calls / month</div>
+                <div class="roi-ro-value" id="ro-calls" style="color:#93c5fd;">—</div>
+                <div class="roi-ro-sub" id="ro-calls-sub">Booked calls your team takes</div>
+              </div>
+              <div class="roi-ro-item" id="ro-item-time" style="border-left-color:#fbbf24;">
+                <div class="roi-ro-label"><span class="roi-ro-dot" style="background:#fbbf24;"></span>Your time commitment</div>
+                <div class="roi-ro-value" id="ro-time" style="color:#fcd34d;">—<span class="roi-ro-unit">hrs/wk</span></div>
+                <div class="roi-ro-sub" id="ro-time-sub">Hours you spend on the system</div>
+              </div>
+            </div>
+            <div class="roi-chart-svg-wrap" id="roi-chart"></div>
+          </div>
+
           <div class="ramp-card">
             <div class="ramp-header">
               <div class="ramp-title">Monthly Projection</div>
@@ -2114,6 +2164,10 @@ let MONTHLY_INVITES = 30000;
 // Ramp: index = month (1-based). Month 1 = onboarding (0). Full velocity Month 6+.
 const RAMP = [0, 0, 0.10, 0.25, 0.45, 0.70, 1, 1, 1, 1, 1, 1, 1];
 
+// Your time commitment (hrs/week): index = month (1-based). Heaviest during
+// onboarding/build, then the system runs itself — drops to a light steady state.
+const TIME = [0, 10, 7, 5, 3.5, 2.5, 2, 1.5, 1.5, 1, 1, 1, 1];
+
 let _roiSlide = 0;
 
 function roiGoSlide(n) {
@@ -2180,35 +2234,212 @@ function roiCalc() {
   document.getElementById('r-monthly').textContent = monthly > 0 ? fmt(monthly) : '—';
   document.getElementById('r-annual').textContent  = annual  > 0 ? fmt(annual)  : '—';
 
-  // Build 12-month ramp table
+  // Build 12-month projection series (drives both the chart and the table)
+  const proj = [];
   const tbody = document.getElementById('ramp-body');
-  tbody.innerHTML = '';
+  if (tbody) tbody.innerHTML = '';
   let cumulative = 0; let cum6 = 0;
   for (let m = 1; m <= 12; m++) {
     const ramp      = RAMP[m] || 0;
     const mClients  = clients * ramp;
+    const mCalls    = held * ramp;        // sales calls held that month
     const mRev      = mClients * ltv;
     cumulative += mRev;
     if (m === 6) cum6 = cumulative;
-    const hasRev        = mRev > 0.5;
-    const isOnboarding  = m === 1;
-    const isRamp        = !isOnboarding && ramp > 0 && ramp < 1;
-    const tag = isOnboarding
-      ? `<span class="ramp-ramp-tag">ONBOARDING</span>`
-      : isRamp ? `<span class="ramp-ramp-tag">RAMP</span>` : '';
-    const tr = document.createElement('tr');
-    tr.innerHTML = `
-      <td>Month ${m}${tag}</td>
-      <td class="${hasRev ? 'has-rev' : ''}">${hasRev ? fmtN(Math.round(mClients)) : '—'}</td>
-      <td class="${hasRev ? 'has-rev' : ''}">${hasRev ? fmt(mRev) : '—'}</td>
-      <td class="${cumulative > 0.5 ? 'cumul' : ''}">${cumulative > 0.5 ? fmt(cumulative) : '—'}</td>
-    `;
-    tbody.appendChild(tr);
+    proj.push({ month: m, calls: mCalls, clients: mClients, rev: mRev, cumulative, time: TIME[m] || 0 });
+
+    if (tbody) {
+      const hasRev       = mRev > 0.5;
+      const isOnboarding = m === 1;
+      const isRamp       = !isOnboarding && ramp > 0 && ramp < 1;
+      const tag = isOnboarding
+        ? `<span class="ramp-ramp-tag">ONBOARDING</span>`
+        : isRamp ? `<span class="ramp-ramp-tag">RAMP</span>` : '';
+      const tr = document.createElement('tr');
+      tr.id = 'ramp-row-' + m;
+      tr.innerHTML = `
+        <td>Month ${m}${tag}</td>
+        <td class="${hasRev ? 'has-rev' : ''}">${hasRev ? fmtN(Math.round(mClients)) : '—'}</td>
+        <td class="${hasRev ? 'has-rev' : ''}">${hasRev ? fmt(mRev) : '—'}</td>
+        <td class="${cumulative > 0.5 ? 'cumul' : ''}">${cumulative > 0.5 ? fmt(cumulative) : '—'}</td>
+      `;
+      tbody.appendChild(tr);
+    }
   }
   document.getElementById('total-12m').textContent = cumulative > 0 ? fmt(cumulative) : '—';
   document.getElementById('ret-6m').textContent  = cum6      > 0 ? fmt(cum6)      : '—';
   document.getElementById('ret-12m').textContent = cumulative > 0 ? fmt(cumulative) : '—';
+
+  renderRoiChart(proj);
 }
+
+// ── Smooth path (Catmull-Rom → cubic bézier) through {x,y} points ──
+function smoothPath(pts) {
+  if (pts.length < 2) return pts.length ? `M ${pts[0].x} ${pts[0].y}` : '';
+  let d = `M ${pts[0].x.toFixed(1)} ${pts[0].y.toFixed(1)}`;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[i - 1] || pts[i], p1 = pts[i], p2 = pts[i + 1], p3 = pts[i + 2] || p2;
+    const c1x = p1.x + (p2.x - p0.x) / 6, c1y = p1.y + (p2.y - p0.y) / 6;
+    const c2x = p2.x - (p3.x - p1.x) / 6, c2y = p2.y - (p3.y - p1.y) / 6;
+    d += ` C ${c1x.toFixed(1)} ${c1y.toFixed(1)}, ${c2x.toFixed(1)} ${c2y.toFixed(1)}, ${p2.x.toFixed(1)} ${p2.y.toFixed(1)}`;
+  }
+  return d;
+}
+
+// Module-level store so the hover handler can read the current geometry/data.
+let _roiChart = null;
+
+// ── Render the 12-month line chart (revenue ↑, calls ↑, time ↓) ──
+function renderRoiChart(proj) {
+  const host = document.getElementById('roi-chart');
+  if (!host) return;
+
+  const W = 840, H = 380;
+  const padR = 16, padL = 16, padT = 28, padB = 34;
+  const x0 = padL, x1 = W - padR, plotW = x1 - x0;
+  const y0 = padT, y1 = H - padB, plotH = y1 - y0;
+
+  const n        = proj.length;
+  const xAt      = i => x0 + (n > 1 ? (i / (n - 1)) * plotW : plotW / 2);
+  const maxCum   = Math.max(...proj.map(p => p.cumulative), 1);
+  const maxCalls = Math.max(...proj.map(p => p.calls), 1);
+  const maxTime  = Math.max(...proj.map(p => p.time), 1);
+  // Each series scaled to its own range; headroom so peaks aren't clipped.
+  const yRev   = v => y1 - (v / maxCum)   * plotH * 0.92;
+  const yCall  = v => y1 - (v / maxCalls) * plotH * 0.92;
+  const yTime  = v => y1 - (v / maxTime)  * plotH * 0.92;
+
+  const revPts  = proj.map((p, i) => ({ x: xAt(i), y: yRev(p.cumulative) }));
+  const callPts = proj.map((p, i) => ({ x: xAt(i), y: yCall(p.calls) }));
+  const timePts = proj.map((p, i) => ({ x: xAt(i), y: yTime(p.time) }));
+
+  const revArea = smoothPath(revPts) +
+    ` L ${revPts[revPts.length - 1].x.toFixed(1)} ${y1} L ${revPts[0].x.toFixed(1)} ${y1} Z`;
+
+  // Horizontal gridlines
+  let grid = '';
+  for (let g = 0; g <= 4; g++) {
+    const gy = (y0 + (plotH * g / 4)).toFixed(1);
+    grid += `<line x1="${x0}" y1="${gy}" x2="${x1}" y2="${gy}" stroke="rgba(255,255,255,0.05)" stroke-width="1"/>`;
+  }
+
+  // X-axis month labels
+  let xlabels = '';
+  proj.forEach((p, i) => {
+    xlabels += `<text x="${xAt(i).toFixed(1)}" y="${H - 12}" fill="#52525b" font-size="11" text-anchor="middle">${p.month}</text>`;
+  });
+  xlabels += `<text x="${((x0 + x1) / 2).toFixed(1)}" y="${H - 0.5}" fill="#3f3f46" font-size="9" text-anchor="middle" letter-spacing="0.08em">MONTH</text>`;
+
+  const dots = (pts, color) => pts.map(p =>
+    `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="3" fill="#0d0d12" stroke="${color}" stroke-width="2"/>`
+  ).join('');
+
+  host.innerHTML = `
+    <svg id="roi-svg" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" role="img" aria-label="12-month revenue, sales calls, and time commitment">
+      <defs>
+        <linearGradient id="revFill" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="#34b433" stop-opacity="0.28"/>
+          <stop offset="100%" stop-color="#34b433" stop-opacity="0"/>
+        </linearGradient>
+      </defs>
+      ${grid}
+      <path d="${revArea}" fill="url(#revFill)"/>
+      <path d="${smoothPath(timePts)}" fill="none" stroke="#fbbf24" stroke-width="2.5" stroke-dasharray="5 4" stroke-linecap="round"/>
+      <path d="${smoothPath(callPts)}" fill="none" stroke="#60a5fa" stroke-width="2.5" stroke-linecap="round"/>
+      <path d="${smoothPath(revPts)}"  fill="none" stroke="#34b433" stroke-width="3" stroke-linecap="round"/>
+      ${dots(timePts, '#fbbf24')}
+      ${dots(callPts, '#60a5fa')}
+      ${dots(revPts,  '#34b433')}
+      ${xlabels}
+      <!-- hover layer -->
+      <line id="roi-guide" x1="0" y1="${y0}" x2="0" y2="${y1}" stroke="rgba(255,255,255,0.22)" stroke-width="1" stroke-dasharray="3 3" style="opacity:0"/>
+      <circle id="roi-hp-rev"  r="5" fill="#34b433" stroke="#0d0d12" stroke-width="2" style="opacity:0"/>
+      <circle id="roi-hp-call" r="5" fill="#60a5fa" stroke="#0d0d12" stroke-width="2" style="opacity:0"/>
+      <circle id="roi-hp-time" r="5" fill="#fbbf24" stroke="#0d0d12" stroke-width="2" style="opacity:0"/>
+      <rect id="roi-hit" x="${x0}" y="${y0}" width="${plotW}" height="${plotH}" fill="transparent" style="cursor:crosshair"/>
+    </svg>`;
+
+  _roiChart = { proj, n, x0, plotW, revPts, callPts, timePts };
+
+  // Hover wiring
+  const svg = document.getElementById('roi-svg');
+  const hit = document.getElementById('roi-hit');
+  const idxFromEvent = (ev) => {
+    const r = svg.getBoundingClientRect();
+    const sx = (ev.clientX - r.left) / r.width * W;     // client → viewBox coords
+    const i  = Math.round((sx - x0) / plotW * (n - 1));
+    return Math.max(0, Math.min(n - 1, i));
+  };
+  hit.addEventListener('mousemove', (ev) => roiChartHover(idxFromEvent(ev)));
+  hit.addEventListener('mouseleave', () => roiChartHover(n - 1, true));
+
+  // Default readout = full velocity (last month), no guide line shown
+  roiChartHover(n - 1, true);
+}
+
+// ── Update the live readout + chart highlight for a given month index ──
+function roiChartHover(i, resting) {
+  if (!_roiChart) return;
+  const { proj, n, revPts, callPts, timePts } = _roiChart;
+  const p = proj[i];
+  if (!p) return;
+
+  // Month label
+  const monthEl = document.getElementById('roi-ro-month');
+  if (monthEl) {
+    const phase = p.month === 1 ? 'onboarding' : (p.calls > 0 && p.month <= 5 ? 'ramping' : 'full velocity');
+    monthEl.innerHTML = resting
+      ? `Hover the chart · showing <b>Month ${p.month}</b>`
+      : `<b>Month ${p.month}</b> · ${phase}`;
+  }
+
+  const hasRev = p.rev > 0.5;
+
+  // Revenue
+  setText('ro-rev', p.cumulative > 0.5 ? fmt(p.cumulative) : '—');
+  setText('ro-rev-sub', p.month === 1
+    ? 'Onboarding month — no revenue yet'
+    : hasRev ? `+${fmt(p.rev)} earned this month` : 'Total revenue earned to date');
+
+  // Sales calls / month
+  setText('ro-calls', hasRev ? fmtN(Math.round(p.calls)) : '—');
+  setText('ro-calls-sub', p.month === 1
+    ? 'No outreach during onboarding'
+    : hasRev ? `≈ ${fmtN(Math.round(p.clients))} new client${Math.round(p.clients) === 1 ? '' : 's'} closed` : 'Booked calls your team takes');
+
+  // Your time commitment (keep the hrs/wk unit suffix)
+  const timeEl = document.getElementById('ro-time');
+  if (timeEl) timeEl.innerHTML = `${(+p.time).toFixed(p.time % 1 ? 1 : 0)}<span class="roi-ro-unit">hrs/wk</span>`;
+  setText('ro-time-sub', p.month === 1
+    ? 'Heaviest week — kickoff & setup'
+    : p.time <= 1 ? 'Hands-off — the system runs itself' : `Down from ${TIME[1]} hrs at kickoff`);
+
+  // Chart highlight
+  const guide = document.getElementById('roi-guide');
+  const show = (id, pt) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.setAttribute('cx', pt.x.toFixed(1));
+    el.setAttribute('cy', pt.y.toFixed(1));
+    el.style.opacity = resting ? '0' : '1';
+  };
+  if (guide) {
+    guide.setAttribute('x1', revPts[i].x.toFixed(1));
+    guide.setAttribute('x2', revPts[i].x.toFixed(1));
+    guide.style.opacity = resting ? '0' : '1';
+  }
+  show('roi-hp-rev',  revPts[i]);
+  show('roi-hp-call', callPts[i]);
+  show('roi-hp-time', timePts[i]);
+
+  // Row + readout-card emphasis
+  for (let m = 1; m <= n; m++) {
+    const row = document.getElementById('ramp-row-' + m);
+    if (row) row.classList.toggle('hot', !resting && m === p.month);
+  }
+}
+
+function setText(id, txt) { const el = document.getElementById(id); if (el) el.textContent = txt; }
 
 function roiCalcAndNext() {
   roiCalc();
