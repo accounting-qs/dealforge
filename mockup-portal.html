@@ -4660,13 +4660,10 @@ function renderFilterTags() {
   ploChips += makeAddInputWithSuggest('apollo_person_locations', 'Add person location…', 'location');
   html += makeRow('Person Location', ploChips);
 
-  // Seniorities
-  var senChips = '';
-  if (d.person_seniorities && d.person_seniorities.length) {
-    senChips += d.person_seniorities.map(function(v){ return makeTag(v, 'person_seniorities'); }).join('');
-  }
-  senChips += makeAddSelect('person_seniorities', APOLLO_SENIORITIES, 'Add seniority');
-  html += makeRow('Seniorities', senChips);
+  // Seniorities row removed — titles cover the same intent (e.g. Founder/CEO/Owner)
+  // and Apollo's seniority tagging is heuristic, so layering it on top of specific
+  // titles double-narrows the TAM. The backend still defaults person_seniorities to
+  // null and only sends it if chips exist, so dropping the UI is safe.
 
   // Revenue range — two numeric inputs (whole $M). Custom row (not a chip
   // group). Hidden in display mode when no bound is set.
