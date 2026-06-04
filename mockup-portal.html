@@ -566,9 +566,19 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
 .roi-ro-unit { font-size: 13px; font-weight: 600; color: #71717a; margin-left: 2px; }
 .roi-ro-sub { font-size: 11px; color: #71717a; margin-top: 3px; line-height: 1.3; }
 
-.roi-chart-svg-wrap { padding: 0 12px 14px; }
+.roi-chart-svg-wrap { padding: 0 12px 14px; position: relative; }
 .roi-chart-svg-wrap svg { width: 100%; height: auto; display: block; cursor: crosshair; }
 .roi-chart-svg-wrap svg text { font-family: inherit; }
+
+/* Floating tooltip anchored to the hovered month's data point */
+.roi-tooltip { position: absolute; z-index: 5; pointer-events: none; left: 0; top: 0; min-width: 158px; padding: 10px 12px; background: rgba(13,13,18,0.97); border: 1px solid rgba(255,255,255,0.13); border-radius: 10px; box-shadow: 0 10px 28px rgba(0,0,0,0.5); opacity: 0; transition: opacity .12s ease; font-variant-numeric: tabular-nums; }
+.roi-tooltip.show { opacity: 1; }
+.roi-tt-month { font-size: 11px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: #e4e4e7; margin-bottom: 8px; }
+.roi-tt-row { display: flex; align-items: center; gap: 8px; font-size: 12px; padding: 2px 0; }
+.roi-tt-dot { width: 9px; height: 9px; border-radius: 3px; flex-shrink: 0; }
+.roi-tt-label { color: #a1a1aa; }
+.roi-tt-val { color: #e4e4e7; font-weight: 700; margin-left: auto; padding-left: 14px; }
+.roi-tt-foot { font-size: 10px; color: #71717a; margin-top: 7px; padding-top: 7px; border-top: 1px solid rgba(255,255,255,0.08); }
 
 /* ── Monthly Projection table (kept below the chart) ──────── */
 .ramp-card { background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.07); border-radius: 14px; overflow: hidden; }
@@ -2357,7 +2367,8 @@ function renderRoiChart(proj) {
       <circle id="roi-hp-call" r="5" fill="#60a5fa" stroke="#0d0d12" stroke-width="2" style="opacity:0"/>
       <circle id="roi-hp-time" r="5" fill="#fbbf24" stroke="#0d0d12" stroke-width="2" style="opacity:0"/>
       <rect id="roi-hit" x="${x0}" y="${y0}" width="${plotW}" height="${plotH}" fill="transparent" style="cursor:crosshair"/>
-    </svg>`;
+    </svg>
+    <div id="roi-tooltip" class="roi-tooltip" aria-hidden="true"></div>`;
 
   _roiChart = { proj, n, x0, plotW, revPts, callPts, timePts };
 
@@ -2436,6 +2447,40 @@ function roiChartHover(i, resting) {
   for (let m = 1; m <= n; m++) {
     const row = document.getElementById('ramp-row-' + m);
     if (row) row.classList.toggle('hot', !resting && m === p.month);
+  }
+
+  // Floating tooltip anchored to the hovered month's data point
+  const tip = document.getElementById('roi-tooltip');
+  const svg = document.getElementById('roi-svg');
+  if (!tip) return;
+  if (resting) { tip.classList.remove('show'); return; }
+
+  const phase = p.month === 1 ? 'Onboarding' : (p.calls > 0 && p.month <= 5 ? 'Ramping' : 'Full velocity');
+  const newClients = Math.round(p.clients);
+  tip.innerHTML = `
+    <div class="roi-tt-month">Month ${p.month} · ${phase}</div>
+    <div class="roi-tt-row"><span class="roi-tt-dot" style="background:#34b433;"></span><span class="roi-tt-label">Revenue</span><span class="roi-tt-val">${p.cumulative > 0.5 ? fmt(p.cumulative) : '—'}</span></div>
+    <div class="roi-tt-row"><span class="roi-tt-dot" style="background:#60a5fa;"></span><span class="roi-tt-label">Sales calls</span><span class="roi-tt-val">${hasRev ? fmtN(Math.round(p.calls)) : '—'}</span></div>
+    <div class="roi-tt-row"><span class="roi-tt-dot" style="background:#fbbf24;"></span><span class="roi-tt-label">Your time</span><span class="roi-tt-val">${(+p.time).toFixed(p.time % 1 ? 1 : 0)} hrs/wk</span></div>
+    ${hasRev ? `<div class="roi-tt-foot">+${fmt(p.rev)} this month · ${fmtN(newClients)} new client${newClients === 1 ? '' : 's'}</div>` : ''}`;
+  tip.classList.add('show'); // show before measuring so offsetWidth/Height are real
+
+  // Anchor at the topmost of the three series points (smallest y), in wrap-relative px
+  const wrap = document.getElementById('roi-chart');
+  const ctm  = svg && svg.getScreenCTM();
+  if (ctm && wrap) {
+    const topPt = [revPts[i], callPts[i], timePts[i]].reduce((a, b) => b.y < a.y ? b : a);
+    const sp = svg.createSVGPoint();
+    sp.x = topPt.x; sp.y = topPt.y;
+    const scr = sp.matrixTransform(ctm);
+    const wr  = wrap.getBoundingClientRect();
+    const ax  = scr.x - wr.left, ay = scr.y - wr.top;
+    const ttW = tip.offsetWidth, ttH = tip.offsetHeight;
+    let left = Math.max(4, Math.min(ax - ttW / 2, wr.width - ttW - 4));
+    let top  = ay - ttH - 14;          // above the point …
+    if (top < 4) top = ay + 14;        // … unless there's no room, then below
+    tip.style.left = left.toFixed(1) + 'px';
+    tip.style.top  = top.toFixed(1) + 'px';
   }
 }
 
