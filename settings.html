@@ -325,7 +325,25 @@ h1{font-size:28px;font-weight:700;letter-spacing:-0.025em;color:#fff;margin:0 0 
           <ol style="margin:6px 0 10px;padding-left:18px;">
             <li>Go to <a href="https://marketplace.zoom.us/develop/create" target="_blank" style="color:#34b433;">marketplace.zoom.us</a> → Develop → Build App → <strong>Server-to-Server OAuth</strong>.</li>
             <li>Copy the <strong>Account ID</strong>, <strong>Client ID</strong> and <strong>Client Secret</strong> from the App Credentials tab.</li>
-            <li>On the Scopes tab add: <code>cloud_recording:read:list_user_recordings:admin</code>, <code>cloud_recording:read:recording:admin</code>, <code>user:read:list_users:admin</code>, <code>user:read:user:admin</code>.</li>
+            <li>On the Scopes tab → Add Scopes, add these (one at a time). <strong style="color:#e4e4e7;">Required:</strong>
+              <ul style="margin:6px 0 2px;padding-left:16px;list-style:disc;">
+                <li style="padding:1px 0;"><code>cloud_recording:read:list_user_recordings:admin</code></li>
+                <li style="padding:1px 0;"><code>cloud_recording:read:recording:admin</code></li>
+                <li style="padding:1px 0;"><code>user:read:list_users:admin</code></li>
+                <li style="padding:1px 0;"><code>user:read:user:admin</code></li>
+              </ul>
+              <strong style="color:#e4e4e7;">Recommended too</strong> — used by the upcoming transcript ingest; add now so you don't have to re-activate the app later:
+              <ul style="margin:6px 0 2px;padding-left:16px;list-style:disc;">
+                <li style="padding:1px 0;"><code>cloud_recording:read:list_account_recordings:admin</code></li>
+                <li style="padding:1px 0;"><code>meeting:read:meeting:admin</code></li>
+                <li style="padding:1px 0;"><code>meeting:read:list_meetings:admin</code></li>
+              </ul>
+              <strong style="color:#e4e4e7;">Optional</strong> — only for future attendee-email matching (dedup Zoom vs Fireflies). Needs a paid Zoom plan; search “participant” in the picker and add whichever your plan shows:
+              <ul style="margin:6px 0 2px;padding-left:16px;list-style:disc;">
+                <li style="padding:1px 0;"><code>report:read:list_meeting_participants:admin</code></li>
+                <li style="padding:1px 0;"><code>dashboard:read:list_meeting_participants:admin</code></li>
+              </ul>
+            </li>
             <li>Activate the app.</li>
             <li>In Zoom Account Settings → Recording: turn ON <strong>Cloud recording</strong> and <strong>Create audio transcript</strong>.</li>
           </ol>

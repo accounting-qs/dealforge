@@ -21,11 +21,21 @@ You need to be a Zoom **account admin** with access to the Marketplace.
    - **Client ID**
    - **Client Secret**
 4. Fill in the required **Information** fields (company name, developer contact) — Zoom won't let you activate without them.
-5. On the **Scopes** tab → **Add Scopes**, add all four (search by name):
+5. On the **Scopes** tab → **Add Scopes**, add these (search by name).
+   **Required** (connection + verification — what the app uses today):
    - `cloud_recording:read:list_user_recordings:admin` — list a user's cloud recordings
    - `cloud_recording:read:recording:admin` — read recording / transcript files
    - `user:read:list_users:admin` — list users
    - `user:read:user:admin` — resolve a rep email → Zoom user
+
+   **Recommended too** (used by the upcoming transcript ingest — add now so you don't have to re-activate the app later):
+   - `cloud_recording:read:list_account_recordings:admin` — pull all recent account recordings in one sync pass
+   - `meeting:read:meeting:admin` — meeting details for matching a recording to a prospect
+   - `meeting:read:list_meetings:admin` — list a user's meetings by time
+
+   **Optional** (only for future attendee-email matching, to dedup the same call captured by both Zoom and Fireflies — requires a paid Zoom plan for the report/dashboard APIs; search "participant" in the picker and add whichever your plan shows):
+   - `report:read:list_meeting_participants:admin` — participant list + emails (Report API)
+   - `dashboard:read:list_meeting_participants:admin` — participant list + emails (Dashboard API)
 6. On the **Activation** tab → **Activate** the app.
 
 > If your Zoom UI still shows the older (non-granular) scopes, the equivalents are
