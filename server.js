@@ -1286,11 +1286,38 @@ async function fetchZoomTranscriptDetail(uuid) {
   } catch (e) { console.warn('[Zoom] fetchZoomTranscriptDetail error:', e.message); return null; }
 }
 
+// Participant emails for a past Zoom meeting (Report API, Pro+). Cached by uuid
+// — a finished meeting's roster never changes, and the recent set is shared
+// across prospects so the cache warms fast. Returns [] if the call simply has
+// no participant data, or null if the scope/plan is missing (caller stops).
+const _zoomParticipantsCache = new Map(); // uuid -> [{ email, displayName }]
+async function zoomParticipants(uuid, _retried) {
+  if (_zoomParticipantsCache.has(uuid)) return _zoomParticipantsCache.get(uuid);
+  const enc = encodeURIComponent(encodeURIComponent(uuid));
+  const rep = await zoomQuery(`report/meetings/${enc}/participants?page_size=300`);
+  if (rep && rep.code) {
+    // Missing report scope (4711) makes the whole scan pointless → signal stop.
+    if (rep.code === 4711 || /scope/i.test(rep.message || '')) return null;
+    // The Report API has a tight per-second cap — back off once on 429.
+    if ((rep.code === 429 || /per-second|rate limit/i.test(rep.message || '')) && !_retried) {
+      await new Promise(r => setTimeout(r, 1300));
+      return zoomParticipants(uuid, true);
+    }
+    return []; // per-meeting issue (no report for this call / not found) — skip
+  }
+  if (!rep) return [];                      // transient error — don't cache, just skip
+  const list = Array.isArray(rep.participants)
+    ? rep.participants.map(p => ({ email: (p.user_email || '').toLowerCase() || null, displayName: p.name || null }))
+    : [];
+  _zoomParticipantsCache.set(uuid, list);
+  return list;
+}
+
 // Discover candidate Zoom cloud recordings for a prospect. Mirrors the shape of
 // findFirefliesTranscripts so the prefetch picker can merge both sources. Matches
-// by prospect name/company in the call title (primary), upgrades to exact_email
-// via the report participants API when available (Pro+). Returns [] on any
-// failure — Zoom must never block the Fireflies flow.
+// by attendee email (exact_email), attendee email domain (domain), and prospect
+// name/company in the title (title) — same ranking as Fireflies — plus a recent
+// fallback. Returns [] on any failure — Zoom must never block the Fireflies flow.
 async function findZoomRecordings(email, contactInfo = {}) {
   try {
     const fmt = d => d.toISOString().slice(0, 10);
@@ -1342,28 +1369,41 @@ async function findZoomRecordings(email, contactInfo = {}) {
       };
     });
 
-    const titleMatches = shaped.filter(c => c._match_kind === 'title');
-    let pool = titleMatches.length
-      ? titleMatches
-      : shaped.slice().sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0)).slice(0, 3);
-    pool.sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0));
-    pool = pool.slice(0, 8);
+    // Zoom recordings carry no attendee list, and the Report API is harshly
+    // per-second rate-limited, so we can't scan every call. Pull participants
+    // only for the title matches + the few most-recent calls (the set we'd show)
+    // — enough to attach attendees for display and to upgrade those to
+    // exact_email / domain when the prospect actually joined signed-in. Fetched
+    // sequentially (rate limit) and cached (the recent set is shared).
+    const byDateDesc = shaped.slice().sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0));
+    const poolMap = new Map();
+    shaped.filter(c => c._match_kind === 'title').forEach(c => poolMap.set(c.id, c));
+    byDateDesc.slice(0, 6).forEach(c => { if (!poolMap.has(c.id)) poolMap.set(c.id, c); });
+    const pool = [...poolMap.values()];
 
-    // Hybrid upgrade: check participant emails for the top few (Pro+ report scope).
-    if (email) {
-      const target = email.toLowerCase();
-      for (const c of pool.slice(0, 6)) {
-        const enc = encodeURIComponent(encodeURIComponent(c._zoom.uuid));
-        const rep = await zoomQuery(`report/meetings/${enc}/participants?page_size=300`);
-        if (rep && rep.code) { console.warn('[Zoom] participant report unavailable (code', rep.code + ') — title match only'); break; }
-        if (rep && Array.isArray(rep.participants)) {
-          c.meeting_attendees = rep.participants.map(p => ({ email: (p.user_email || '').toLowerCase() || null, displayName: p.name || null }));
-          if (c.meeting_attendees.some(a => a.email === target)) c._match_kind = 'exact_email';
-        }
-      }
+    const target = (email || '').toLowerCase();
+    const domain = target.split('@')[1] || '';
+    const useDomain = domain && !isFreeMailDomain(domain);
+    for (const c of pool) {
+      const list = await zoomParticipants(c._zoom.uuid); // sequential — Report API rate limit
+      if (list === null) { console.warn('[Zoom] report scope missing — title match only'); break; }
+      c.meeting_attendees = list;
+      const emails = list.map(a => a.email).filter(Boolean);
+      if (target && emails.includes(target)) c._match_kind = 'exact_email';
+      else if (useDomain && emails.some(e => e.split('@')[1] === domain)) c._match_kind = 'domain';
+      // else keep the topic-based kind (title or recent)
     }
-    console.log(`[Zoom] ${pool.length} candidate recording(s) for ${email}` + (pool.length ? `: ${pool.map(c => `"${c.title}" [${c._match_kind}]`).join(', ')}` : ''));
-    return pool;
+
+    // Keep strong matches; if none, show the 3 most recent so the rep can eyeball
+    // (those are in the pool, so they already have attendees attached).
+    const strong = pool.filter(c => ['exact_email', 'domain', 'title'].includes(c._match_kind));
+    let result = strong.length ? strong : byDateDesc.slice(0, 3);
+    const rank = { exact_email: 4, domain: 3, title: 2, recent: 1 };
+    result.sort((a, b) => (rank[b._match_kind] || 0) - (rank[a._match_kind] || 0) || new Date(b.date || 0) - new Date(a.date || 0));
+    result = result.slice(0, 8);
+
+    console.log(`[Zoom] ${result.length} candidate(s) for ${email}${result.length ? ': ' + result.map(c => `"${c.title}" [${c._match_kind}]`).join(', ') : ''}`);
+    return result;
   } catch (e) {
     console.warn('[Zoom] findZoomRecordings error:', e.message);
     return [];
@@ -5246,8 +5286,8 @@ const server = http.createServer(async (req, res) => {
           const merged = [...(ffCandidates || []), ...(zoomCandidates || [])];
           const rankOf = (c) => {
             const mk = c._match_kind || 'loose';
-            if ((c._source || 'fireflies') === 'fireflies') return mk === 'exact_email' ? 100 : 80;
-            return mk === 'exact_email' ? 60 : mk === 'title' ? 40 : 20;
+            if ((c._source || 'fireflies') === 'fireflies') return mk === 'exact_email' ? 100 : mk === 'domain' ? 90 : 80;
+            return mk === 'exact_email' ? 60 : mk === 'domain' ? 50 : mk === 'title' ? 40 : 20;
           };
           const dateMs = (c) => new Date(c.date || c.dateString || 0).getTime() || 0;
           merged.sort((a, b) => rankOf(b) - rankOf(a) || dateMs(b) - dateMs(a) || (b.duration || 0) - (a.duration || 0));
