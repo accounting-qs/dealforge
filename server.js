@@ -1225,6 +1225,151 @@ async function zoomQuery(endpoint, method = 'GET', body = null, _retried = false
   }
 }
 
+// ── Zoom transcript discovery (New Job picker + extract) ─────────────────────
+// Parse a Zoom .VTT caption file into [{ speaker_name, text }] — the same shape
+// _annotateTranscript() consumes, so Zoom reuses the existing REP/PROSPECT
+// labeling. Zoom auto-transcripts often omit speaker names; then speaker_name is
+// null and the extractor still gets the verbatim words (labeled=false).
+function parseZoomVtt(vtt) {
+  if (!vtt || typeof vtt !== 'string') return [];
+  const blocks = vtt.replace(/\r/g, '').split(/\n\n+/);
+  const out = [];
+  for (const block of blocks) {
+    if (/^\s*WEBVTT/.test(block)) continue; // header block (WEBVTT / Kind / Language)
+    const textLines = block.split('\n')
+      .map(l => l.trim())
+      .filter(l => l && !/^\d+$/.test(l) && !l.includes('-->'));
+    if (!textLines.length) continue;
+    const joined = textLines.join(' ').trim();
+    if (!joined) continue;
+    // "Speaker Name: text" — speaker must look like a name (short, ≤5 words)
+    const m = joined.match(/^([A-Za-z][A-Za-z0-9 .'’-]{0,38}):\s+(.+)$/);
+    let speaker = null, text = joined;
+    if (m && m[1].trim().split(/\s+/).length <= 5) { speaker = m[1].trim(); text = m[2].trim(); }
+    const last = out[out.length - 1];
+    if (last && last.speaker_name === speaker) last.text += ' ' + text;
+    else out.push({ speaker_name: speaker, text });
+  }
+  return out;
+}
+
+// Download a Zoom recording file (the transcript VTT). The access token rides as
+// a query param so it survives Zoom's redirect to signed storage. Returns raw text.
+async function downloadZoomFile(url, _retried = false) {
+  const token = await getZoomToken();
+  if (!token || !url) return null;
+  try {
+    const sep = url.includes('?') ? '&' : '?';
+    const res = await fetch(`${url}${sep}access_token=${encodeURIComponent(token)}`, {
+      redirect: 'follow', signal: AbortSignal.timeout(15000)
+    });
+    if (res.status === 401 && !_retried) { invalidateZoomToken(); return downloadZoomFile(url, true); }
+    if (!res.ok) { console.warn('[Zoom] file download failed:', res.status); return null; }
+    return await res.text();
+  } catch (e) { console.warn('[Zoom] file download error:', e.message); return null; }
+}
+
+// Fetch + parse a single Zoom recording's transcript by meeting UUID. Used by
+// extract (which only has the stored uuid). Shaped like a Fireflies detail:
+// { id, title, date, duration, meeting_attendees, sentences, summary }.
+async function fetchZoomTranscriptDetail(uuid) {
+  if (!uuid) return null;
+  try {
+    const enc = encodeURIComponent(encodeURIComponent(uuid)); // Zoom requires double-encoded UUIDs
+    const rec = await zoomQuery(`meetings/${enc}/recordings`);
+    if (!rec || rec.code) { console.warn('[Zoom] recording fetch failed for', uuid, rec && rec.code); return null; }
+    const base = { id: uuid, title: rec.topic || null, date: rec.start_time || null, duration: rec.duration || 0, meeting_attendees: [], summary: {} };
+    const tf = (rec.recording_files || []).find(f => f.file_type === 'TRANSCRIPT');
+    if (!tf || !tf.download_url) return { ...base, sentences: [] };
+    const vtt = await downloadZoomFile(tf.download_url);
+    return { ...base, sentences: vtt ? parseZoomVtt(vtt) : [] };
+  } catch (e) { console.warn('[Zoom] fetchZoomTranscriptDetail error:', e.message); return null; }
+}
+
+// Discover candidate Zoom cloud recordings for a prospect. Mirrors the shape of
+// findFirefliesTranscripts so the prefetch picker can merge both sources. Matches
+// by prospect name/company in the call title (primary), upgrades to exact_email
+// via the report participants API when available (Pro+). Returns [] on any
+// failure — Zoom must never block the Fireflies flow.
+async function findZoomRecordings(email, contactInfo = {}) {
+  try {
+    const fmt = d => d.toISOString().slice(0, 10);
+    const from = fmt(new Date(Date.now() - 45 * 24 * 3600 * 1000));
+    const to   = fmt(new Date());
+
+    // List active users, then pull each user's cloud recordings. The account-wide
+    // /accounts/{id}/recordings endpoint needs a :master scope only master
+    // (multi-sub-account) plans can grant, so we fan out per user with the
+    // :admin user-recordings scope instead.
+    const usersResp = await zoomQuery('users?status=active&page_size=300');
+    if (!usersResp || usersResp.code) { console.warn('[Zoom] list users failed:', usersResp && usersResp.code, usersResp && usersResp.message); return []; }
+    const userIds = (usersResp.users || []).map(u => u.id).filter(Boolean);
+    if (!userIds.length) return [];
+
+    const meetings = [];
+    const CHUNK = 8; // bounded fan-out — sales teams are small
+    for (let i = 0; i < userIds.length && i < 50; i += CHUNK) {
+      const batch = userIds.slice(i, i + CHUNK);
+      const results = await Promise.all(batch.map(uid =>
+        zoomQuery(`users/${encodeURIComponent(uid)}/recordings?from=${from}&to=${to}&page_size=300`)
+      ));
+      results.forEach(data => { if (data && !data.code && Array.isArray(data.meetings)) meetings.push(...data.meetings); });
+    }
+    if (!meetings.length) return [];
+
+    const norm = s => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+    const nameTerm = norm(contactInfo.name);
+    const companyTerm = norm(contactInfo.company);
+    const nameParts = nameTerm.split(' ').filter(Boolean);
+    const first = nameParts[0] || '', last = nameParts.length > 1 ? nameParts[nameParts.length - 1] : '';
+
+    const shaped = meetings.map(m => {
+      const tf = (m.recording_files || []).find(f => f.file_type === 'TRANSCRIPT');
+      const topicN = norm(m.topic);
+      let mk = 'recent';
+      if (nameTerm && (topicN.includes(nameTerm) || (first && last && topicN.includes(first) && topicN.includes(last)))) mk = 'title';
+      else if (companyTerm && companyTerm.length >= 3 && topicN.includes(companyTerm)) mk = 'title';
+      return {
+        id: m.uuid,
+        title: m.topic || '(untitled)',
+        duration: m.duration || 0,
+        date: m.start_time || null,
+        meeting_attendees: [],
+        summary: {},
+        _source: 'zoom',
+        _match_kind: mk,
+        _zoom: { uuid: m.uuid, meeting_id: m.id, hasTranscript: !!tf, transcriptDownloadUrl: tf ? tf.download_url : null }
+      };
+    });
+
+    const titleMatches = shaped.filter(c => c._match_kind === 'title');
+    let pool = titleMatches.length
+      ? titleMatches
+      : shaped.slice().sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0)).slice(0, 3);
+    pool.sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0));
+    pool = pool.slice(0, 8);
+
+    // Hybrid upgrade: check participant emails for the top few (Pro+ report scope).
+    if (email) {
+      const target = email.toLowerCase();
+      for (const c of pool.slice(0, 6)) {
+        const enc = encodeURIComponent(encodeURIComponent(c._zoom.uuid));
+        const rep = await zoomQuery(`report/meetings/${enc}/participants?page_size=300`);
+        if (rep && rep.code) { console.warn('[Zoom] participant report unavailable (code', rep.code + ') — title match only'); break; }
+        if (rep && Array.isArray(rep.participants)) {
+          c.meeting_attendees = rep.participants.map(p => ({ email: (p.user_email || '').toLowerCase() || null, displayName: p.name || null }));
+          if (c.meeting_attendees.some(a => a.email === target)) c._match_kind = 'exact_email';
+        }
+      }
+    }
+    console.log(`[Zoom] ${pool.length} candidate recording(s) for ${email}` + (pool.length ? `: ${pool.map(c => `"${c.title}" [${c._match_kind}]`).join(', ')}` : ''));
+    return pool;
+  } catch (e) {
+    console.warn('[Zoom] findZoomRecordings error:', e.message);
+    return [];
+  }
+}
+
 // ── Fireflies GraphQL helper ──────────────────────────────────────────────────
 async function firefliesQuery(gql, variables) {
   const res = await fetch('https://api.fireflies.ai/graphql', {
@@ -3497,19 +3642,52 @@ async function handleExtract(task, job) {
   };
   console.log(`[extract] Processing job ${job.id} for ${email}`);
 
-  // Step 1: transcript source — approved calls from DB first, live Fireflies as fallback
+  // Step 1: transcript source. Honor a rep-picked Zoom call first (stamped on
+  // brief._source at job creation), then approved DB calls, then live Fireflies.
+  // Fireflies picks keep using the search path below — it re-finds the call and
+  // also aggregates any related calls for the same prospect.
   let transcripts = [];
   let transcriptSource = 'none';
 
-  const dbApproved = await findApprovedCallsFromDB(email);
-  if (dbApproved.length > 0) {
-    transcripts = dbApproved.map(dbCallToTranscript);
-    transcriptSource = 'db_approved';
-    console.log(`[extract] Using ${transcripts.length} approved DB call(s) for ${email}`);
-  } else {
-    transcripts = await findFirefliesTranscripts(email);
-    transcriptSource = transcripts.length > 0 ? 'live_fireflies' : 'none';
-    console.log(`[extract] DB approved: 0 — falling back to live Fireflies (${transcripts.length} found)`);
+  const pick = job.extracted_data && job.extracted_data._source;
+  if (pick && pick.source === 'zoom' && pick.id) {
+    // Prefer the download URL stamped at creation (no extra scope); fall back to
+    // re-fetching by uuid (needs list_recording_files scope) if it's missing.
+    let zt = null;
+    if (pick.zoom_transcript_url) {
+      const vtt = await downloadZoomFile(pick.zoom_transcript_url);
+      if (vtt) zt = { id: pick.id, title: pick.zoom_title || 'Zoom call', date: null, duration: 0, meeting_attendees: [], sentences: parseZoomVtt(vtt) };
+    }
+    if (!zt || !(zt.sentences || []).length) zt = await fetchZoomTranscriptDetail(pick.id);
+    if (zt && (zt.sentences || []).length) {
+      const repEmails = await getRepEmails();
+      const annotated = _annotateTranscript(zt.sentences, zt.meeting_attendees || [], repEmails);
+      transcripts = [{
+        id:         zt.id,
+        title:      zt.title || 'Zoom call',
+        duration:   zt.duration || 0,
+        dateString: zt.date ? new Date(zt.date).toLocaleDateString('en-US') : '',
+        // Zoom has no Fireflies-style summary; feed the labeled transcript text.
+        summary:    { short_summary: (annotated.text || '').slice(0, 14000) }
+      }];
+      transcriptSource = 'live_zoom';
+      console.log(`[extract] Using rep-picked Zoom transcript ${pick.id} (${zt.sentences.length} lines)`);
+    } else {
+      console.warn(`[extract] Zoom transcript ${pick.id} unavailable — falling back to search`);
+    }
+  }
+
+  if (!transcripts.length) {
+    const dbApproved = await findApprovedCallsFromDB(email);
+    if (dbApproved.length > 0) {
+      transcripts = dbApproved.map(dbCallToTranscript);
+      transcriptSource = 'db_approved';
+      console.log(`[extract] Using ${transcripts.length} approved DB call(s) for ${email}`);
+    } else {
+      transcripts = await findFirefliesTranscripts(email);
+      transcriptSource = transcripts.length > 0 ? 'live_fireflies' : 'none';
+      console.log(`[extract] DB approved: 0 — falling back to live Fireflies (${transcripts.length} found)`);
+    }
   }
 
   const transcriptFound = transcripts.length > 0;
@@ -5053,22 +5231,51 @@ const server = http.createServer(async (req, res) => {
           const dbApproved = await findApprovedCallsFromDB(email);
           const approvedCallCount = dbApproved.length;
 
-          // Phase 1 only does Fireflies search. The website scrape moves to
-          // extract-brief so the rep can confirm/edit the URL first — no point
-          // burning a fetch + JS render if they're going to change it.
-          setProgress(id, { progress: 60, step: 'Searching Fireflies (parallel)…' });
-          const candidates = await findFirefliesTranscripts(email, contactInfo);
+          // Phase 1 searches Fireflies AND Zoom in parallel. Zoom is the fallback
+          // transcript source when Fireflies didn't join the call. Zoom failures
+          // never block — findZoomRecordings returns [] on any error.
+          setProgress(id, { progress: 60, step: 'Searching Fireflies + Zoom…' });
+          const [ffCandidates, zoomCandidates] = await Promise.all([
+            findFirefliesTranscripts(email, contactInfo),
+            findZoomRecordings(email, contactInfo)
+          ]);
+          (ffCandidates || []).forEach(t => { t._source = 'fireflies'; });
 
-          // Public candidate list — strip the heavy `sentences` blob and the
-          // internal `_match_kind` tag, surfacing match_kind as a clean field.
-          const publicCandidates = (candidates || []).slice(0, 10).map(t => ({
-            id:         t.id,
-            title:      t.title || null,
-            duration:   t.duration || 0,
-            date:       t.date || null,
-            attendees:  (t.meeting_attendees || []).map(a => ({ email: a.email || null, name: a.displayName || null })),
-            match_kind: t._match_kind || 'loose'
+          // Merge + rank. Fireflies outranks Zoom at the same tier (richer data,
+          // better diarization); within a source, exact_email wins. See spec §5.
+          const merged = [...(ffCandidates || []), ...(zoomCandidates || [])];
+          const rankOf = (c) => {
+            const mk = c._match_kind || 'loose';
+            if ((c._source || 'fireflies') === 'fireflies') return mk === 'exact_email' ? 100 : 80;
+            return mk === 'exact_email' ? 60 : mk === 'title' ? 40 : 20;
+          };
+          const dateMs = (c) => new Date(c.date || c.dateString || 0).getTime() || 0;
+          merged.sort((a, b) => rankOf(b) - rankOf(a) || dateMs(b) - dateMs(a) || (b.duration || 0) - (a.duration || 0));
+
+          // Mark (don't drop) a Zoom call that looks like the same meeting as a
+          // Fireflies one — same day + duration within 3 min — so the UI can
+          // de-emphasize the duplicate while still listing everything from both.
+          const ffDays = (ffCandidates || []).map(t => ({ day: String(t.date || t.dateString || '').slice(0, 10), dur: t.duration || 0 }));
+          (zoomCandidates || []).forEach(z => {
+            const zd = String(z.date || '').slice(0, 10), zdur = z.duration || 0;
+            z._dup_of_fireflies = !!zd && ffDays.some(f => f.day && f.day === zd && Math.abs((f.dur || 0) - zdur) <= 3);
+          });
+
+          // Public candidate list — strip heavy blobs; surface source + match_kind
+          // + has_transcript as clean fields the picker renders.
+          const publicCandidates = merged.slice(0, 12).map(t => ({
+            id:               t.id,
+            source:           t._source || 'fireflies',
+            title:            t.title || null,
+            duration:         t.duration || 0,
+            date:             t.date || t.dateString || null,
+            attendees:        (t.meeting_attendees || []).map(a => ({ email: a.email || null, name: a.displayName || a.name || null })),
+            match_kind:       t._match_kind || 'loose',
+            has_transcript:   t._source === 'zoom' ? !!(t._zoom && t._zoom.hasTranscript) : true,
+            dup_of_fireflies: !!t._dup_of_fireflies
           }));
+          // Suggest the best usable candidate (Zoom rows with no transcript can't feed extract).
+          const suggested = publicCandidates.find(c => c.has_transcript) || publicCandidates[0] || null;
 
           setProgress(id, {
             progress: 100, status: 'completed', step: 'Done',
@@ -5078,18 +5285,17 @@ const server = http.createServer(async (req, res) => {
               rep:                     rep,
               approved_call_count:     approvedCallCount,
               candidates:              publicCandidates,
-              suggested_candidate_id:  publicCandidates[0]?.id || null
+              suggested_candidate_id:  suggested?.id || null
             }
           });
 
           // Side-cache for phase 2 — extract-brief needs the raw candidate map
-          // (for sentences). webBody is filled by extract-brief itself once the
-          // rep has confirmed the URL.
+          // (Fireflies sentences / Zoom transcript download URLs).
           _progressJobs.get(id)._extras = {
             email,
             contactInfo,
             contactSources,
-            candidatesById:  new Map((candidates || []).map(t => [t.id, t]))
+            candidatesById:  new Map(merged.map(t => [t.id, t]))
           };
         } catch (e) {
           console.error(`[prefetch ${id.slice(0,8)}] failed:`, e.message);
@@ -5135,6 +5341,7 @@ const server = http.createServer(async (req, res) => {
       const body = await parseBody(req);
       const prefetchId  = (body.prefetch_id || '').trim();
       const transcriptId = body.transcript_id ? String(body.transcript_id) : null;
+      const transcriptSource = String(body.transcript_source || 'fireflies');
       const prefetchJob = getProgress(prefetchId);
       if (!prefetchJob || prefetchJob.kind !== 'prefetch' || prefetchJob.status !== 'completed') {
         res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -5195,13 +5402,25 @@ const server = http.createServer(async (req, res) => {
           }
 
           if (transcriptId) {
-            // Manual-paste path: when none of the auto-detected Fireflies
-            // candidates is right, the rep pastes a Fireflies link. The ID
-            // won't be in candidatesById, so resolve title/date by fetching
-            // detail directly from Fireflies.
             let candidate       = extras.candidatesById.get(transcriptId);
             let preloadedDetail = null;
-            if (!candidate) {
+            const isZoom = transcriptSource === 'zoom' || (candidate && candidate._source === 'zoom');
+
+            if (isZoom) {
+              // Zoom path: download + parse the recording's VTT into sentences.
+              // Prefer the download URL cached on the candidate; else re-fetch by uuid.
+              setProgress(id, { progress: 20, step: 'Loading Zoom transcript…' });
+              if (candidate && candidate._zoom && candidate._zoom.transcriptDownloadUrl) {
+                const vtt = await downloadZoomFile(candidate._zoom.transcriptDownloadUrl);
+                preloadedDetail = vtt ? { ...candidate, sentences: parseZoomVtt(vtt), summary: {} } : null;
+              }
+              if (!preloadedDetail) preloadedDetail = await fetchZoomTranscriptDetail(transcriptId);
+              if (!preloadedDetail || !(preloadedDetail.sentences || []).length) {
+                throw new Error('Selected Zoom call has no transcript available — pick another call or Skip.');
+              }
+              candidate = candidate || preloadedDetail;
+            } else if (!candidate) {
+              // Manual-paste path: rep pasted a Fireflies link not in the picker.
               console.log(`[extract-brief ${id.slice(0,8)}] manual transcript_id ${transcriptId} (not in picker) — fetching detail directly`);
               setProgress(id, { progress: 20, step: 'Loading pasted Fireflies transcript…' });
               preloadedDetail = await fetchTranscriptDetail(transcriptId);
@@ -5242,6 +5461,19 @@ const server = http.createServer(async (req, res) => {
             console.log(`[extract-brief ${id.slice(0,8)}] Claude context: ${txContent.length} chars (${rawSentences.length} verbatim, labeled=${annotated.labeled} rep:${annotated.counts.rep} prospect:${annotated.counts.prospect})`);
             brief = await extractBriefFromTranscript(txContent, webBody, contactInfo);
             transcriptFound = true;
+
+            // Persist the Zoom transcript's download URL on the brief so the
+            // pipeline's extract can re-read the same VTT without needing the
+            // extra list_recording_files scope (download needs only the token).
+            if (isZoom && brief && typeof brief === 'object') {
+              brief._source = {
+                ...(brief._source || {}),
+                source: 'zoom',
+                id: transcriptId,
+                zoom_transcript_url: (candidate && candidate._zoom && candidate._zoom.transcriptDownloadUrl) || null,
+                zoom_title: (candidate && candidate.title) || null
+              };
+            }
 
             // Stamp external-source provenance + promote any new transcript values
             // back into the contactInfo summary (same logic as the legacy handler).
@@ -5344,6 +5576,7 @@ const server = http.createServer(async (req, res) => {
       const websiteUrl = (body.websiteUrl || '').trim().replace(/^https?:\/\//, '').split('/')[0].toLowerCase();
       const linkedinUrl = (body.linkedin_url || body.linkedinUrl || '').trim() || null;
       const transcriptId = (body.transcript_id || body.transcriptId || '').trim() || null;
+      const transcriptSource = String(body.transcript_source || body.transcriptSource || 'fireflies');
       const brief      = body.brief || null;
       const repName    = (body.repName || body.rep_name || '').trim() || null; // B5 fix
 
@@ -5353,14 +5586,16 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
-      // Stamp the chosen Fireflies transcript on the brief so we can tell later
-      // whether the rep auto-accepted the top candidate or actively picked a
-      // non-default one. Useful for tuning the search ranker without adding a
-      // dedicated column.
+      // Stamp the chosen transcript (Fireflies or Zoom) on the brief so extract
+      // can honor the rep's exact pick instead of re-searching, and so we can
+      // tell whether they auto-accepted the top candidate or picked another.
       if (brief && typeof brief === 'object' && transcriptId) {
         brief._source = {
           ...(brief._source || {}),
-          fireflies_transcript_id: transcriptId,
+          source:                  transcriptSource,
+          id:                      transcriptId,
+          // Keep the legacy field populated for Fireflies so older readers still work.
+          fireflies_transcript_id: transcriptSource === 'fireflies' ? transcriptId : (brief._source?.fireflies_transcript_id || null),
           picked_by:               body.transcript_picked_by || 'rep',
           picked_at:               new Date().toISOString()
         };

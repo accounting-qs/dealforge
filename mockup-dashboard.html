@@ -245,7 +245,7 @@
 
       <!-- Transcript Status -->
       <div class="nj-section">
-        <div class="nj-label">Fireflies Transcript</div>
+        <div class="nj-label">Transcript</div>
 
         <div id="nj-transcript-found" class="nj-transcript-found" style="display:none;">
           <svg style="width:15px;height:15px;color:#22c55e;flex-shrink:0;margin-top:1px;" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
@@ -998,7 +998,9 @@ var _njExtractResult  = null;
 var _njPrefetchId     = null;
 var _njExtractId      = null;
 var _njSelectedTranscriptId = null;
+var _njSelectedTranscriptSource = 'fireflies'; // 'fireflies' | 'zoom' — source of the current pick
 var _njPickerLastSelectedId = null; // remembers radio pick so Clear-on-manual restores it
+var _njPickerLastSelectedSource = 'fireflies';
 var _njManualIdActive       = false; // true while a pasted Fireflies link is the source
 var _njPollTimer      = null;
 var _njPollStuck      = 0;
@@ -1022,6 +1024,7 @@ function njReset() {
   _njPrefetchId     = null;
   _njExtractId      = null;
   _njSelectedTranscriptId = null;
+  _njSelectedTranscriptSource = 'fireflies';
   _njPickerLastSelectedId = null;
   _njManualIdActive       = false;
   _njPollLastPct = -1; _njPollStuck = 0;
@@ -1145,7 +1148,10 @@ function njRenderPhase1(result) {
   // Fireflies candidates → picker / status
   var candidates = Array.isArray(result.candidates) ? result.candidates : [];
   _njSelectedTranscriptId = result.suggested_candidate_id || (candidates[0] && candidates[0].id) || null;
+  var _njSelCand = candidates.find(function(c){ return c.id === _njSelectedTranscriptId; });
+  _njSelectedTranscriptSource = (_njSelCand && _njSelCand.source) || 'fireflies';
   _njPickerLastSelectedId = _njSelectedTranscriptId;
+  _njPickerLastSelectedSource = _njSelectedTranscriptSource;
   // Always render the picker when at least one Fireflies call matched, so
   // the rep can confirm/swap/skip even when only one came back.
   document.getElementById('nj-transcript-found').style.display = 'none';
@@ -1191,31 +1197,45 @@ function njMatchKindBadge(kind) {
   var styles = {
     exact_email: { bg:'rgba(34,197,94,0.12)',  bd:'rgba(34,197,94,0.3)',  fg:'#86efac', label:'EXACT EMAIL' },
     domain:      { bg:'rgba(59,130,246,0.12)', bd:'rgba(59,130,246,0.3)', fg:'#93c5fd', label:'DOMAIN' },
-    loose:       { bg:'rgba(245,158,11,0.12)', bd:'rgba(245,158,11,0.3)', fg:'#fcd34d', label:'LOOSE' }
+    title:       { bg:'rgba(59,130,246,0.12)', bd:'rgba(59,130,246,0.3)', fg:'#93c5fd', label:'TITLE MATCH' },
+    loose:       { bg:'rgba(245,158,11,0.12)', bd:'rgba(245,158,11,0.3)', fg:'#fcd34d', label:'LOOSE' },
+    recent:      { bg:'rgba(245,158,11,0.12)', bd:'rgba(245,158,11,0.3)', fg:'#fcd34d', label:'RECENT' }
   };
   var s = styles[kind] || styles.loose;
+  return '<span style="font-size:9px;font-weight:700;letter-spacing:0.06em;padding:2px 6px;border-radius:4px;background:' + s.bg + ';border:1px solid ' + s.bd + ';color:' + s.fg + '">' + s.label + '</span>';
+}
+
+function njSourceBadge(source) {
+  var s = source === 'zoom'
+    ? { bg:'rgba(45,140,255,0.14)', bd:'rgba(45,140,255,0.40)', fg:'#7db8ff', label:'ZOOM' }
+    : { bg:'rgba(139,92,246,0.14)', bd:'rgba(139,92,246,0.40)', fg:'#c4b5fd', label:'FIREFLIES' };
   return '<span style="font-size:9px;font-weight:700;letter-spacing:0.06em;padding:2px 6px;border-radius:4px;background:' + s.bg + ';border:1px solid ' + s.bd + ';color:' + s.fg + '">' + s.label + '</span>';
 }
 
 function njRenderPicker(candidates, selectedId) {
   var headerEl = document.querySelector('#nj-picker > div > div');
   if (headerEl) {
-    headerEl.textContent = candidates.length === 1
-      ? '1 Fireflies call — confirm it’s the right one'
-      : candidates.length + ' Fireflies calls — pick the right one';
+    var nFF = candidates.filter(function(c){ return (c.source||'fireflies')!=='zoom'; }).length;
+    var nZ  = candidates.filter(function(c){ return c.source==='zoom'; }).length;
+    headerEl.textContent = candidates.length + ' call' + (candidates.length===1?'':'s') + ' found · '
+      + nFF + ' Fireflies' + (nZ ? ' · ' + nZ + ' Zoom' : '') + ' — pick the right one';
   }
   document.getElementById('nj-picker').style.display = 'block';
   var listEl = document.getElementById('nj-picker-list');
   var html = candidates.map(function(c) {
     var sel = c.id === selectedId;
+    var src = c.source || 'fireflies';
+    var noTx = src === 'zoom' && c.has_transcript === false;
+    var dimmed = noTx || c.dup_of_fireflies;
     var attendeesStr = (c.attendees || []).slice(0, 2).map(function(a) { return a.email || a.name; }).filter(Boolean).join(', ');
-    return '<label style="display:flex;align-items:flex-start;gap:10px;padding:8px;border-radius:6px;cursor:pointer;background:' + (sel ? 'rgba(139,92,246,0.10)' : 'transparent') + ';border:1px solid ' + (sel ? 'rgba(139,92,246,0.35)' : 'rgba(255,255,255,0.04)') + '">'
-      +   '<input type="radio" name="nj-transcript-pick" value="' + c.id + '"' + (sel ? ' checked' : '') + ' onchange="njSelectTranscript(\'' + c.id + '\')" style="margin-top:3px">'
+    var meta = njFormatCandidateMeta(c) + (attendeesStr ? ' · ' + attendeesStr : '') + (noTx ? ' · no transcript' : '') + (c.dup_of_fireflies ? ' · also in Fireflies' : '');
+    return '<label style="display:flex;align-items:flex-start;gap:10px;padding:8px;border-radius:6px;cursor:' + (noTx?'not-allowed':'pointer') + ';opacity:' + (dimmed?'0.55':'1') + ';background:' + (sel ? 'rgba(139,92,246,0.10)' : 'transparent') + ';border:1px solid ' + (sel ? 'rgba(139,92,246,0.35)' : 'rgba(255,255,255,0.04)') + '">'
+      +   '<input type="radio" name="nj-transcript-pick" value="' + c.id + '"' + (sel ? ' checked' : '') + (noTx ? ' disabled' : '') + ' onchange="njSelectTranscript(\'' + c.id + '\',\'' + src + '\')" style="margin-top:3px">'
       +   '<div style="flex:1;min-width:0">'
       +     '<div style="font-size:12.5px;color:#e4e4e7;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + (c.title || 'Untitled') + '</div>'
-      +     '<div style="font-size:11px;color:#71717a;margin-top:2px">' + njFormatCandidateMeta(c) + (attendeesStr ? ' · ' + attendeesStr : '') + '</div>'
+      +     '<div style="font-size:11px;color:#71717a;margin-top:2px">' + meta + '</div>'
       +   '</div>'
-      +   '<div style="flex-shrink:0">' + njMatchKindBadge(c.match_kind) + '</div>'
+      +   '<div style="flex-shrink:0;display:flex;gap:4px;align-items:center">' + njSourceBadge(src) + njMatchKindBadge(c.match_kind) + '</div>'
       + '</label>';
   }).join('') + '<label style="display:flex;align-items:center;gap:10px;padding:8px;border-radius:6px;cursor:pointer;border:1px dashed rgba(255,255,255,0.10);margin-top:4px">'
       + '<input type="radio" name="nj-transcript-pick" value="" onchange="njSelectTranscript(null)">'
@@ -1224,9 +1244,11 @@ function njRenderPicker(candidates, selectedId) {
   listEl.innerHTML = html;
 }
 
-function njSelectTranscript(id) {
+function njSelectTranscript(id, source) {
   _njSelectedTranscriptId = id || null;
+  _njSelectedTranscriptSource = id ? (source || 'fireflies') : 'fireflies';
   _njPickerLastSelectedId = id || null;
+  _njPickerLastSelectedSource = _njSelectedTranscriptSource;
   // Picking from the radio list clears any manually-pasted link so the two
   // controls can't disagree about which transcript wins.
   njResetManualLink();
@@ -1263,6 +1285,7 @@ function njManualLinkParse() {
     if (_njManualIdActive) {
       _njManualIdActive = false;
       _njSelectedTranscriptId = _njPickerLastSelectedId;
+      _njSelectedTranscriptSource = _njPickerLastSelectedSource || 'fireflies';
     }
     return;
   }
@@ -1278,6 +1301,7 @@ function njManualLinkParse() {
   clearEl.style.display = 'inline-block';
   _njManualIdActive       = true;
   _njSelectedTranscriptId = id;
+  _njSelectedTranscriptSource = 'fireflies'; // pasted links are Fireflies
   // Visually un-select the picker radios — the manual paste wins.
   var radios = document.querySelectorAll('input[name="nj-transcript-pick"]');
   radios.forEach(function(r) { r.checked = false; });
@@ -1330,6 +1354,7 @@ function njShowBrief() {
     body: JSON.stringify({
       prefetch_id:   _njPrefetchId,
       transcript_id: _njSelectedTranscriptId,
+      transcript_source: _njSelectedTranscriptSource || 'fireflies',
       website_url:   njWebsiteUrl || undefined
     })
   })
@@ -1609,6 +1634,7 @@ function njGenerate() {
       brief: brief,
       repName: rep || undefined,
       transcript_id: _njSelectedTranscriptId || undefined,
+      transcript_source: _njSelectedTranscriptSource || 'fireflies',
       transcript_picked_by: pickedBy
     })
   })

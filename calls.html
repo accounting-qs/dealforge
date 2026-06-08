@@ -973,7 +973,9 @@ var _briefExtractResult  = null;       // result blob from /api/extract-brief
 var _briefPrefetchId     = null;
 var _briefExtractId      = null;
 var _briefSelectedTranscriptId = null; // null = rep chose Skip
+var _briefSelectedTranscriptSource = 'fireflies'; // 'fireflies' | 'zoom'
 var _briefPickerLastSelectedId = null; // remembers radio pick so Clear-on-manual restores it
+var _briefPickerLastSelectedSource = 'fireflies';
 var _briefManualIdActive       = false; // true while a pasted Fireflies link is the source
 var _briefEmail = null;
 
@@ -983,6 +985,7 @@ function _createNewJob(email) {
   _briefExtractResult  = null;
   _briefPrefetchId     = null;
   _briefSelectedTranscriptId = null;
+  _briefSelectedTranscriptSource = 'fireflies';
   _briefPickerLastSelectedId = null;
   _briefManualIdActive       = false;
   if (_briefPollTimer) { clearTimeout(_briefPollTimer); _briefPollTimer = null; }
@@ -1096,7 +1099,10 @@ function briefRenderPhase1(result) {
 
   var candidates = Array.isArray(result.candidates) ? result.candidates : [];
   _briefSelectedTranscriptId = result.suggested_candidate_id || (candidates[0] && candidates[0].id) || null;
+  var _briefSelCand = candidates.find(function(c){ return c.id === _briefSelectedTranscriptId; });
+  _briefSelectedTranscriptSource = (_briefSelCand && _briefSelCand.source) || 'fireflies';
   _briefPickerLastSelectedId = _briefSelectedTranscriptId;
+  _briefPickerLastSelectedSource = _briefSelectedTranscriptSource;
 
   // Always render the picker when at least one Fireflies call matched, so
   // the rep can explicitly confirm or swap or skip — even when only one
@@ -1135,9 +1141,18 @@ function briefMatchKindBadge(kind) {
   var styles = {
     exact_email: { bg:'rgba(34,197,94,0.12)',  bd:'rgba(34,197,94,0.3)',  fg:'#86efac', label:'EXACT EMAIL' },
     domain:      { bg:'rgba(59,130,246,0.12)', bd:'rgba(59,130,246,0.3)', fg:'#93c5fd', label:'DOMAIN' },
-    loose:       { bg:'rgba(245,158,11,0.12)', bd:'rgba(245,158,11,0.3)', fg:'#fcd34d', label:'LOOSE' }
+    title:       { bg:'rgba(59,130,246,0.12)', bd:'rgba(59,130,246,0.3)', fg:'#93c5fd', label:'TITLE MATCH' },
+    loose:       { bg:'rgba(245,158,11,0.12)', bd:'rgba(245,158,11,0.3)', fg:'#fcd34d', label:'LOOSE' },
+    recent:      { bg:'rgba(245,158,11,0.12)', bd:'rgba(245,158,11,0.3)', fg:'#fcd34d', label:'RECENT' }
   };
   var s = styles[kind] || styles.loose;
+  return '<span style="font-size:9px;font-weight:700;letter-spacing:0.06em;padding:2px 6px;border-radius:4px;background:' + s.bg + ';border:1px solid ' + s.bd + ';color:' + s.fg + '">' + s.label + '</span>';
+}
+
+function briefSourceBadge(source) {
+  var s = source === 'zoom'
+    ? { bg:'rgba(45,140,255,0.14)', bd:'rgba(45,140,255,0.40)', fg:'#7db8ff', label:'ZOOM' }
+    : { bg:'rgba(139,92,246,0.14)', bd:'rgba(139,92,246,0.40)', fg:'#c4b5fd', label:'FIREFLIES' };
   return '<span style="font-size:9px;font-weight:700;letter-spacing:0.06em;padding:2px 6px;border-radius:4px;background:' + s.bg + ';border:1px solid ' + s.bd + ';color:' + s.fg + '">' + s.label + '</span>';
 }
 
@@ -1145,21 +1160,26 @@ function briefRenderPicker(candidates, selectedId) {
   var listEl = document.getElementById('brief-picker-list');
   var headerEl = document.querySelector('#brief-picker > div > div');
   if (headerEl) {
-    headerEl.textContent = candidates.length === 1
-      ? '1 Fireflies call — confirm it’s the right one'
-      : candidates.length + ' Fireflies calls — pick the right one';
+    var nFF = candidates.filter(function(c){ return (c.source||'fireflies')!=='zoom'; }).length;
+    var nZ  = candidates.filter(function(c){ return c.source==='zoom'; }).length;
+    headerEl.textContent = candidates.length + ' call' + (candidates.length===1?'':'s') + ' found · '
+      + nFF + ' Fireflies' + (nZ ? ' · ' + nZ + ' Zoom' : '') + ' — pick the right one';
   }
   document.getElementById('brief-picker').style.display = 'block';
   var html = candidates.map(function(c) {
     var sel = c.id === selectedId;
+    var src = c.source || 'fireflies';
+    var noTx = src === 'zoom' && c.has_transcript === false;
+    var dimmed = noTx || c.dup_of_fireflies;
     var attendeesStr = (c.attendees || []).slice(0, 2).map(function(a) { return a.email || a.name; }).filter(Boolean).join(', ');
-    return '<label style="display:flex;align-items:flex-start;gap:10px;padding:8px;border-radius:6px;cursor:pointer;background:' + (sel ? 'rgba(139,92,246,0.10)' : 'transparent') + ';border:1px solid ' + (sel ? 'rgba(139,92,246,0.35)' : 'rgba(255,255,255,0.04)') + '">'
-      +   '<input type="radio" name="brief-transcript-pick" value="' + c.id + '"' + (sel ? ' checked' : '') + ' onchange="briefSelectTranscript(\'' + c.id + '\')" style="margin-top:3px">'
+    var meta = briefFormatCandidateMeta(c) + (attendeesStr ? ' · ' + attendeesStr : '') + (noTx ? ' · no transcript' : '') + (c.dup_of_fireflies ? ' · also in Fireflies' : '');
+    return '<label style="display:flex;align-items:flex-start;gap:10px;padding:8px;border-radius:6px;cursor:' + (noTx?'not-allowed':'pointer') + ';opacity:' + (dimmed?'0.55':'1') + ';background:' + (sel ? 'rgba(139,92,246,0.10)' : 'transparent') + ';border:1px solid ' + (sel ? 'rgba(139,92,246,0.35)' : 'rgba(255,255,255,0.04)') + '">'
+      +   '<input type="radio" name="brief-transcript-pick" value="' + c.id + '"' + (sel ? ' checked' : '') + (noTx ? ' disabled' : '') + ' onchange="briefSelectTranscript(\'' + c.id + '\',\'' + src + '\')" style="margin-top:3px">'
       +   '<div style="flex:1;min-width:0">'
       +     '<div style="font-size:12.5px;color:#e4e4e7;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + (c.title || 'Untitled') + '</div>'
-      +     '<div style="font-size:11px;color:#71717a;margin-top:2px">' + briefFormatCandidateMeta(c) + (attendeesStr ? ' · ' + attendeesStr : '') + '</div>'
+      +     '<div style="font-size:11px;color:#71717a;margin-top:2px">' + meta + '</div>'
       +   '</div>'
-      +   '<div style="flex-shrink:0">' + briefMatchKindBadge(c.match_kind) + '</div>'
+      +   '<div style="flex-shrink:0;display:flex;gap:4px;align-items:center">' + briefSourceBadge(src) + briefMatchKindBadge(c.match_kind) + '</div>'
       + '</label>';
   }).join('') + '<label style="display:flex;align-items:center;gap:10px;padding:8px;border-radius:6px;cursor:pointer;border:1px dashed rgba(255,255,255,0.10);margin-top:4px">'
       + '<input type="radio" name="brief-transcript-pick" value="" onchange="briefSelectTranscript(null)">'
@@ -1168,9 +1188,11 @@ function briefRenderPicker(candidates, selectedId) {
   listEl.innerHTML = html;
 }
 
-function briefSelectTranscript(id) {
+function briefSelectTranscript(id, source) {
   _briefSelectedTranscriptId = id || null;
+  _briefSelectedTranscriptSource = id ? (source || 'fireflies') : 'fireflies';
   _briefPickerLastSelectedId = id || null;
+  _briefPickerLastSelectedSource = _briefSelectedTranscriptSource;
   // Picking from the radio list clears any manually-pasted link so the two
   // controls can't disagree about which transcript wins.
   briefResetManualLink();
@@ -1209,6 +1231,7 @@ function briefManualLinkParse() {
     if (_briefManualIdActive) {
       _briefManualIdActive = false;
       _briefSelectedTranscriptId = _briefPickerLastSelectedId;
+      _briefSelectedTranscriptSource = _briefPickerLastSelectedSource || 'fireflies';
     }
     return;
   }
@@ -1224,6 +1247,7 @@ function briefManualLinkParse() {
   clearEl.style.display = 'inline-block';
   _briefManualIdActive       = true;
   _briefSelectedTranscriptId = id;
+  _briefSelectedTranscriptSource = 'fireflies';
   // Visually un-select the picker radios — the manual paste wins.
   var radios = document.querySelectorAll('input[name="brief-transcript-pick"]');
   radios.forEach(function(r) { r.checked = false; });
@@ -1289,6 +1313,7 @@ function briefShowStep2() {
     body: JSON.stringify({
       prefetch_id:   _briefPrefetchId,
       transcript_id: _briefSelectedTranscriptId,
+      transcript_source: _briefSelectedTranscriptSource || 'fireflies',
       website_url:   websiteUrl || undefined
     })
   })
@@ -1493,6 +1518,7 @@ function briefConfirmAndCreate() {
       websiteUrl: websiteUrl || undefined,
       brief: brief,
       transcript_id: _briefSelectedTranscriptId || undefined,
+      transcript_source: _briefSelectedTranscriptSource || 'fireflies',
       transcript_picked_by: pickedBy
     })
   })
