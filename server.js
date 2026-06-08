@@ -1138,6 +1138,93 @@ function uniqueTokens(values, minLength = 3) {
   return out;
 }
 
+// ── Zoom Server-to-Server OAuth & API helper ─────────────────────────────────
+// Zoom (unlike Fireflies' static key) issues a short-lived (~1h) account-level
+// access token from client_id/client_secret/account_id. We cache it in module
+// scope and refresh 60s before expiry — same shape as _repCache (loadActiveReps).
+let _zoomToken = { token: null, fetchedAt: 0, expiresIn: 0 };
+const ZOOM_TOKEN_BUFFER_MS = 60 * 1000; // refresh 1 min before Zoom's expiry
+
+function invalidateZoomToken() { _zoomToken = { token: null, fetchedAt: 0, expiresIn: 0 }; }
+
+// Credentials live in the DB (sales_assets.zoom_config, edited in Settings →
+// Integrations), with ZOOM_* env vars as a fallback for local/bootstrap. Read
+// only when a new token is minted (~hourly); invalidateZoomToken() after a save
+// forces a re-read so newly-entered creds take effect immediately.
+async function getZoomCreds() {
+  let db = {};
+  try {
+    const r = await supabaseRequest('GET', '/rest/v1/zoom_config?order=id.asc&limit=1');
+    db = (Array.isArray(r.body) ? r.body[0] : null) || {};
+  } catch (e) { console.warn('[Zoom] config read failed, falling back to env:', e.message); }
+  return {
+    accountId: db.account_id    || process.env.ZOOM_ACCOUNT_ID    || '',
+    clientId:  db.client_id     || process.env.ZOOM_CLIENT_ID     || '',
+    secret:    db.client_secret || process.env.ZOOM_CLIENT_SECRET || ''
+  };
+}
+
+// Returns a valid bearer token (cached) or null if creds are missing/invalid.
+async function getZoomToken() {
+  const expiresAt = _zoomToken.fetchedAt + _zoomToken.expiresIn * 1000 - ZOOM_TOKEN_BUFFER_MS;
+  if (_zoomToken.token && Date.now() < expiresAt) return _zoomToken.token;
+
+  const { accountId, clientId, secret } = await getZoomCreds();
+  if (!accountId || !clientId || !secret) {
+    console.warn('[Zoom] Missing credentials — set them in Settings → Integrations (or ZOOM_* env vars).');
+    return null;
+  }
+
+  try {
+    const basic = Buffer.from(`${clientId}:${secret}`).toString('base64');
+    const res = await fetch('https://zoom.us/oauth/token', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Basic ${basic}`,
+        'Content-Type': 'application/x-www-form-urlencoded'
+      },
+      body: new URLSearchParams({ grant_type: 'account_credentials', account_id: accountId }),
+      signal: AbortSignal.timeout(8000)
+    });
+    if (!res.ok) {
+      const detail = await res.text().catch(() => '');
+      console.error('[Zoom] Token fetch failed:', res.status, detail.slice(0, 200));
+      return null;
+    }
+    const data = await res.json();
+    _zoomToken = { token: data.access_token, fetchedAt: Date.now(), expiresIn: data.expires_in || 3600 };
+    console.log(`[Zoom] Access token acquired (expires in ${_zoomToken.expiresIn}s)`);
+    return _zoomToken.token;
+  } catch (e) {
+    console.error('[Zoom] Token fetch error:', e.message);
+    return null;
+  }
+}
+
+// Call a Zoom REST endpoint (path relative to https://api.zoom.us/v2/). Mirrors
+// firefliesQuery. Returns the success payload on 2xx, the Zoom error JSON
+// ({ code, message }) on a 4xx/5xx, or null on a network/timeout failure.
+// On 401 the cached token is invalidated and the call retried once.
+async function zoomQuery(endpoint, method = 'GET', body = null, _retried = false) {
+  const token = await getZoomToken();
+  if (!token) return null;
+  try {
+    const res = await fetch(`https://api.zoom.us/v2/${endpoint.replace(/^\//, '')}`, {
+      method,
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: body ? JSON.stringify(body) : undefined,
+      signal: AbortSignal.timeout(8000)
+    });
+    if (res.status === 401 && !_retried) { invalidateZoomToken(); return zoomQuery(endpoint, method, body, true); }
+    const data = await res.json().catch(() => null);
+    if (!res.ok) console.warn(`[Zoom] ${method} ${endpoint} → ${res.status}`, JSON.stringify(data || '').slice(0, 200));
+    return data; // success payload, or Zoom error { code, message }
+  } catch (e) {
+    console.warn(`[Zoom] ${method} ${endpoint} error:`, e.message);
+    return null;
+  }
+}
+
 // ── Fireflies GraphQL helper ──────────────────────────────────────────────────
 async function firefliesQuery(gql, variables) {
   const res = await fetch('https://api.fireflies.ai/graphql', {
@@ -4570,6 +4657,127 @@ const server = http.createServer(async (req, res) => {
       console.error('[POST /api/admin/apollo-sync-corpus]', e.message);
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: false, error: e.message }));
+    }
+    return;
+  }
+
+  // ── GET /api/admin/zoom-config — current Zoom creds (secret masked) ───────
+  if (req.method === 'GET' && urlPath === '/api/admin/zoom-config') {
+    setCors(res);
+    try {
+      const r = await supabaseRequest('GET', '/rest/v1/zoom_config?order=id.asc&limit=1');
+      const row = (Array.isArray(r.body) ? r.body[0] : null) || {};
+      const hasSecret = !!(row.client_secret && row.client_secret.length);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        account_id: row.account_id || '',
+        client_id:  row.client_id  || '',
+        has_secret: hasSecret,
+        configured: !!(row.account_id && row.client_id && hasSecret),
+        updated_at: row.updated_at || null
+      }));
+    } catch (e) {
+      console.error('[GET /api/admin/zoom-config]', e.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  // ── PUT /api/admin/zoom-config — save creds (singleton, creates if missing) ──
+  // A blank or masked client_secret keeps the existing one, so the admin can
+  // re-save account_id/client_id without re-entering the secret.
+  if (req.method === 'PUT' && urlPath === '/api/admin/zoom-config') {
+    setCors(res);
+    try {
+      const body  = await parseBody(req);
+      const patch = { updated_at: new Date().toISOString() };
+      if (typeof body.account_id === 'string') patch.account_id = body.account_id.trim();
+      if (typeof body.client_id  === 'string') patch.client_id  = body.client_id.trim();
+      const newSecret = typeof body.client_secret === 'string' ? body.client_secret.trim() : '';
+      if (newSecret && !/^[•*]+$/.test(newSecret)) patch.client_secret = newSecret;
+
+      const existing = await supabaseRequest('GET', '/rest/v1/zoom_config?order=id.asc&limit=1');
+      const row = Array.isArray(existing.body) ? existing.body[0] : null;
+      if (row) {
+        await supabaseRequest('PATCH', `/rest/v1/zoom_config?id=eq.${row.id}`, patch, { 'Prefer': 'return=minimal' });
+      } else {
+        await supabaseRequest('POST', '/rest/v1/zoom_config', patch, { 'Prefer': 'return=minimal' });
+      }
+      invalidateZoomToken(); // new creds take effect on the next Zoom API call
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ saved: true }));
+    } catch (e) {
+      console.error('[PUT /api/admin/zoom-config]', e.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  // ── GET /api/zoom/test — verify the Server-to-Server OAuth connection ─────
+  // Connection-only diagnostic (does NOT write to the calls table). Optional
+  // ?email=<rep> lists that user's recent cloud recordings so you can confirm
+  // transcripts are actually being produced. Answers: creds valid? scopes ok?
+  // is cloud transcription on?
+  if (req.method === 'GET' && urlPath === '/api/zoom/test') {
+    setCors(res);
+    try {
+      const qs    = new URLSearchParams(req.url.includes('?') ? req.url.split('?')[1] : '');
+      const email = (qs.get('email') || '').trim();
+
+      // 1. Token — proves account_id + client_id + client_secret and that the app is Activated
+      const token = await getZoomToken();
+      if (!token) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ connected: false, error: 'token',
+          hint: 'Check ZOOM_ACCOUNT_ID / ZOOM_CLIENT_ID / ZOOM_CLIENT_SECRET and that the Server-to-Server OAuth app is Activated.' }));
+        return;
+      }
+
+      // 2. Scope sanity — list one user. Zoom errors carry { code, message }.
+      const users = await zoomQuery('users?page_size=1');
+      if (!users || users.code) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ connected: true, scopes_ok: false, zoom_error: users || null,
+          hint: 'Token works but a Zoom API call failed — usually a missing scope. Add user:read + cloud_recording:read (admin) scopes and re-activate the app.' }));
+        return;
+      }
+
+      const out = { connected: true, scopes_ok: true,
+        users_visible: users.total_records ?? (Array.isArray(users.users) ? users.users.length : 0) };
+
+      // 3. Optional — list a specific rep's recent cloud recordings (last 30 days)
+      if (email) {
+        out.email = email;
+        const user = await zoomQuery(`users/${encodeURIComponent(email)}`);
+        if (!user || user.code) {
+          out.recordings_error = user || 'user not found';
+        } else {
+          const to   = new Date().toISOString().slice(0, 10);
+          const from = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+          const rec  = await zoomQuery(`users/${user.id}/recordings?from=${from}&to=${to}&page_size=30`);
+          if (!rec || rec.code) {
+            out.recordings_error = rec || 'no response';
+          } else {
+            out.window = { from, to };
+            out.recordings = (rec.meetings || []).map(m => ({
+              topic:          m.topic,
+              start_time:     m.start_time,
+              duration:       m.duration,
+              has_transcript: (m.recording_files || []).some(f => f.file_type === 'TRANSCRIPT')
+            }));
+            out.recording_count = out.recordings.length;
+          }
+        }
+      }
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(out));
+    } catch (e) {
+      console.error('[GET /api/zoom/test]', e.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
     }
     return;
   }

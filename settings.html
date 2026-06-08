@@ -200,6 +200,7 @@ h1{font-size:28px;font-weight:700;letter-spacing:-0.025em;color:#fff;margin:0 0 
     <button class="section-tab active" data-section="prompts" onclick="switchSection('prompts', event)">Prompts</button>
     <button class="section-tab" data-section="copy-brain" onclick="switchSection('copy-brain', event)">Copy Brain</button>
     <button class="section-tab" data-section="apollo-corpus" onclick="switchSection('apollo-corpus', event)">Apollo Corpus</button>
+    <button class="section-tab" data-section="integrations" onclick="switchSection('integrations', event)">Integrations</button>
   </div>
 
   <!-- ── Prompts section ────────────────────────────────────────────────── -->
@@ -302,6 +303,57 @@ h1{font-size:28px;font-weight:700;letter-spacing:-0.025em;color:#fff;margin:0 0 
       </div>
     </div>
   </div>
+
+  <!-- ── Integrations section (Zoom) ────────────────────────────────────── -->
+  <div class="section" id="section-integrations">
+    <div class="cb-card">
+      <div class="cb-head">
+        <div class="cb-head-title">
+          <strong>Zoom</strong>
+          <span>Fallback transcript source when Fireflies misses a call</span>
+        </div>
+        <div id="zoom-status-chip" style="font-size:11px;font-weight:600;color:#71717a;">—</div>
+      </div>
+      <div class="cb-body">
+        <p style="font-size:12px;color:#71717a;line-height:1.6;margin:0 0 14px;">
+          Connect your company Zoom account so Deal Forge can pull cloud-recording transcripts when Fireflies doesn't join. Create a <strong style="color:#a1a1aa;">Server-to-Server OAuth</strong> app in the Zoom Marketplace, then paste its three credentials below.
+          <a href="#" onclick="var g=document.getElementById('zoom-guide');g.style.display=(g.style.display==='block'?'none':'block');return false;" style="color:#34b433;">Show setup guide ▾</a>
+        </p>
+
+        <div id="zoom-guide" style="display:none;background:rgba(255,255,255,0.025);border:1px solid rgba(255,255,255,0.07);border-radius:10px;padding:14px 16px;margin-bottom:16px;font-size:12px;color:#a1a1aa;line-height:1.7;">
+          <strong style="color:#e4e4e7;">In Zoom (admin, one-time):</strong>
+          <ol style="margin:6px 0 10px;padding-left:18px;">
+            <li>Go to <a href="https://marketplace.zoom.us/develop/create" target="_blank" style="color:#34b433;">marketplace.zoom.us</a> → Develop → Build App → <strong>Server-to-Server OAuth</strong>.</li>
+            <li>Copy the <strong>Account ID</strong>, <strong>Client ID</strong> and <strong>Client Secret</strong> from the App Credentials tab.</li>
+            <li>On the Scopes tab add: <code>cloud_recording:read:list_user_recordings:admin</code>, <code>cloud_recording:read:recording:admin</code>, <code>user:read:list_users:admin</code>, <code>user:read:user:admin</code>.</li>
+            <li>Activate the app.</li>
+            <li>In Zoom Account Settings → Recording: turn ON <strong>Cloud recording</strong> and <strong>Create audio transcript</strong>.</li>
+          </ol>
+          Then paste the three values here → Save → Test connection. Full guide: <code>docs/zoom-setup.md</code>.
+        </div>
+
+        <div style="margin-bottom:12px;">
+          <label style="display:block;font-size:11px;font-weight:600;color:#a1a1aa;margin-bottom:5px;">Account ID</label>
+          <input type="text" id="zoom-account-id" placeholder="e.g. aBcD1234EfGhIj..." autocomplete="off" style="width:100%;box-sizing:border-box;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.1);border-radius:8px;padding:9px 12px;color:#e4e4e7;font-size:13px;font-family:inherit;">
+        </div>
+        <div style="margin-bottom:12px;">
+          <label style="display:block;font-size:11px;font-weight:600;color:#a1a1aa;margin-bottom:5px;">Client ID</label>
+          <input type="text" id="zoom-client-id" placeholder="e.g. 5x9aQ...Zb" autocomplete="off" style="width:100%;box-sizing:border-box;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.1);border-radius:8px;padding:9px 12px;color:#e4e4e7;font-size:13px;font-family:inherit;">
+        </div>
+        <div style="margin-bottom:4px;">
+          <label style="display:block;font-size:11px;font-weight:600;color:#a1a1aa;margin-bottom:5px;">Client Secret</label>
+          <input type="password" id="zoom-client-secret" placeholder="paste client secret" autocomplete="off" style="width:100%;box-sizing:border-box;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.1);border-radius:8px;padding:9px 12px;color:#e4e4e7;font-size:13px;font-family:inherit;">
+        </div>
+
+        <div style="display:flex;align-items:center;gap:12px;margin-top:14px;">
+          <button class="cb-add-btn" id="zoom-save-btn" onclick="zoomSaveConfig()">Save credentials</button>
+          <button class="cb-add-btn" id="zoom-test-btn" onclick="zoomTest()" style="background:rgba(255,255,255,0.06);">Test connection</button>
+          <span id="zoom-status" style="font-size:11px;color:#71717a;"></span>
+        </div>
+        <div id="zoom-test-result" style="margin-top:14px;font-size:12px;color:#a1a1aa;line-height:1.6;"></div>
+      </div>
+    </div>
+  </div>
 </div>
 
 <div class="toast" id="toast"></div>
@@ -329,6 +381,99 @@ function switchSection(name, event) {
   if (name === 'apollo-corpus') {
     apolloLoadStats();
   }
+  if (name === 'integrations') {
+    zoomLoadConfig();
+  }
+}
+
+// ── Integrations: Zoom ─────────────────────────────────────────────────────
+async function zoomLoadConfig() {
+  try {
+    var r = await fetch('/api/admin/zoom-config');
+    var c = await r.json();
+    document.getElementById('zoom-account-id').value = c.account_id || '';
+    document.getElementById('zoom-client-id').value  = c.client_id  || '';
+    var sec = document.getElementById('zoom-client-secret');
+    sec.value = '';
+    sec.placeholder = c.has_secret ? '•••••••• saved — leave blank to keep' : 'paste client secret';
+    var chip = document.getElementById('zoom-status-chip');
+    chip.textContent  = c.configured ? '● Configured' : '○ Not configured';
+    chip.style.color  = c.configured ? '#34b433' : '#71717a';
+  } catch (e) {
+    document.getElementById('zoom-status').textContent = 'Failed to load: ' + e.message;
+  }
+}
+
+async function zoomSaveConfig() {
+  var btn = document.getElementById('zoom-save-btn');
+  var status = document.getElementById('zoom-status');
+  btn.disabled = true; status.textContent = 'Saving…';
+  try {
+    var payload = {
+      account_id:    document.getElementById('zoom-account-id').value.trim(),
+      client_id:     document.getElementById('zoom-client-id').value.trim(),
+      client_secret: document.getElementById('zoom-client-secret').value
+    };
+    var r = await fetch('/api/admin/zoom-config', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    status.textContent = '';
+    showToast('Zoom credentials saved');
+    await zoomLoadConfig();
+  } catch (e) {
+    status.textContent = 'Save failed: ' + e.message;
+  } finally { btn.disabled = false; }
+}
+
+async function zoomTest() {
+  var email = prompt('Optional — test a specific rep’s recent recordings by email (leave blank to just check the connection):', '');
+  if (email === null) return; // cancelled
+  var btn = document.getElementById('zoom-test-btn');
+  var out = document.getElementById('zoom-test-result');
+  btn.disabled = true; out.innerHTML = '<span style="color:#71717a;">Testing…</span>';
+  try {
+    var url = '/api/zoom/test' + (email.trim() ? ('?email=' + encodeURIComponent(email.trim())) : '');
+    var r = await fetch(url);
+    var d = await r.json();
+    out.innerHTML = zoomRenderTest(d);
+  } catch (e) {
+    out.innerHTML = '<span style="color:#f87171;">Test failed: ' + esc(e.message) + '</span>';
+  } finally { btn.disabled = false; }
+}
+
+function zoomRenderTest(d) {
+  if (!d || d.error && d.connected === undefined) {
+    return '<span style="color:#f87171;">✗ Error: ' + esc((d && d.error) || 'no response') + '</span>';
+  }
+  if (!d.connected) {
+    return '<span style="color:#f87171;">✗ Not connected</span> — ' + esc(d.hint || d.error || 'check credentials');
+  }
+  if (!d.scopes_ok) {
+    var ze = d.zoom_error ? (' (Zoom ' + esc(String(d.zoom_error.code || '')) + ': ' + esc(d.zoom_error.message || '') + ')') : '';
+    return '<span style="color:#fbbf24;">▲ Token OK, but a Zoom call failed' + ze + '</span><br>' + esc(d.hint || '');
+  }
+  var html = '<span style="color:#34b433;">✓ Connected</span> · ' + (d.users_visible || 0) + ' user(s) visible';
+  if (d.recordings) {
+    if (!d.recordings.length) {
+      html += '<br><span style="color:#71717a;">No cloud recordings for ' + esc(d.email) + ' in the last 30 days.</span>';
+    } else {
+      html += '<br><strong style="color:#e4e4e7;">' + d.recordings.length + ' recording(s) for ' + esc(d.email) + ':</strong>';
+      html += '<ul style="margin:6px 0 0;padding-left:18px;">';
+      d.recordings.slice(0, 10).forEach(function (m) {
+        var t = m.has_transcript
+          ? '<span style="color:#34b433;">transcript ✓</span>'
+          : '<span style="color:#fbbf24;">no transcript</span>';
+        html += '<li>' + esc(m.topic || '(untitled)') + ' — ' + esc(String(m.start_time || '').slice(0, 10)) + ' — ' + t + '</li>';
+      });
+      html += '</ul>';
+    }
+  } else if (d.recordings_error) {
+    html += '<br><span style="color:#fbbf24;">Recording lookup: ' + esc(JSON.stringify(d.recordings_error)) + '</span>';
+  }
+  return html;
 }
 
 // ── Apollo Corpus admin panel ───────────────────────────────────────────────
