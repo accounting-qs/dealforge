@@ -78,6 +78,10 @@ html[data-mode="prospect"] .rep-only { display: none !important; }
 .filter-tag .ft-remove { display: none; cursor: pointer; margin-left: 5px; color: #ef4444; font-size: 13px; font-weight: 700; line-height: 1; }
 .filter-tag.editable .ft-remove { display: inline; }
 .filter-tag .ft-remove:hover { color: #fca5a5; }
+/* Warning badge on chips whose value Apollo's taxonomy didn't recognize. Editor-
+   only (rendered solely in edit mode by makeTag). Amber, with a tooltip. */
+.filter-tag.ft-unverified { border-color: rgba(245,158,11,0.4); }
+.filter-tag .ft-warn { display: inline-block; margin-left: 5px; color: #fbbf24; font-size: 11px; font-weight: 700; line-height: 1; cursor: help; }
 .filter-add-input { display: none; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.1); border-radius: 6px; padding: 3px 8px; font-size: 11px; color: #d1d5db; outline: none; width: 130px; font-family: inherit; }
 .filter-add-input:focus { border-color: rgba(245,158,11,0.4); }
 .filter-num-input { display: inline-block; width: 64px; -moz-appearance: textfield; }
@@ -3889,7 +3893,10 @@ function runPersonalization(session) {
         apollo_revenue_range: icp.apollo_revenue_range
           ? { min: icp.apollo_revenue_range.min ?? null, max: icp.apollo_revenue_range.max ?? null }
           : { min: null, max: null },
-        company_size: displaySize || ''
+        company_size: displaySize || '',
+        // Taxonomy-validation metadata from extract: which chip values Apollo
+        // didn't recognize. makeTag uses this to badge them in edit mode.
+        _filter_validation: icp._filter_validation || null
       };
       window._filterEditMode = false;
 
@@ -4561,9 +4568,24 @@ function renderFilterTags() {
     }
     return val;
   }
+  // Match the server's normalizeToken so chip values compare to the validation
+  // metadata the same way they were keyed (lowercase, strip non-alphanumeric).
+  function _normTok(s) { return String(s == null ? '' : s).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim(); }
+  var VALIDATION_KEY = { apollo_titles: 'titles', apollo_geography: 'locations', apollo_keyword: 'industry' };
+  function isUnverified(group, val) {
+    var fv = d._filter_validation, key = VALIDATION_KEY[group];
+    if (!fv || !key || !fv[key] || !Array.isArray(fv[key].unverified)) return false;
+    var n = _normTok(val);
+    return fv[key].unverified.some(function(u){ return _normTok(u) === n; });
+  }
   function makeTag(val, group) {
     var removeBtn = '<span class="ft-remove" onclick="removeFilter(\'' + escHtml(group) + '\',\'' + escHtml(val).replace(/'/g,"&#39;") + '\')">&times;</span>';
-    return '<span class="filter-tag' + editClass + '">' + escHtml(labelFor(group, val)) + removeBtn + '</span>';
+    var cls = 'filter-tag' + editClass, warn = '';
+    if (editMode && isUnverified(group, val)) {
+      cls += ' ft-unverified';
+      warn = '<span class="ft-warn" title="Not found in Apollo’s filter options — may return few results. Edit or remove.">!</span>';
+    }
+    return '<span class="' + cls + '">' + escHtml(labelFor(group, val)) + warn + removeBtn + '</span>';
   }
   function makeAddInput(group, placeholder) {
     if (!editMode) return '';

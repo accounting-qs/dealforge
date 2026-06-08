@@ -2415,26 +2415,49 @@ async function insertNewSuggestionsToCorpus(type, values) {
   }
 }
 
-// Harvest the distinct job titles off a batch of fetched leads and fold them
-// into the title corpus. This is how the typeahead grows: every lead search
-// returns real, in-market titles at no extra Apollo cost, so the corpus comes
-// to mirror what reps actually search instead of a fixed seed list. Best-effort
-// and fire-and-forget — callers must not await this on the response path.
-// Titles dedupe in-batch here; cross-batch dupes are dropped by the corpus's
-// ignore-duplicates unique constraint, so frequency stays at the seed value.
-function harvestLeadTitlesToCorpus(leads) {
+// Split a compound title into atomic parts so each is checked individually —
+// "CEO, CIO, COO, Janitor" → ['CEO','CIO','COO','Janitor'], "Owner/Founder" →
+// ['Owner','Founder']. Splits on list delimiters (comma, slash, pipe, semicolon,
+// ampersand, the word "and"). A title with no delimiter returns [itself].
+// NOTE: titles only — locations use comma in their canonical form
+// ("Michigan, United States") and must never be split this way.
+function splitTitleParts(s) {
+  return String(s || '')
+    .split(/\s*(?:,|\/|\||;|&|\band\b)\s*/i)
+    .map(p => p.trim())
+    .filter(p => p.length > 1);
+}
+
+// Harvest the job titles off a batch of fetched leads and fold them into the
+// title corpus. Real lead titles are frequently compound and messy ("Owner/CEO",
+// "CEO, CIO, COO, Janitor"), so we split each into atomic parts and snap EACH
+// part individually to Apollo's taxonomy (fetchTitleTags + pickCanonical) before
+// storing — only canonical, Apollo-recognized titles enter the corpus, keeping it
+// a clean mirror while still growing organically from real leads. Parts that
+// don't exist ("Janitor") snap to nothing and are dropped. No extra Apollo
+// credits (tags endpoint is free). Best-effort & fire-and-forget — async but
+// callers must not await it on the response path.
+async function harvestLeadTitlesToCorpus(leads) {
   try {
     if (!Array.isArray(leads) || !leads.length) return;
-    const titles = [...new Set(
-      leads
-        .map(l => (l && typeof l.title === 'string') ? l.title.trim() : '')
-        .filter(t => t.length > 1 && t.length <= 80)
-    )];
-    if (!titles.length) return;
-    // No await — corpus inserts are best-effort and never gate the lead result.
-    insertNewSuggestionsToCorpus('title', titles)
-      .then(() => console.log(`[harvestLeadTitlesToCorpus] folded ${titles.length} titles into corpus`))
-      .catch(e => console.warn('[harvestLeadTitlesToCorpus]', e.message));
+    const parts = new Set();
+    for (const l of leads) {
+      const raw = (l && typeof l.title === 'string') ? l.title.trim() : '';
+      if (!raw || raw.length > 80) continue;
+      for (const p of splitTitleParts(raw)) parts.add(p);
+    }
+    if (!parts.size) return;
+    // One search per atomic part (never the whole compound string at once).
+    const canon = new Set();
+    await Promise.all([...parts].map(async part => {
+      const tags = (await fetchTitleTags(part))
+        .map(x => ({ name: x.display_name || x.cleaned_name, num_people: x.num_people, score: x.score }));
+      const c = pickCanonical(part, tags, TITLE_POPULATION_FLOOR);
+      if (c) canon.add(c);
+    }));
+    if (!canon.size) return;
+    await insertNewSuggestionsToCorpus('title', [...canon]);
+    console.log(`[harvestLeadTitlesToCorpus] folded ${canon.size} canonical titles (from ${parts.size} atomic parts) into corpus`);
   } catch (e) {
     console.warn('[harvestLeadTitlesToCorpus]', e.message);
   }
@@ -2504,7 +2527,7 @@ async function syncApolloSuggestionsCorpus() {
   return stats;
 }
 
-// Title suggestions come from Apollo's own typeahead taxonomy — the exact
+// Raw title-taxonomy fetch. Hits Apollo's own typeahead taxonomy — the exact
 // endpoint the Apollo web app's "Include titles" box calls. It returns clean,
 // normalized title tags ("owner", "owner operator", "owner president", …) ranked
 // by relevance score, NOT free-text scraped off individual people (the old
@@ -2513,9 +2536,11 @@ async function syncApolloSuggestionsCorpus() {
 // host, but authenticates with the standard x-api-key header and costs no credits
 // — verified directly (no-auth → 401, api_key-in-query → 422, x-api-key → 200).
 // q_tag_fuzzy_name does the fuzzy matching; kind=person_title scopes it to titles.
-// NOTE: undocumented endpoint — if Apollo ever changes it, the corpus (seeded +
-// lead-harvested) keeps the typeahead working as a fallback.
-async function suggestTitles(q) {
+// NOTE: undocumented endpoint — if Apollo ever changes it, callers fall back to
+// the corpus (seeded + lead-harvested). Returns raw tag objects with the
+// population/score metadata so callers can both suggest (suggestTitles) and
+// validate extracted titles (validateExtractedFilters). [] on any failure.
+async function fetchTitleTags(q) {
   const APOLLO_KEY = process.env.APOLLO_API_KEY;
   if (!APOLLO_KEY || !q) return [];
   try {
@@ -2529,19 +2554,34 @@ async function suggestTitles(q) {
     });
     if (!r.ok) return [];
     const data = await r.json();
-    const out = [];
-    const seen = new Set();
-    // Apollo returns tags pre-sorted by score — preserve that order.
-    (data.tags || []).forEach(t => {
-      const v = String(t.display_name || t.cleaned_name || '').trim();
-      const lc = v.toLowerCase();
-      if (v && !seen.has(lc)) { seen.add(lc); out.push(v); }
-    });
-    return out.slice(0, 8);
+    // Preserve Apollo's score-sorted order; keep only tags with a usable name.
+    return (data.tags || [])
+      .map(t => ({
+        display_name: String(t.display_name || '').trim(),
+        cleaned_name: String(t.cleaned_name || '').trim(),
+        num_people:   Number(t.num_people) || 0,
+        score:        Number(t.score) || 0
+      }))
+      .filter(t => t.display_name || t.cleaned_name);
   } catch (e) {
-    console.warn('[suggestTitles]', e.message);
+    console.warn('[fetchTitleTags]', e.message);
     return [];
   }
+}
+
+// Title suggestions for the typeahead — clean display names, deduped, top 8.
+// Thin wrapper over fetchTitleTags; output and ordering are unchanged so the
+// /api/apollo/suggest route and the corpus sync behave exactly as before.
+async function suggestTitles(q) {
+  const tags = await fetchTitleTags(q);
+  const out = [];
+  const seen = new Set();
+  tags.forEach(t => {
+    const v = t.display_name || t.cleaned_name;
+    const lc = v.toLowerCase();
+    if (v && !seen.has(lc)) { seen.add(lc); out.push(v); }
+  });
+  return out.slice(0, 8);
 }
 
 // Location suggestions also come from /v1/organizations/search — the people
@@ -2647,6 +2687,145 @@ async function suggestIndustries(q) {
     console.warn('[suggestIndustries]', e.message);
     return [];
   }
+}
+
+// ── Extracted-filter taxonomy validation ──────────────────────────────────────
+// Claude extracts apollo_titles / apollo_geography / apollo_keyword as free text.
+// Before the first lead search we snap recognized values to Apollo's canonical
+// taxonomy and flag the rest, so the rep sees a warning badge on anything Apollo
+// won't index. No AI cost; Apollo's search/tag endpoints don't charge credits.
+//
+// Match an extracted value to the best canonical candidate. `candidates` is a
+// list of { name, num_people } — titles carry real population counts; location/
+// industry candidates (plain strings) pass num_people:Infinity so the floor is
+// a no-op for them. Returns the canonical name string, or null if nothing fits
+// (caller keeps the original value and badges it as unverified).
+function pickCanonical(original, candidates, floor = 0) {
+  const normOrig = normalizeToken(original);
+  if (!normOrig) return null;
+  const named = (candidates || [])
+    .map(c => ({ name: String(c.name || '').trim(), num_people: c.num_people, score: c.score || 0 }))
+    .filter(c => c.name);
+
+  // Tier 0 — exact normalized match, population-agnostic (an exact taxonomy hit
+  // is canonical even if Apollo's count is low/missing).
+  const exact = named.find(c => normalizeToken(c.name) === normOrig);
+  if (exact) return exact.name;
+
+  // Tier 1 — best token-overlap among candidates clearing the population floor.
+  const origTokens = new Set(normOrig.split(' ').filter(Boolean));
+  let best = null, bestKey = [-1, -1, -1];
+  for (const c of named) {
+    if (!(c.num_people >= floor)) continue;
+    const tagTokens = normalizeToken(c.name).split(' ').filter(Boolean);
+    let overlap = 0;
+    for (const tok of tagTokens) if (origTokens.has(tok)) overlap++;
+    const ratio = overlap / origTokens.size;
+    if (overlap < 1 || (ratio < 0.5 && overlap !== origTokens.size)) continue;
+    const key = [overlap, c.score, c.num_people === Infinity ? Number.MAX_SAFE_INTEGER : c.num_people];
+    if (key[0] > bestKey[0] || (key[0] === bestKey[0] && key[1] > bestKey[1]) ||
+        (key[0] === bestKey[0] && key[1] === bestKey[1] && key[2] > bestKey[2])) {
+      best = c.name; bestKey = key;
+    }
+  }
+  return best; // null if nothing cleared the gates → caller marks unverified
+}
+
+// Validate the three free-text ICP filters against Apollo's taxonomy. Best-effort
+// and parallelized; never throws. Snaps titles + locations to canonical names and
+// records which values Apollo didn't recognize. Industry is badge-only — never
+// rewritten — because q_organization_keyword_tags is an intentionally broad
+// free-text OR filter; snapping it would narrow the pool against intent.
+const TITLE_POPULATION_FLOOR = 1000; // num_people; below this a title tag is long-tail noise. Lower if real titles get flagged.
+
+async function validateExtractedFilters(icp) {
+  const result = { titles: { snapped: {}, unverified: [] },
+                   locations: { snapped: {}, unverified: [] },
+                   industry: { unverified: [] },
+                   at: new Date().toISOString() };
+
+  // Resolve canonical candidates for one value, with corpus fallback if the live
+  // endpoint returns nothing (graceful degradation when Apollo's endpoint is down).
+  const titleCandidates = async (v) => {
+    const tags = await fetchTitleTags(v);
+    if (tags.length) return tags.map(t => ({ name: t.display_name || t.cleaned_name, num_people: t.num_people, score: t.score }));
+    const corpus = await getSuggestionsFromCorpus('title', v);
+    return corpus.map(name => ({ name, num_people: Infinity, score: 0 }));
+  };
+  const stringCandidates = (type) => async (v) => {
+    const live = type === 'location' ? await suggestLocations(v) : await suggestIndustries(v);
+    const names = live.length ? live : await getSuggestionsFromCorpus(type, v);
+    return names.map(name => ({ name, num_people: Infinity, score: 0 }));
+  };
+
+  // Titles — split compound titles ("CEO, CIO, COO") into atomic parts and check
+  // EACH part individually (one search per part, never the whole string at once),
+  // then snap matched (deduped on normalized canonical) and flag the rest.
+  const rawTitles = Array.isArray(icp?.apollo_titles) ? icp.apollo_titles.map(s => String(s || '').trim()).filter(Boolean) : [];
+  if (rawTitles.length) {
+    // Flatten to unique atomic parts, preserving first-seen order.
+    const parts = [], partSeen = new Set();
+    for (const t of rawTitles) for (const p of splitTitleParts(t)) {
+      const k = normalizeToken(p);
+      if (k && !partSeen.has(k)) { partSeen.add(k); parts.push(p); }
+    }
+    const cand = await Promise.all(parts.map(titleCandidates));
+    const out = [], seen = new Set();
+    parts.forEach((part, i) => {
+      const canon = pickCanonical(part, cand[i], TITLE_POPULATION_FLOOR);
+      if (canon) {
+        // Keep the nicely-cased part when only casing differs (exact match) —
+        // Apollo search is case-insensitive, so snapping casing only hurts display.
+        // Snap (and record) only when the phrasing actually changes.
+        const useVal = normalizeToken(canon) === normalizeToken(part) ? part : canon;
+        if (useVal !== part) result.titles.snapped[part] = useVal;
+        const key = normalizeToken(useVal);
+        if (!seen.has(key)) { seen.add(key); out.push(useVal); }
+      } else {
+        result.titles.unverified.push(part);
+        const key = normalizeToken(part);
+        if (!seen.has(key)) { seen.add(key); out.push(part); } // keep, never drop
+      }
+    });
+    if (out.length) icp.apollo_titles = out;
+  }
+
+  // Locations — same snap/flag, skipping EU-expansion synthetics handled downstream.
+  const geos = Array.isArray(icp?.apollo_geography) ? icp.apollo_geography.map(s => String(s || '').trim()).filter(Boolean) : [];
+  if (geos.length) {
+    const getCand = stringCandidates('location');
+    const isEU = g => /^european union$/i.test(g) || /^europe$/i.test(g);
+    const cand = await Promise.all(geos.map(g => isEU(g) ? Promise.resolve([]) : getCand(g)));
+    const out = [], seen = new Set();
+    geos.forEach((orig, i) => {
+      if (isEU(orig)) { const k = normalizeToken(orig); if (!seen.has(k)) { seen.add(k); out.push(orig); } return; }
+      const canon = pickCanonical(orig, cand[i], 0);
+      if (canon) {
+        const useVal = normalizeToken(canon) === normalizeToken(orig) ? orig : canon;
+        if (useVal !== orig) result.locations.snapped[orig] = useVal;
+        const k = normalizeToken(useVal); if (!seen.has(k)) { seen.add(k); out.push(useVal); }
+      } else {
+        result.locations.unverified.push(orig);
+        const k = normalizeToken(orig); if (!seen.has(k)) { seen.add(k); out.push(orig); }
+      }
+    });
+    if (out.length) icp.apollo_geography = out;
+  }
+
+  // Industry — badge-only. Never rewrite the value; just flag if Apollo doesn't
+  // recognize it as an industry/keyword.
+  const inds = Array.isArray(icp?.apollo_keyword)
+    ? icp.apollo_keyword.map(s => String(s || '').trim()).filter(Boolean)
+    : (typeof icp?.apollo_keyword === 'string' && icp.apollo_keyword.trim() ? [icp.apollo_keyword.trim()] : []);
+  if (inds.length) {
+    const getCand = stringCandidates('industry');
+    const cand = await Promise.all(inds.map(getCand));
+    inds.forEach((orig, i) => {
+      if (!pickCanonical(orig, cand[i], 0)) result.industry.unverified.push(orig);
+    });
+  }
+
+  return result;
 }
 
 async function fetchLeadsFromApollo(icp, progressCb) {
@@ -3320,6 +3499,23 @@ async function handleExtract(task, job) {
       : { found: false, source: 'none' },
     website: { domain: defaultDomain, title: website.title, scraped: !!(website.bodyText) }
   };
+
+  // Validate the AI-extracted Apollo filters against Apollo's real taxonomy
+  // BEFORE merging. Operating on the fresh extracted.icp (not merged) means
+  // mergeBrief's "existing non-empty array wins" rule still preserves any
+  // rep-curated titles/locations on re-extraction. Snaps recognized titles +
+  // locations to canonical names and records which values Apollo didn't index so
+  // the editor can badge them. Best-effort — any failure leaves the raw titles
+  // intact and never blocks extraction. Free (no AI, no Apollo credits).
+  try {
+    if (extracted?.icp) {
+      const validation = await validateExtractedFilters(extracted.icp);
+      extracted.icp._filter_validation = validation;
+      console.log('[extract] filter validation', JSON.stringify(validation));
+    }
+  } catch (e) {
+    console.warn('[extract] filter validation skipped:', e.message);
+  }
 
   // Merge the fresh extraction into the rep-confirmed brief so Step 2 edits
   // survive the worker pass. Without this, a Claude rerun that returns null
