@@ -1313,6 +1313,49 @@ async function zoomParticipants(uuid, _retried) {
   return list;
 }
 
+// Cached list of all recent cloud recordings across the account (per-user
+// fan-out; the account-wide endpoint needs an unavailable :master scope). Shared
+// by Zoom discovery and the title search, with a short TTL so repeat calls (and
+// each keystroke of a search) are cheap.
+let _zoomRecordingsCache = { meetings: null, at: 0 };
+const ZOOM_REC_TTL = 3 * 60 * 1000;
+async function listAllZoomRecordings() {
+  if (_zoomRecordingsCache.meetings && Date.now() - _zoomRecordingsCache.at < ZOOM_REC_TTL) return _zoomRecordingsCache.meetings;
+  const fmt = d => d.toISOString().slice(0, 10);
+  const from = fmt(new Date(Date.now() - 45 * 24 * 3600 * 1000));
+  const to   = fmt(new Date());
+  const usersResp = await zoomQuery('users?status=active&page_size=300');
+  if (!usersResp || usersResp.code) { console.warn('[Zoom] list users failed:', usersResp && usersResp.code, usersResp && usersResp.message); return []; }
+  const userIds = (usersResp.users || []).map(u => u.id).filter(Boolean);
+  const meetings = [];
+  const CHUNK = 8; // bounded fan-out — sales teams are small
+  for (let i = 0; i < userIds.length && i < 50; i += CHUNK) {
+    const batch = userIds.slice(i, i + CHUNK);
+    const results = await Promise.all(batch.map(uid =>
+      zoomQuery(`users/${encodeURIComponent(uid)}/recordings?from=${from}&to=${to}&page_size=300`)
+    ));
+    results.forEach(data => { if (data && !data.code && Array.isArray(data.meetings)) meetings.push(...data.meetings); });
+  }
+  _zoomRecordingsCache = { meetings, at: Date.now() };
+  return meetings;
+}
+
+// Shape a raw Zoom recording into the candidate object the picker/extract use.
+function shapeZoomMeeting(m) {
+  const tf = (m.recording_files || []).find(f => f.file_type === 'TRANSCRIPT');
+  return {
+    id: m.uuid,
+    title: m.topic || '(untitled)',
+    duration: m.duration || 0,
+    date: m.start_time || null,
+    meeting_attendees: [],
+    summary: {},
+    _source: 'zoom',
+    _match_kind: 'recent',
+    _zoom: { uuid: m.uuid, meeting_id: m.id, hasTranscript: !!tf, transcriptDownloadUrl: tf ? tf.download_url : null }
+  };
+}
+
 // Discover candidate Zoom cloud recordings for a prospect. Mirrors the shape of
 // findFirefliesTranscripts so the prefetch picker can merge both sources. Matches
 // by attendee email (exact_email), attendee email domain (domain), and prospect
@@ -1320,28 +1363,7 @@ async function zoomParticipants(uuid, _retried) {
 // fallback. Returns [] on any failure — Zoom must never block the Fireflies flow.
 async function findZoomRecordings(email, contactInfo = {}) {
   try {
-    const fmt = d => d.toISOString().slice(0, 10);
-    const from = fmt(new Date(Date.now() - 45 * 24 * 3600 * 1000));
-    const to   = fmt(new Date());
-
-    // List active users, then pull each user's cloud recordings. The account-wide
-    // /accounts/{id}/recordings endpoint needs a :master scope only master
-    // (multi-sub-account) plans can grant, so we fan out per user with the
-    // :admin user-recordings scope instead.
-    const usersResp = await zoomQuery('users?status=active&page_size=300');
-    if (!usersResp || usersResp.code) { console.warn('[Zoom] list users failed:', usersResp && usersResp.code, usersResp && usersResp.message); return []; }
-    const userIds = (usersResp.users || []).map(u => u.id).filter(Boolean);
-    if (!userIds.length) return [];
-
-    const meetings = [];
-    const CHUNK = 8; // bounded fan-out — sales teams are small
-    for (let i = 0; i < userIds.length && i < 50; i += CHUNK) {
-      const batch = userIds.slice(i, i + CHUNK);
-      const results = await Promise.all(batch.map(uid =>
-        zoomQuery(`users/${encodeURIComponent(uid)}/recordings?from=${from}&to=${to}&page_size=300`)
-      ));
-      results.forEach(data => { if (data && !data.code && Array.isArray(data.meetings)) meetings.push(...data.meetings); });
-    }
+    const meetings = await listAllZoomRecordings();
     if (!meetings.length) return [];
 
     const norm = s => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
@@ -1351,22 +1373,11 @@ async function findZoomRecordings(email, contactInfo = {}) {
     const first = nameParts[0] || '', last = nameParts.length > 1 ? nameParts[nameParts.length - 1] : '';
 
     const shaped = meetings.map(m => {
-      const tf = (m.recording_files || []).find(f => f.file_type === 'TRANSCRIPT');
+      const c = shapeZoomMeeting(m);
       const topicN = norm(m.topic);
-      let mk = 'recent';
-      if (nameTerm && (topicN.includes(nameTerm) || (first && last && topicN.includes(first) && topicN.includes(last)))) mk = 'title';
-      else if (companyTerm && companyTerm.length >= 3 && topicN.includes(companyTerm)) mk = 'title';
-      return {
-        id: m.uuid,
-        title: m.topic || '(untitled)',
-        duration: m.duration || 0,
-        date: m.start_time || null,
-        meeting_attendees: [],
-        summary: {},
-        _source: 'zoom',
-        _match_kind: mk,
-        _zoom: { uuid: m.uuid, meeting_id: m.id, hasTranscript: !!tf, transcriptDownloadUrl: tf ? tf.download_url : null }
-      };
+      if (nameTerm && (topicN.includes(nameTerm) || (first && last && topicN.includes(first) && topicN.includes(last)))) c._match_kind = 'title';
+      else if (companyTerm && companyTerm.length >= 3 && topicN.includes(companyTerm)) c._match_kind = 'title';
+      return c;
     });
 
     // Zoom recordings carry no attendee list, and the Report API is harshly
@@ -5604,6 +5615,74 @@ const server = http.createServer(async (req, res) => {
       result:   job.result || null,
       error:    job.error  || null
     }));
+    return;
+  }
+
+  // ── GET /api/transcripts/search?prefetch_id=&q= — title search across BOTH ──
+  // Fireflies and Zoom. The manual fallback when auto-match misses: the rep types
+  // a call title and picks from the merged list. Results are seeded into the
+  // prefetch's candidate cache so a Zoom pick resolves (via its download URL) in
+  // extract-brief without the list_recording_files scope.
+  if (req.method === 'GET' && urlPath === '/api/transcripts/search') {
+    setCors(res);
+    try {
+      const qs = new URLSearchParams(req.url.includes('?') ? req.url.split('?')[1] : '');
+      const q  = (qs.get('q') || '').trim();
+      const prefetchId = (qs.get('prefetch_id') || '').trim();
+      if (q.length < 2) { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ candidates: [] })); return; }
+      const qN = q.toLowerCase();
+
+      // Fireflies keyword search (server-side), kept to title-contains for a clean
+      // title search. Zoom: filter the cached recordings list by topic.
+      const ffSearch = (async () => {
+        const gql = `query Search($keyword: String) { transcripts(keyword: $keyword, limit: 30) { ${TRANSCRIPT_LIST_FIELDS} } }`;
+        let data = await firefliesQuery(gql, { keyword: q });
+        if (!data) data = await firefliesQuery(gql, { keyword: q }); // Fireflies often 408s — one retry
+        return (data?.transcripts || [])
+          .filter(t => (t.title || '').toLowerCase().includes(qN))
+          .map(t => ({ ...t, _source: 'fireflies', _match_kind: 'title' }));
+      })();
+      const zSearch = (async () => {
+        const meetings = await listAllZoomRecordings();
+        return meetings
+          .filter(m => (m.topic || '').toLowerCase().includes(qN))
+          .map(m => { const c = shapeZoomMeeting(m); c._match_kind = 'title'; return c; });
+      })();
+      const [ff, zoom] = await Promise.all([ffSearch.catch(() => []), zSearch.catch(() => [])]);
+
+      // Attach any already-cached Zoom attendees (free); don't fire fresh report
+      // calls per keystroke — the rep is matching on title here.
+      zoom.forEach(c => { if (_zoomParticipantsCache.has(c._zoom.uuid)) c.meeting_attendees = _zoomParticipantsCache.get(c._zoom.uuid); });
+
+      const merged = [...ff, ...zoom]
+        .sort((a, b) => new Date(b.date || b.dateString || 0) - new Date(a.date || a.dateString || 0))
+        .slice(0, 25);
+
+      // Seed the prefetch candidate cache so a picked result resolves in extract-brief.
+      if (prefetchId) {
+        const job = getProgress(prefetchId);
+        if (job && job._extras && job._extras.candidatesById) {
+          merged.forEach(c => job._extras.candidatesById.set(c.id, c));
+        }
+      }
+
+      const candidates = merged.map(t => ({
+        id:             t.id,
+        source:         t._source || 'fireflies',
+        title:          t.title || null,
+        duration:       t.duration || 0,
+        date:           t.date || t.dateString || null,
+        attendees:      (t.meeting_attendees || []).map(a => ({ email: a.email || null, name: a.displayName || a.name || null })),
+        match_kind:     'title',
+        has_transcript: t._source === 'zoom' ? !!(t._zoom && t._zoom.hasTranscript) : true
+      }));
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ candidates }));
+    } catch (e) {
+      console.error('[GET /api/transcripts/search]', e.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
     return;
   }
 

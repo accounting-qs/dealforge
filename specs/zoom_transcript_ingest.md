@@ -76,6 +76,7 @@ Files: **mockup-dashboard.html** (served at `/dashboard`) **and calls.html** (se
 - Each row: **source badge** (Fireflies / Zoom) + **match badge** (EXACT EMAIL / TITLE / RECENT) + title + meta (date · duration · attendees). Zoom rows with `has_transcript:false` render disabled with a "no transcript" note.
 - Default-selected = suggested per §5. Retain **Skip** and **paste-Fireflies-link** options.
 - Selection captured as `{ source, id }`.
+- **Title search fallback** — a search box (`GET /api/transcripts/search?prefetch_id=&q=`) title-searches **both** sources at once (Fireflies `keyword` query, title-filtered, with a 408 retry; Zoom = the cached recordings list filtered by topic) and renders the merged results into the same picker. Results are seeded into the prefetch's `candidatesById` so a Zoom pick resolves via its download URL. This is the reliable manual path when auto-match misses (esp. since Zoom guests have no email).
 
 ---
 

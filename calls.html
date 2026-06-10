@@ -439,6 +439,14 @@ option{background:#111116;color:#e4e4e7}
         <!-- Manual Fireflies-link fallback: shown whenever the picker is shown -->
         <!-- so the rep can paste a Fireflies URL when none of the auto-detected -->
         <!-- candidates is the right call. -->
+        <div id="brief-search" style="display:none;margin-top:10px;padding:10px 12px;background:rgba(255,255,255,0.02);border:1px dashed rgba(255,255,255,0.10);border-radius:8px">
+          <div style="font-size:11px;color:#a1a1aa;margin-bottom:6px">
+            Search all calls by title (Fireflies + Zoom):
+          </div>
+          <input id="brief-search-input" type="text" placeholder="Type part of the call title…" oninput="briefSearchCalls()"
+                 style="width:100%;box-sizing:border-box;padding:7px 10px;background:rgba(0,0,0,0.25);border:1px solid rgba(255,255,255,0.10);border-radius:6px;color:#e4e4e7;font-size:12px;font-family:inherit">
+          <div id="brief-search-status" style="font-size:11px;color:#71717a;margin-top:6px;min-height:14px"></div>
+        </div>
         <div id="brief-manual-link" style="display:none;margin-top:10px;padding:10px 12px;background:rgba(255,255,255,0.02);border:1px dashed rgba(255,255,255,0.10);border-radius:8px">
           <div style="font-size:11px;color:#a1a1aa;margin-bottom:6px">
             None of these the right call? Paste the Fireflies link:
@@ -1122,6 +1130,7 @@ function briefRenderPhase1(result) {
   // a different one if the picker doesn't list the right call.
   briefResetManualLink();
   document.getElementById('brief-manual-link').style.display = 'block';
+  document.getElementById('brief-search').style.display = 'block';
 
   document.getElementById('brief-subtitle').textContent = 'Review contact info and continue to brief';
   document.getElementById('brief-contact').style.display = 'block';
@@ -1196,6 +1205,32 @@ function briefSelectTranscript(id, source) {
   // Picking from the radio list clears any manually-pasted link so the two
   // controls can't disagree about which transcript wins.
   briefResetManualLink();
+}
+
+// Title search across Fireflies + Zoom (manual fallback). Debounced; renders
+// results into the same picker list; clearing restores the auto-matched list.
+var _briefSearchTimer = null;
+function briefSearchCalls() {
+  var q = (document.getElementById('brief-search-input').value || '').trim();
+  var statusEl = document.getElementById('brief-search-status');
+  clearTimeout(_briefSearchTimer);
+  if (q.length < 2) {
+    if (statusEl) statusEl.textContent = '';
+    var cands = (_briefPrefetchResult && _briefPrefetchResult.candidates) || [];
+    briefRenderPicker(cands, _briefSelectedTranscriptId);
+    return;
+  }
+  if (statusEl) statusEl.textContent = 'Searching…';
+  _briefSearchTimer = setTimeout(function () {
+    fetch('/api/transcripts/search?prefetch_id=' + encodeURIComponent(_briefPrefetchId || '') + '&q=' + encodeURIComponent(q))
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        var cands = d.candidates || [];
+        if (statusEl) statusEl.textContent = cands.length ? (cands.length + ' result' + (cands.length === 1 ? '' : 's') + ' — pick one') : 'No calls match that title';
+        briefRenderPicker(cands, null);
+      })
+      .catch(function () { if (statusEl) statusEl.textContent = 'Search failed — try again'; });
+  }, 400);
 }
 
 // Pull a Fireflies transcript ID out of whatever the rep pasted.
