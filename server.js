@@ -4944,6 +4944,50 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // ── GET /api/admin/sop-config — Loom URL for the public /sop page ─────────
+  if (req.method === 'GET' && urlPath === '/api/admin/sop-config') {
+    setCors(res);
+    try {
+      const r = await supabaseRequest('GET', '/rest/v1/sop_config?order=id.asc&limit=1');
+      const row = (Array.isArray(r.body) ? r.body[0] : null) || {};
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        loom_url:   row.loom_url || '',
+        updated_at: row.updated_at || null
+      }));
+    } catch (e) {
+      console.error('[GET /api/admin/sop-config]', e.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  // ── PUT /api/admin/sop-config — save Loom URL (singleton, creates if missing) ──
+  if (req.method === 'PUT' && urlPath === '/api/admin/sop-config') {
+    setCors(res);
+    try {
+      const body  = await parseBody(req);
+      const patch = { updated_at: new Date().toISOString() };
+      if (typeof body.loom_url === 'string') patch.loom_url = body.loom_url.trim();
+
+      const existing = await supabaseRequest('GET', '/rest/v1/sop_config?order=id.asc&limit=1');
+      const row = Array.isArray(existing.body) ? existing.body[0] : null;
+      if (row) {
+        await supabaseRequest('PATCH', `/rest/v1/sop_config?id=eq.${row.id}`, patch, { 'Prefer': 'return=minimal' });
+      } else {
+        await supabaseRequest('POST', '/rest/v1/sop_config', patch, { 'Prefer': 'return=minimal' });
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ saved: true }));
+    } catch (e) {
+      console.error('[PUT /api/admin/sop-config]', e.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
   // ── GET /api/zoom/test — verify the Server-to-Server OAuth connection ─────
   // Connection-only diagnostic (does NOT write to the calls table). Optional
   // ?email=<rep> lists that user's recent cloud recordings so you can confirm
@@ -7217,13 +7261,23 @@ const server = http.createServer(async (req, res) => {
         res.end();
         return;
       }
+      // Portal preview from the dashboard (/?edit=true or /?preview) still serves
+      // the portal template; any other bare root falls through to the landing page.
+      if (legacyParams.has('edit') || legacyParams.has('preview')) {
+        urlPath = '/mockup-portal.html';
+      } else {
+        urlPath = '/landing.html';
+      }
+    } else {
+      urlPath = '/landing.html';
     }
   }
 
   // ── Static files ──────────────────────────────────────────────────────────
-  if (urlPath === '/' || urlPath === '') urlPath = '/mockup-portal.html';
+  if (urlPath === '/' || urlPath === '') urlPath = '/landing.html';
   if (urlPath === '/dashboard')          urlPath = '/mockup-dashboard.html';
   if (urlPath === '/calls')              urlPath = '/calls.html';
+  if (urlPath === '/sop')                urlPath = '/sop.html';
   if (urlPath === '/settings')           urlPath = '/settings.html';
   if (urlPath === '/prompts' || urlPath === '/prompts.html') urlPath = '/settings.html';  // legacy alias
   if (urlPath === '/prospect' || urlPath.startsWith('/prospect?')) urlPath = '/prospect.html';

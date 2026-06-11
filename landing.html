@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Deal Forge — Quantum Scaling</title>
+<meta name="description" content="Deal Forge is Quantum Scaling's AI-powered sales-asset engine — it prepares custom, prospect-specific assets between calls so every conversation lands.">
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    font-family:-apple-system,BlinkMacSystemFont,'Inter',sans-serif;
+    background:#0a0a0f; color:#e4e4e7; min-height:100vh;
+    -webkit-font-smoothing:antialiased;
+  }
+  .glow {
+    position:fixed; top:-30%; left:50%; transform:translateX(-50%);
+    width:900px; height:600px; pointer-events:none; z-index:0;
+    background:radial-gradient(ellipse at center, rgba(139,92,246,0.16), transparent 65%);
+    filter:blur(20px);
+  }
+  nav {
+    position:relative; z-index:2; display:flex; align-items:center;
+    padding:22px 32px;
+  }
+  nav img { height:24px; width:auto; }
+  .wrap {
+    position:relative; z-index:1; max-width:880px; margin:0 auto;
+    padding:60px 24px 80px; text-align:center;
+  }
+  .eyebrow {
+    display:inline-block; font-size:12px; font-weight:600; letter-spacing:0.14em;
+    text-transform:uppercase; color:#8b5cf6; margin-bottom:18px;
+  }
+  h1 {
+    font-size:clamp(40px,7vw,68px); font-weight:800; line-height:1.04;
+    letter-spacing:-0.03em; margin-bottom:22px;
+    background:linear-gradient(180deg,#ffffff,#a1a1aa);
+    -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent;
+  }
+  .lede {
+    font-size:clamp(16px,2.2vw,20px); line-height:1.6; color:#a1a1aa;
+    max-width:620px; margin:0 auto 14px;
+  }
+  .lede strong { color:#e4e4e7; font-weight:600; }
+  .steps {
+    display:grid; grid-template-columns:repeat(4,1fr); gap:14px;
+    margin:64px auto 0; max-width:840px; text-align:left;
+  }
+  .step {
+    background:rgba(255,255,255,0.025); border:1px solid rgba(255,255,255,0.07);
+    border-radius:14px; padding:20px 18px; position:relative;
+  }
+  .step-num {
+    font-size:11px; font-weight:700; color:#8b5cf6; letter-spacing:0.08em;
+    margin-bottom:10px;
+  }
+  .step h3 { font-size:14px; font-weight:600; color:#e4e4e7; margin-bottom:6px; }
+  .step p { font-size:12.5px; line-height:1.55; color:#71717a; }
+  .arrow {
+    color:#3f3f46; font-size:18px; display:none;
+  }
+  .assets {
+    margin:56px auto 0; max-width:780px;
+    display:flex; flex-wrap:wrap; gap:10px; justify-content:center;
+  }
+  .chip {
+    font-size:12px; color:#a1a1aa; background:rgba(139,92,246,0.08);
+    border:1px solid rgba(139,92,246,0.2); border-radius:999px; padding:7px 14px;
+  }
+  .footer {
+    position:relative; z-index:1; text-align:center; padding:40px 24px;
+    font-size:12px; color:#52525b;
+  }
+  @media (max-width:760px) {
+    .steps { grid-template-columns:1fr 1fr; }
+  }
+  @media (max-width:460px) {
+    .steps { grid-template-columns:1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="glow"></div>
+
+<nav>
+  <img src="https://cdn.prod.website-files.com/68f946bb8c1a312becb429c6/69332f8bb26fb636e5ff3553_QS%20white.png" alt="Quantum Scaling">
+</nav>
+
+<div class="wrap">
+  <span class="eyebrow">By Quantum Scaling</span>
+  <h1>Deal&nbsp;Forge</h1>
+  <p class="lede">
+    Deal Forge is our AI-powered sales-asset engine. After the first call, it studies the conversation and
+    <strong>builds a custom, prospect-specific set of assets</strong> — automatically, before the next call.
+  </p>
+  <p class="lede">
+    The result: every prospect walks into Call 2 with materials made for <em>them</em> — which lifts show rates,
+    deepens trust, and closes more deals.
+  </p>
+
+  <div class="steps">
+    <div class="step">
+      <div class="step-num">STEP 01</div>
+      <h3>Business Audit</h3>
+      <p>The rep runs Call 1 to understand the prospect's business, goals, and gaps.</p>
+    </div>
+    <div class="step">
+      <div class="step-num">STEP 02</div>
+      <h3>Forge Runs</h3>
+      <p>Deal Forge analyzes the call and researches the prospect, their brand, and their market.</p>
+    </div>
+    <div class="step">
+      <div class="step-num">STEP 03</div>
+      <h3>Assets Built</h3>
+      <p>Tailored assets are generated automatically — branded, accurate, and ready to share.</p>
+    </div>
+    <div class="step">
+      <div class="step-num">STEP 04</div>
+      <h3>Call 2 Lands</h3>
+      <p>The prospect arrives to a custom-built experience that makes the decision easy.</p>
+    </div>
+  </div>
+
+  <div class="assets">
+    <span class="chip">Prospect research</span>
+    <span class="chip">Tailored ROI model</span>
+    <span class="chip">Branded calendar</span>
+    <span class="chip">Webinar copy</span>
+    <span class="chip">Lead list</span>
+  </div>
+</div>
+
+<div class="footer">
+  Deal Forge — built and operated by Quantum Scaling.
+</div>
+
+</body>
+</html>

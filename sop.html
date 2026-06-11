@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>How to use Deal Forge — SOP</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    font-family:-apple-system,BlinkMacSystemFont,'Inter',sans-serif;
+    background:#0a0a0f; color:#e4e4e7; min-height:100vh;
+    -webkit-font-smoothing:antialiased;
+  }
+  .glow {
+    position:fixed; top:-30%; left:50%; transform:translateX(-50%);
+    width:900px; height:600px; pointer-events:none; z-index:0;
+    background:radial-gradient(ellipse at center, rgba(139,92,246,0.14), transparent 65%);
+    filter:blur(20px);
+  }
+  nav {
+    position:relative; z-index:2; display:flex; align-items:center;
+    justify-content:space-between; padding:18px 28px;
+  }
+  nav img { height:24px; width:auto; }
+  .back {
+    font-size:13px; color:#71717a; text-decoration:none; padding:6px 12px;
+    border-radius:8px; border:1px solid rgba(255,255,255,0.08); transition:all 100ms;
+  }
+  .back:hover { color:#e4e4e7; border-color:rgba(255,255,255,0.16); }
+  .page {
+    position:relative; z-index:1; max-width:880px; margin:0 auto;
+    padding:40px 24px 80px;
+  }
+  .eyebrow {
+    display:inline-block; font-size:11px; font-weight:600; letter-spacing:0.14em;
+    text-transform:uppercase; color:#8b5cf6; margin-bottom:12px;
+  }
+  h1 {
+    font-size:clamp(28px,5vw,40px); font-weight:800; letter-spacing:-0.025em;
+    margin-bottom:12px;
+  }
+  .sub { font-size:15px; color:#a1a1aa; line-height:1.6; max-width:620px; margin-bottom:32px; }
+  .video-wrap {
+    position:relative; width:100%; padding-top:56.25%; /* 16:9 */
+    background:#18181b; border:1px solid rgba(255,255,255,0.07);
+    border-radius:16px; overflow:hidden;
+  }
+  .video-wrap iframe {
+    position:absolute; inset:0; width:100%; height:100%; border:0;
+  }
+  .placeholder {
+    position:absolute; inset:0; display:flex; flex-direction:column;
+    align-items:center; justify-content:center; gap:10px;
+    color:#71717a; font-size:14px; text-align:center; padding:24px;
+  }
+  .placeholder .big { font-size:32px; }
+</style>
+</head>
+<body>
+<div class="glow"></div>
+
+<nav>
+  <img src="https://cdn.prod.website-files.com/68f946bb8c1a312becb429c6/69332f8bb26fb636e5ff3553_QS%20white.png" alt="Quantum Scaling">
+  <a class="back" href="/dashboard">← Dashboard</a>
+</nav>
+
+<div class="page">
+  <span class="eyebrow">Standard Operating Procedure</span>
+  <h1>How to use Deal Forge</h1>
+  <p class="sub">Watch the walkthrough below — it covers everything you need to run Deal Forge end to end, from triggering a job after Call 1 to using the generated assets before Call 2.</p>
+
+  <div class="video-wrap" id="video-wrap">
+    <div class="placeholder" id="placeholder">
+      <span class="big">🎬</span>
+      <span>Walkthrough video coming soon.</span>
+    </div>
+  </div>
+</div>
+
+<script>
+// Normalize any Loom link (share/embed/custom) to an embeddable URL.
+function loomEmbedUrl(raw) {
+  if (!raw) return '';
+  var url = String(raw).trim();
+  // Pull the video id: 32-hex after /share/ or /embed/, else last path segment.
+  var m = url.match(/loom\.com\/(?:share|embed)\/([0-9a-zA-Z]+)/);
+  var id = m ? m[1] : null;
+  if (!id) {
+    var tail = url.split('?')[0].split('/').filter(Boolean).pop();
+    if (tail && /^[0-9a-zA-Z]+$/.test(tail)) id = tail;
+  }
+  return id ? 'https://www.loom.com/embed/' + id : '';
+}
+
+(async function () {
+  try {
+    var r = await fetch('/api/admin/sop-config');
+    var c = await r.json();
+    var embed = loomEmbedUrl(c.loom_url);
+    if (embed) {
+      var wrap = document.getElementById('video-wrap');
+      wrap.innerHTML = '<iframe src="' + embed + '" frameborder="0" allowfullscreen ' +
+        'allow="autoplay; fullscreen; picture-in-picture"></iframe>';
+    }
+  } catch (e) {
+    document.getElementById('placeholder').lastElementChild.textContent =
+      'Could not load the walkthrough video.';
+  }
+})();
+</script>
+
+</body>
+</html>
