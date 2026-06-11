@@ -491,6 +491,13 @@
   <!-- Content -->
   <div style="max-width:800px;margin:0 auto;padding:80px 24px 48px;">
 
+    <!-- Worker version conflict banner (hidden unless >1 build is processing jobs) -->
+    <div id="worker-conflict-banner" style="display:none;margin-bottom:20px;background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.4);border-radius:10px;padding:12px 16px;font-size:13px;color:#fca5a5;line-height:1.5;">
+      <strong style="color:#ef4444;">⚠ Worker version conflict.</strong>
+      <span id="worker-conflict-detail"></span>
+      Jobs processed by a stale build can produce degraded results (e.g. short lead lists). Redeploy/kill the old worker on Render.
+    </div>
+
     <div style="display:flex;align-items:flex-end;justify-content:space-between;margin-bottom:24px;">
       <h1 style="font-size:36px;font-weight:700;color:#ffffff;letter-spacing:-0.025em;">Jobs</h1>
       <div style="font-size:12px;color:#52525b;">6 jobs</div>
@@ -1915,6 +1922,23 @@ function loadJobsFromServer() {
 showScreen('list');
 // Load reps FIRST so rows can render their inline dropdowns correctly.
 loadSalesReps().then(loadJobsFromServer);
+
+// Worker version beacon — warn if more than one build is processing jobs.
+function checkWorkerStatus() {
+  fetch('/api/admin/worker-status', { cache: 'no-store' })
+    .then(function(r){ return r.ok ? r.json() : null; })
+    .then(function(c){
+      if (!c || !c.conflict) return;
+      var detail = document.getElementById('worker-conflict-detail');
+      var parts = [];
+      if (c.liveVersions && c.liveVersions.length > 1) parts.push('Live builds: ' + c.liveVersions.join(', ') + '.');
+      if (c.staleUnstampedWorker) parts.push('A stale (pre-beacon) worker is still claiming tasks.');
+      detail.textContent = ' ' + parts.join(' ') + ' ';
+      document.getElementById('worker-conflict-banner').style.display = 'block';
+    })
+    .catch(function(){ /* non-fatal */ });
+}
+checkWorkerStatus();
 
 // Phase 3 — if opened with ?newjob=email (from Call Library "Create Job" button)
 // auto-open the New Job modal and pre-fill the email

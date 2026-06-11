@@ -13,6 +13,16 @@ const sharp = require('sharp');
 const PORT = process.env.PORT || 3000;
 const MIME = { '.html': 'text/html', '.css': 'text/css', '.js': 'application/javascript', '.png': 'image/png', '.jpg': 'image/jpeg' };
 
+// ── Worker version beacon ────────────────────────────────────────────────────
+// BUILD_SHA identifies which deploy a worker process is running. Render injects
+// RENDER_GIT_COMMIT automatically; locally it falls back to 'local'. Every task
+// claim is stamped with this (tasks.worker_version) and each worker upserts a
+// heartbeat, so a stale/duplicate worker from an old deploy can't silently keep
+// processing jobs without showing up in /api/admin/worker-status.
+const BUILD_SHA    = (process.env.RENDER_GIT_COMMIT || 'local').slice(0, 7);
+const SERVICE_NAME = process.env.RENDER_SERVICE_NAME || 'local';
+const INSTANCE_ID  = process.env.RENDER_INSTANCE_ID || `${require('os').hostname()}:${process.pid}`;
+
 // ── Ephemeral progress jobs (prefetch + extract-brief) ───────────────────────
 // In-memory only. Reps poll GET /api/<kind>/:id while a background async block
 // pushes progress updates via setProgress(). Mirrors the rerun-apollo pattern
@@ -418,7 +428,7 @@ async function createTasks(jobId, taskTypes) {
 async function claimTask(taskId) {
   const r = await supabaseRequest('PATCH',
     `/rest/v1/tasks?id=eq.${taskId}&status=eq.pending`,
-    { status: 'processing', started_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+    { status: 'processing', started_at: new Date().toISOString(), updated_at: new Date().toISOString(), worker_version: BUILD_SHA },
     { 'Prefer': 'return=representation' }
   );
   if (r.status >= 400) return false;
@@ -4768,6 +4778,41 @@ async function syncFirefliesToCallLibrary() {
   return upserted;
 }
 
+// ── Worker version beacon — heartbeat + conflict detection ───────────────────
+// Upserts this process's instance/SHA every 60s. getWorkerConflict() reports
+// when more than one build is live (multiple SHAs heartbeating, or recent tasks
+// claimed by a pre-beacon worker that left worker_version NULL).
+async function workerHeartbeat() {
+  try {
+    await supabaseRequest('POST', '/rest/v1/worker_heartbeat',
+      { instance_id: INSTANCE_ID, service_name: SERVICE_NAME, commit_sha: BUILD_SHA, last_seen: new Date().toISOString() },
+      { 'Prefer': 'resolution=merge-duplicates,return=minimal' }
+    );
+  } catch (e) {
+    console.warn('[beacon] heartbeat failed:', e.message);
+  }
+}
+
+async function getWorkerConflict() {
+  // Live workers seen in the last 5 minutes.
+  const since = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+  const hb = await supabaseRequest('GET',
+    `/rest/v1/worker_heartbeat?last_seen=gte.${since}&select=instance_id,service_name,commit_sha,last_seen&order=last_seen.desc`);
+  const instances = Array.isArray(hb.body) ? hb.body : [];
+  const liveVersions = [...new Set(instances.map(i => i.commit_sha).filter(Boolean))];
+
+  // Tasks claimed in the last 30 min by a worker that didn't stamp a version =
+  // a pre-beacon (stale) process. Catches the stale worker even though it never
+  // writes a heartbeat. Once every live worker runs beacon code, this is 0.
+  const taskSince = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+  const unstamped = await supabaseRequest('GET',
+    `/rest/v1/tasks?started_at=gte.${taskSince}&worker_version=is.null&status=in.(processing,completed,failed,needs_input)&select=id&limit=1`);
+  const hasUnstamped = Array.isArray(unstamped.body) && unstamped.body.length > 0;
+
+  const conflict = liveVersions.length > 1 || hasUnstamped;
+  return { conflict, liveVersions, instances, staleUnstampedWorker: hasUnstamped, currentVersion: BUILD_SHA };
+}
+
 // Start worker + recovery loops
 if (USE_SUPABASE) {
   // Wrap each invocation in .catch() so a network error (ECONNRESET, ETIMEDOUT)
@@ -4778,7 +4823,18 @@ if (USE_SUPABASE) {
   setInterval(() => resetStuckTasks().catch(e => console.error('[recovery] Interval error:', e.message)), 2 * 60 * 1000);
   // Phase 2: 6-hour background Fireflies sync safety net
   setInterval(() => syncFirefliesToCallLibrary().catch(e => console.error('[CallLib] Cron error:', e.message)), 6 * 60 * 60 * 1000);
-  console.log('[worker] Started (3s interval)');
+  // Version beacon: heartbeat now + every 60s, and shout if another build is live.
+  workerHeartbeat().then(async () => {
+    try {
+      const c = await getWorkerConflict();
+      if (c.conflict) {
+        console.warn(`[beacon] ⚠ WORKER VERSION CONFLICT — this build=${BUILD_SHA}; live versions=[${c.liveVersions.join(', ')}]`
+          + (c.staleUnstampedWorker ? '; a pre-beacon (stale) worker is claiming tasks' : ''));
+      }
+    } catch (e) { console.warn('[beacon] conflict check failed:', e.message); }
+  });
+  setInterval(() => workerHeartbeat().catch(e => console.error('[beacon] heartbeat error:', e.message)), 60 * 1000);
+  console.log(`[worker] Started (3s interval) — build ${BUILD_SHA} on ${SERVICE_NAME}/${INSTANCE_ID}`);
   console.log('[recovery] Started (2min interval)');
   console.log('[CallLib] 6-hour background sync scheduled');
 } else {
@@ -4938,6 +4994,21 @@ const server = http.createServer(async (req, res) => {
       res.end(JSON.stringify({ saved: true }));
     } catch (e) {
       console.error('[PUT /api/admin/zoom-config]', e.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  // ── GET /api/admin/worker-status — detect stale/duplicate worker builds ────
+  if (req.method === 'GET' && urlPath === '/api/admin/worker-status') {
+    setCors(res);
+    try {
+      const c = await getWorkerConflict();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(c));
+    } catch (e) {
+      console.error('[GET /api/admin/worker-status]', e.message);
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: e.message }));
     }
