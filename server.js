@@ -1360,10 +1360,19 @@ function shapeZoomMeeting(m) {
     date: m.start_time || null,
     meeting_attendees: [],
     summary: {},
+    share_url: m.share_url || m.play_url || null,
     _source: 'zoom',
     _match_kind: 'recent',
     _zoom: { uuid: m.uuid, meeting_id: m.id, hasTranscript: !!tf, transcriptDownloadUrl: tf ? tf.download_url : null }
   };
+}
+
+// Public-facing link to open a candidate in its source app (new tab in the
+// picker). Fireflies resolves from the transcript id; Zoom uses its share URL.
+function candidateSourceUrl(t) {
+  if (!t) return null;
+  if ((t._source || 'fireflies') === 'zoom') return t.share_url || null;
+  return t.id ? `https://app.fireflies.ai/view/${t.id}` : null;
 }
 
 // Discover candidate Zoom cloud recordings for a prospect. Mirrors the shape of
@@ -1706,6 +1715,47 @@ async function scrapeWebsite(domain) {
   return { html, title, metaDesc, bodyText, html_source: htmlSource };
 }
 
+// ── Claude call wrapper — stream + retry on connection drops ─────────────────
+// Streaming keeps the socket warm, but a mid-stream connection drop ("Premature
+// close" / ECONNRESET) still surfaces here and the SDK does NOT auto-retry once
+// streaming has started. So we retry the whole streamed call with exponential
+// backoff. Every Claude call in this codebase is idempotent (we only read the
+// final text), so re-running is safe. finalMessage() returns the same Message
+// object messages.create() would have, so callers are unchanged.
+function isRetryableClaudeError(err) {
+  if (!err) return false;
+  const msg  = String(err.message || '');
+  const code = String(err.code || '');
+  if (/premature close/i.test(msg)) return true;
+  if (/ECONNRESET|ETIMEDOUT|EPIPE|ECONNREFUSED|socket hang up|terminated|other side closed|network/i.test(msg)) return true;
+  if (/ERR_STREAM_PREMATURE_CLOSE|ECONNRESET|ETIMEDOUT|UND_ERR/i.test(code)) return true;
+  if (Anthropic.APIConnectionError && err instanceof Anthropic.APIConnectionError) return true;
+  const status = err.status || err.statusCode;
+  if (status === 429 || (status >= 500 && status <= 599)) return true;
+  return false;
+}
+
+async function claudeMessage(anthropic, params, label = 'claude') {
+  const MAX_ATTEMPTS = 4;
+  let lastErr;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      const stream = anthropic.messages.stream(params);
+      return await stream.finalMessage();
+    } catch (err) {
+      lastErr = err;
+      if (attempt < MAX_ATTEMPTS && isRetryableClaudeError(err)) {
+        const backoff = Math.min(1000 * 2 ** (attempt - 1), 8000); // 1s, 2s, 4s
+        console.warn(`[${label}] Claude attempt ${attempt}/${MAX_ATTEMPTS} failed (${err.message}) — retrying in ${backoff}ms`);
+        await new Promise(r => setTimeout(r, backoff));
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastErr;
+}
+
 // ── Brief extraction from transcript + website ────────────────────────────────
 async function extractBriefFromTranscript(transcriptContent, websiteContent, contactInfo) {
   const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
@@ -1836,18 +1886,15 @@ Return this exact JSON (null for anything not found):
   }
 }`;
 
-  // Streamed (not .create) so the connection stays active end-to-end. A
-  // non-streaming request holds the socket open silently while Claude generates
-  // up to 3000 tokens, which lets Render's proxy / idle timeouts cut it mid-body
-  // ("Premature close"). finalMessage() returns the same Message object.
-  const stream = anthropic.messages.stream({
+  // Streamed + retried (see claudeMessage): connection drops mid-stream don't
+  // auto-retry in the SDK, so we wrap with backoff. Returns the same Message.
+  const message = await claudeMessage(anthropic, {
     model: 'claude-sonnet-4-6',
     max_tokens: 3000,
     temperature: 0,
     system: systemPrompt,
     messages: [{ role: 'user', content: userPrompt }]
-  });
-  const message = await stream.finalMessage();
+  }, 'extract-brief');
 
   const raw = message.content[0].text;
   return extractJsonObject(raw); // null → modal opens blank for manual entry
@@ -3593,13 +3640,11 @@ async function generateWebinarTitles(extracted, companyName, job = null, customI
   // _analysis block + per-variant _score object on top of the 12-field schema.
   // Empirically the analysis adds ~350 tokens and per-variant scores ~150 more,
   // and we don't want truncation cutting off the last variant or the closing brace.
-  // Streamed to keep the connection alive through a 4000-token generation and
-  // avoid "Premature close" socket drops; finalMessage() yields the same Message.
-  const stream = anthropic.messages.stream({
+  // Streamed + retried on connection drops (see claudeMessage); same Message out.
+  const message = await claudeMessage(anthropic, {
     model: 'claude-sonnet-4-6', max_tokens: 4000, temperature: 0.7,
     system: systemPrompt, messages: [{ role: 'user', content: userPrompt }]
-  });
-  const message = await stream.finalMessage();
+  }, 'webinar_titles');
   const raw = message.content[0].text;
   let parsed;
   parsed = extractJsonObject(raw);
@@ -3785,11 +3830,10 @@ Return this exact JSON:
     .replace(/\{\{result_delivered\}\}/g, resultDelivered || 'practical strategies')
     .replace(/\{\{customer_pain\}\}/g, customerPain || 'business owners looking to grow')
     .replace(/\{\{prospect_company\}\}/g, prospectCompany || 'the attendee\'s firm');
-  const stream = anthropic.messages.stream({
+  const msg = await claudeMessage(anthropic, {
     model: 'claude-sonnet-4-6', max_tokens: 700, temperature: 0.7,
     messages: [{ role: 'user', content: userContent }]
-  });
-  const msg = await stream.finalMessage();
+  }, 'reg_page');
   const raw = msg.content[0].text;
   return extractJsonObject(raw);
 }
@@ -4048,12 +4092,11 @@ async function handleProspectResearch(task, job) {
     let bio = null;
     if (headline) {
       const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-      const stream = anthropic.messages.stream({
+      const msg = await claudeMessage(anthropic, {
         model: 'claude-sonnet-4-6', max_tokens: 300, temperature: 0,
         system: 'You are writing a short professional bio for a webinar host. Write in third person. 2–3 sentences maximum. Confident and credible tone. Focus on their expertise and who they help. Do not mention the webinar.',
         messages: [{ role: 'user', content: `Write a short host bio from this LinkedIn data:\n\nName: ${fullName}\nHeadline: ${headline}\nSummary: ${summary}\n\nReturn only the bio text. No labels, no markdown.` }]
-      });
-      const msg = await stream.finalMessage();
+      }, 'prospect_research');
       bio = msg.content[0].text.trim();
     }
 
@@ -5581,7 +5624,8 @@ const server = http.createServer(async (req, res) => {
             attendees:        (t.meeting_attendees || []).map(a => ({ email: a.email || null, name: a.displayName || a.name || null })),
             match_kind:       t._match_kind || 'loose',
             has_transcript:   t._source === 'zoom' ? !!(t._zoom && t._zoom.hasTranscript) : true,
-            dup_of_fireflies: !!t._dup_of_fireflies
+            dup_of_fireflies: !!t._dup_of_fireflies,
+            url:              candidateSourceUrl(t)
           }));
           // Suggest the best usable candidate (Zoom rows with no transcript can't feed extract).
           const suggested = publicCandidates.find(c => c.has_transcript) || publicCandidates[0] || null;
@@ -5932,7 +5976,8 @@ const server = http.createServer(async (req, res) => {
         date:           t.date || t.dateString || null,
         attendees:      (t.meeting_attendees || []).map(a => ({ email: a.email || null, name: a.displayName || a.name || null })),
         match_kind:     'title',
-        has_transcript: t._source === 'zoom' ? !!(t._zoom && t._zoom.hasTranscript) : true
+        has_transcript: t._source === 'zoom' ? !!(t._zoom && t._zoom.hasTranscript) : true,
+        url:            candidateSourceUrl(t)
       }));
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ candidates }));
