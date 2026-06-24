@@ -1369,9 +1369,14 @@ function shapeZoomMeeting(m) {
 
 // Public-facing link to open a candidate in its source app (new tab in the
 // picker). Fireflies resolves from the transcript id; Zoom uses its share URL.
+// The Zoom value comes straight from the Zoom API, so we only ever hand back an
+// https:// URL — never a javascript:/data: scheme — since it lands in an href.
 function candidateSourceUrl(t) {
   if (!t) return null;
-  if ((t._source || 'fireflies') === 'zoom') return t.share_url || null;
+  if ((t._source || 'fireflies') === 'zoom') {
+    const u = t.share_url || '';
+    return /^https:\/\//i.test(u) ? u : null;
+  }
   return t.id ? `https://app.fireflies.ai/view/${t.id}` : null;
 }
 
@@ -5011,14 +5016,20 @@ async function getWorkerConflict() {
   // deploy and is NOT a real conflict. Two things stop that from crying wolf:
   //   1. The draining instance deletes its own heartbeat row on SIGTERM (see the
   //      shutdown handler), so the split usually disappears within seconds.
-  //   2. Grace gate below: if the youngest live worker booted < DEPLOY_GRACE_MS
-  //      ago we're mid-handoff — suppress. A genuine duplicate (a stray worker
-  //      that's still polling, e.g. an orphaned Railway process) outlives the
-  //      grace because it keeps heartbeating, and a SIGKILLed instance ages out
-  //      of the 150s window. Either way a *real* split surfaces; a deploy doesn't.
-  const startMs = instances.map(i => Date.parse(i.started_at)).filter(Number.isFinite);
-  const newestStartMs = startMs.length ? Math.max(...startMs) : 0;
-  const withinDeployGrace = newestStartMs > 0 && (now - newestStartMs) < DEPLOY_GRACE_MS;
+  //   2. Grace gate below: if THIS build (the one answering this call) was itself
+  //      deployed < DEPLOY_GRACE_MS ago, we're the freshly-cut-over instance and
+  //      the other version is the one we're replacing — suppress. The grace is
+  //      keyed strictly on OUR OWN build's boot time, never on the foreign
+  //      version's: a stray/duplicate worker (e.g. an orphaned Railway process)
+  //      — even one crash-looping and rotating instance IDs — cannot reset our
+  //      clock, so once we've been up past the grace a genuine split always
+  //      surfaces. (A SIGKILLed peer also ages out of the 150s window.)
+  const ownStartMs = instances
+    .filter(i => (i.commit_sha || '') === BUILD_SHA)
+    .map(i => Date.parse(i.started_at))
+    .filter(Number.isFinite);
+  const ownNewestStartMs = ownStartMs.length ? Math.max(...ownStartMs) : 0;
+  const withinDeployGrace = ownNewestStartMs > 0 && (now - ownNewestStartMs) < DEPLOY_GRACE_MS;
   const versionSplit = liveVersions.length > 1 && !withinDeployGrace;
 
   // Tasks claimed in the last 30 min by a worker that didn't stamp a version =
@@ -5073,15 +5084,34 @@ if (USE_SUPABASE) {
     if (_shuttingDown) return;
     _shuttingDown = true;
     console.log(`[worker] ${sig} — draining: stop polling + remove heartbeat (${BUILD_SHA}/${INSTANCE_ID})`);
+    // Hard safety net first: no matter what stalls below (a hung DELETE socket —
+    // supabaseRequest has no socket timeout — or a long in-flight task), the
+    // process always exits within 9s so Render's cutover never blocks.
+    const hardExit = setTimeout(() => process.exit(0), 9000);
+    if (hardExit.unref) hardExit.unref();
+
     clearInterval(_taskTimer); clearInterval(_recoveryTimer);
     clearInterval(_calllibTimer); clearInterval(_heartbeatTimer);
+
+    // Remove our heartbeat first (bounded) so the dashboard clears immediately.
     try {
-      await supabaseRequest('DELETE',
-        `/rest/v1/worker_heartbeat?instance_id=eq.${encodeURIComponent(INSTANCE_ID)}`,
-        null, { 'Prefer': 'return=minimal' });
+      await Promise.race([
+        supabaseRequest('DELETE',
+          `/rest/v1/worker_heartbeat?instance_id=eq.${encodeURIComponent(INSTANCE_ID)}`,
+          null, { 'Prefer': 'return=minimal' }),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('delete timeout')), 3000))
+      ]);
     } catch (e) { console.warn('[worker] heartbeat cleanup failed:', e.message); }
-    // Let the DELETE round-trip land, then exit so Render can finish the cutover.
-    setTimeout(() => process.exit(0), 1500);
+
+    // Let an in-flight task finish so we don't orphan it in 'processing' (it
+    // would otherwise wait for resetStuckTasks on another instance, ~10 min).
+    // Bounded by the hard-exit timer above; clearInterval already stopped NEW claims.
+    const drainDeadline = Date.now() + 6000;
+    while (workerBusy && Date.now() < drainDeadline) {
+      await new Promise(r => setTimeout(r, 200));
+    }
+    if (workerBusy) console.warn('[worker] exiting with a task still in flight — resetStuckTasks will recover it');
+    process.exit(0);
   }
   process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
   process.on('SIGINT',  () => gracefulShutdown('SIGINT'));

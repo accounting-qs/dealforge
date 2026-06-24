@@ -1194,7 +1194,7 @@ function briefRenderPicker(candidates, selectedId) {
       ? { fg:'#7db8ff', bg:'rgba(45,140,255,0.14)', bd:'rgba(45,140,255,0.40)', label:'View video', app:'Zoom' }
       : { fg:'#c4b5fd', bg:'rgba(139,92,246,0.14)', bd:'rgba(139,92,246,0.40)', label:'View transcript', app:'Fireflies' };
     var viewBtn = c.url
-      ? '<a href="' + esc(c.url) + '" target="_blank" rel="noopener noreferrer" title="Open in ' + vc.app + '"'
+      ? '<a href="' + esc(c.url).replace(/"/g, '&quot;') + '" target="_blank" rel="noopener noreferrer" title="Open in ' + vc.app + '"'
         + ' style="flex-shrink:0;align-self:center;display:flex;align-items:center;white-space:nowrap;padding:6px 10px;border-radius:6px;font-size:11px;font-weight:600;text-decoration:none;color:' + vc.fg + ';background:' + vc.bg + ';border:1px solid ' + vc.bd + '">' + vc.label + ' ↗</a>'
       : '';
     return '<div style="display:flex;align-items:stretch;gap:6px">'
