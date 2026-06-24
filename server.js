@@ -1754,26 +1754,49 @@ const CLAUDE_ATTEMPT_TIMEOUT_MS = 70 * 1000;
 async function claudeMessage(anthropic, params, label = 'claude') {
   const MAX_ATTEMPTS = 3;
   const BACKOFFS = [2000, 5000]; // between attempt 1→2 and 2→3
+  const trail = [];              // per-attempt diagnostics, surfaced in the thrown error
   let lastErr;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    // Stream on the first attempts; the FINAL attempt falls back to a plain
+    // (non-streaming) request in case streaming specifically is what the
+    // Render↔Anthropic path is severing ("Premature close").
+    const useStream = attempt < MAX_ATTEMPTS;
+    const t0 = Date.now();
     try {
-      const stream = anthropic.messages.stream(params, {
-        maxRetries: 0, // we own the retry loop; don't let the SDK double-retry
-        signal: AbortSignal.timeout(CLAUDE_ATTEMPT_TIMEOUT_MS)
-      });
-      return await stream.finalMessage();
+      let msg;
+      if (useStream) {
+        const stream = anthropic.messages.stream(params, {
+          maxRetries: 0, // we own the retry loop; don't let the SDK double-retry
+          signal: AbortSignal.timeout(CLAUDE_ATTEMPT_TIMEOUT_MS)
+        });
+        msg = await stream.finalMessage();
+      } else {
+        msg = await anthropic.messages.create(params, {
+          maxRetries: 0,
+          signal: AbortSignal.timeout(CLAUDE_ATTEMPT_TIMEOUT_MS)
+        });
+      }
+      if (attempt > 1) console.warn(`[${label}] Claude OK on attempt ${attempt}/${MAX_ATTEMPTS} (${useStream ? 'stream' : 'non-stream'})`);
+      return msg;
     } catch (err) {
+      const dt = Date.now() - t0;
       lastErr = err;
-      if (attempt < MAX_ATTEMPTS && isRetryableClaudeError(err)) {
-        const backoff = BACKOFFS[attempt - 1] || 5000;
-        console.warn(`[${label}] Claude attempt ${attempt}/${MAX_ATTEMPTS} failed (${err.message}) — retrying in ${backoff}ms`);
-        await new Promise(r => setTimeout(r, backoff));
+      const retryable = isRetryableClaudeError(err);
+      const tag = `a${attempt}[${useStream ? 'S' : 'N'}]:${(err && err.name) || 'Error'}:${String((err && err.message) || '').slice(0, 70)}(${dt}ms,rt=${retryable})`;
+      trail.push(tag);
+      console.warn(`[${label}] Claude attempt ${attempt}/${MAX_ATTEMPTS} failed — ${tag}`);
+      if (attempt < MAX_ATTEMPTS && retryable) {
+        await new Promise(r => setTimeout(r, BACKOFFS[attempt - 1] || 5000));
         continue;
       }
-      throw err;
+      break;
     }
   }
-  throw lastErr;
+  // Surface the full per-attempt trail so a failed job's error is diagnosable
+  // from the dashboard / API without server-log access.
+  const e = new Error(`Claude failed after ${trail.length} attempt(s) [${label}]: ${trail.join(' | ')}`);
+  e.cause = lastErr;
+  throw e;
 }
 
 // ── Brief extraction from transcript + website ────────────────────────────────
@@ -5290,6 +5313,30 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: e.message }));
     }
+    return;
+  }
+
+  // ── GET /api/admin/claude-ping — diagnose Render↔Anthropic connectivity ────
+  // Runs a trivial non-streaming AND streaming Claude call and reports timing +
+  // outcome for each, so we can tell a network/auth problem from a payload one.
+  if (req.method === 'GET' && urlPath === '/api/admin/claude-ping') {
+    setCors(res);
+    const out = { build: BUILD_SHA };
+    const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+    const probe = { model: 'claude-sonnet-4-6', max_tokens: 16, messages: [{ role: 'user', content: 'Reply with the single word: ok' }] };
+    let t = Date.now();
+    try {
+      const m = await anthropic.messages.create(probe, { maxRetries: 0, signal: AbortSignal.timeout(60000) });
+      out.nonstream = { ok: true, ms: Date.now() - t, text: ((m.content[0] || {}).text || '').slice(0, 40), stop: m.stop_reason };
+    } catch (e) { out.nonstream = { ok: false, ms: Date.now() - t, name: e.name, msg: String(e.message || '').slice(0, 120) }; }
+    t = Date.now();
+    try {
+      const s = anthropic.messages.stream(probe, { maxRetries: 0, signal: AbortSignal.timeout(60000) });
+      const m = await s.finalMessage();
+      out.stream = { ok: true, ms: Date.now() - t, text: ((m.content[0] || {}).text || '').slice(0, 40), stop: m.stop_reason };
+    } catch (e) { out.stream = { ok: false, ms: Date.now() - t, name: e.name, msg: String(e.message || '').slice(0, 120) }; }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(out));
     return;
   }
 
