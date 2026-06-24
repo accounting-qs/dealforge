@@ -9,6 +9,60 @@ const path    = require('path');
 const crypto  = require('crypto');
 const Anthropic = require('@anthropic-ai/sdk');
 const sharp = require('sharp');
+const { Readable } = require('stream');
+
+// ── Anthropic transport shim ─────────────────────────────────────────────────
+// Node 26's built-in fetch (undici) drops the connection to api.anthropic.com
+// with "Premature close" on essentially every request, while Node's native
+// https — the same transport our Supabase/GHL/Fireflies/Zoom calls use — works
+// fine (verified via /api/admin/claude-ping: rawHttps → 200, undici → Premature
+// close). So we hand the Anthropic SDK a fetch implementation backed by native
+// https. Forces identity encoding (native https won't auto-gunzip).
+function anthropicNativeFetch(url, init = {}) {
+  return new Promise((resolve, reject) => {
+    let u;
+    try { u = new URL(typeof url === 'string' ? url : (url && url.url) || String(url)); }
+    catch (e) { return reject(e); }
+    const headers = {};
+    const h = init.headers;
+    if (h) {
+      if (typeof h.forEach === 'function') h.forEach((v, k) => { headers[k] = v; });
+      else for (const k of Object.keys(h)) headers[k] = h[k];
+    }
+    delete headers['accept-encoding']; delete headers['Accept-Encoding'];
+    headers['accept-encoding'] = 'identity';
+
+    const req = https.request({
+      hostname: u.hostname,
+      port: u.port || 443,
+      path: u.pathname + u.search,
+      method: (init.method || 'GET').toUpperCase(),
+      headers
+    }, (res) => {
+      const respHeaders = new Headers();
+      for (const [k, v] of Object.entries(res.headers)) {
+        if (Array.isArray(v)) v.forEach(x => respHeaders.append(k, x));
+        else if (v != null) respHeaders.set(k, String(v));
+      }
+      resolve(new Response(Readable.toWeb(res), {
+        status: res.statusCode,
+        statusText: res.statusMessage || '',
+        headers: respHeaders
+      }));
+    });
+    req.on('error', reject);
+    const signal = init.signal;
+    if (signal) {
+      if (signal.aborted) { req.destroy(); return reject(new DOMException('The operation was aborted.', 'AbortError')); }
+      signal.addEventListener('abort', () => req.destroy(new DOMException('The operation was aborted.', 'AbortError')), { once: true });
+    }
+    if (init.body != null) req.write(typeof init.body === 'string' ? init.body : Buffer.from(init.body));
+    req.end();
+  });
+}
+function makeAnthropic() {
+  return new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY, fetch: anthropicNativeFetch });
+}
 
 const PORT = process.env.PORT || 3000;
 const MIME = { '.html': 'text/html', '.css': 'text/css', '.js': 'application/javascript', '.png': 'image/png', '.jpg': 'image/jpeg' };
@@ -1757,32 +1811,23 @@ async function claudeMessage(anthropic, params, label = 'claude') {
   const trail = [];              // per-attempt diagnostics, surfaced in the thrown error
   let lastErr;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-    // Stream on the first attempts; the FINAL attempt falls back to a plain
-    // (non-streaming) request in case streaming specifically is what the
-    // Render↔Anthropic path is severing ("Premature close").
-    const useStream = attempt < MAX_ATTEMPTS;
+    // Non-streaming on the native-https client (see anthropicNativeFetch). The
+    // earlier streaming was a workaround for "Premature close"; that's now fixed
+    // at the transport layer, so a plain request is simplest and reliable. Retry
+    // remains as cheap insurance against a genuine transient blip.
     const t0 = Date.now();
     try {
-      let msg;
-      if (useStream) {
-        const stream = anthropic.messages.stream(params, {
-          maxRetries: 0, // we own the retry loop; don't let the SDK double-retry
-          signal: AbortSignal.timeout(CLAUDE_ATTEMPT_TIMEOUT_MS)
-        });
-        msg = await stream.finalMessage();
-      } else {
-        msg = await anthropic.messages.create(params, {
-          maxRetries: 0,
-          signal: AbortSignal.timeout(CLAUDE_ATTEMPT_TIMEOUT_MS)
-        });
-      }
-      if (attempt > 1) console.warn(`[${label}] Claude OK on attempt ${attempt}/${MAX_ATTEMPTS} (${useStream ? 'stream' : 'non-stream'})`);
+      const msg = await anthropic.messages.create(params, {
+        maxRetries: 0, // we own the retry loop; don't let the SDK double-retry
+        signal: AbortSignal.timeout(CLAUDE_ATTEMPT_TIMEOUT_MS)
+      });
+      if (attempt > 1) console.warn(`[${label}] Claude OK on attempt ${attempt}/${MAX_ATTEMPTS}`);
       return msg;
     } catch (err) {
       const dt = Date.now() - t0;
       lastErr = err;
       const retryable = isRetryableClaudeError(err);
-      const tag = `a${attempt}[${useStream ? 'S' : 'N'}]:${(err && err.name) || 'Error'}:${String((err && err.message) || '').slice(0, 70)}(${dt}ms,rt=${retryable})`;
+      const tag = `a${attempt}:${(err && err.name) || 'Error'}:${String((err && err.message) || '').slice(0, 70)}(${dt}ms,rt=${retryable})`;
       trail.push(tag);
       console.warn(`[${label}] Claude attempt ${attempt}/${MAX_ATTEMPTS} failed — ${tag}`);
       if (attempt < MAX_ATTEMPTS && retryable) {
@@ -1801,7 +1846,7 @@ async function claudeMessage(anthropic, params, label = 'claude') {
 
 // ── Brief extraction from transcript + website ────────────────────────────────
 async function extractBriefFromTranscript(transcriptContent, websiteContent, contactInfo) {
-  const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  const anthropic = makeAnthropic();
 
   const knownCompany  = contactInfo.company  || null;
   const knownName     = contactInfo.name     || null;
@@ -3531,7 +3576,7 @@ async function fetchLeadsFromApollo(icp, progressCb) {
 // available cheaply (already populated by brand_scrape and prospect_research tasks)
 // and give Claude meaningfully more material than extracted_data alone.
 async function generateWebinarTitles(extracted, companyName, job = null, customInstructions = '') {
-  const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  const anthropic = makeAnthropic();
   const icp = extracted.icp || {};
   const role = icp.role || 'business owners', industry = icp.industry || 'B2B';
   const size = icp.company_size || '', geo = icp.geography;
@@ -3848,7 +3893,7 @@ async function loadPromptFromDB(slug, fallback) {
 
 // ── Calendar visual: reminder emails ─────────────────────────────────────────
 async function generateReminderEmails(title, hostName, resultDelivered, customerPain, prospectCompany) {
-  const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  const anthropic = makeAnthropic();
   const fallback = `You are writing short reminder email previews for a webinar registration confirmation sequence. Return valid JSON only. No markdown.
 
 Generate 3 reminder email previews for this webinar:
@@ -4134,7 +4179,7 @@ async function handleProspectResearch(task, job) {
     // Use Claude Haiku to write a short professional bio
     let bio = null;
     if (headline) {
-      const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+      const anthropic = makeAnthropic();
       const msg = await claudeMessage(anthropic, {
         model: 'claude-sonnet-4-6', max_tokens: 300, temperature: 0,
         system: 'You are writing a short professional bio for a webinar host. Write in third person. 2–3 sentences maximum. Confident and credible tone. Focus on their expertise and who they help. Do not mention the webinar.',
@@ -5322,7 +5367,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && urlPath === '/api/admin/claude-ping') {
     setCors(res);
     const out = { build: BUILD_SHA, node: process.version };
-    const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+    const anthropic = makeAnthropic();
     const probe = { model: 'claude-sonnet-4-6', max_tokens: 16, messages: [{ role: 'user', content: 'Reply with the single word: ok' }] };
     let t = Date.now();
     try {
