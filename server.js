@@ -1726,26 +1726,41 @@ function isRetryableClaudeError(err) {
   if (!err) return false;
   const msg  = String(err.message || '');
   const code = String(err.code || '');
+  const name = String(err.name || '');
   if (/premature close/i.test(msg)) return true;
   if (/ECONNRESET|ETIMEDOUT|EPIPE|ECONNREFUSED|socket hang up|terminated|other side closed|network/i.test(msg)) return true;
   if (/ERR_STREAM_PREMATURE_CLOSE|ECONNRESET|ETIMEDOUT|UND_ERR/i.test(code)) return true;
-  if (Anthropic.APIConnectionError && err instanceof Anthropic.APIConnectionError) return true;
+  // Per-attempt timeout fired (AbortSignal.timeout) or the SDK timed out the request.
+  if (/abort|timed out|timeout/i.test(msg) || /AbortError|TimeoutError/i.test(name)) return true;
+  if (Anthropic.APIConnectionError      && err instanceof Anthropic.APIConnectionError) return true;
+  if (Anthropic.APIConnectionTimeoutError && err instanceof Anthropic.APIConnectionTimeoutError) return true;
+  if (Anthropic.APIUserAbortError       && err instanceof Anthropic.APIUserAbortError) return true;
   const status = err.status || err.statusCode;
   if (status === 429 || (status >= 500 && status <= 599)) return true;
   return false;
 }
 
+// Per-attempt cap: a healthy 3000-token stream finishes well under this. If a
+// stream hangs (no bytes, never errors) the abort fires and we retry instead of
+// blocking on the SDK's 10-minute default. Worst case across all attempts
+// (3 × 70s + 2s + 5s ≈ 217s) stays under the frontend's stall guard (~252s).
+const CLAUDE_ATTEMPT_TIMEOUT_MS = 70 * 1000;
+
 async function claudeMessage(anthropic, params, label = 'claude') {
-  const MAX_ATTEMPTS = 4;
+  const MAX_ATTEMPTS = 3;
+  const BACKOFFS = [2000, 5000]; // between attempt 1→2 and 2→3
   let lastErr;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     try {
-      const stream = anthropic.messages.stream(params);
+      const stream = anthropic.messages.stream(params, {
+        maxRetries: 0, // we own the retry loop; don't let the SDK double-retry
+        signal: AbortSignal.timeout(CLAUDE_ATTEMPT_TIMEOUT_MS)
+      });
       return await stream.finalMessage();
     } catch (err) {
       lastErr = err;
       if (attempt < MAX_ATTEMPTS && isRetryableClaudeError(err)) {
-        const backoff = Math.min(1000 * 2 ** (attempt - 1), 8000); // 1s, 2s, 4s
+        const backoff = BACKOFFS[attempt - 1] || 5000;
         console.warn(`[${label}] Claude attempt ${attempt}/${MAX_ATTEMPTS} failed (${err.message}) — retrying in ${backoff}ms`);
         await new Promise(r => setTimeout(r, backoff));
         continue;

@@ -1062,6 +1062,7 @@ function briefShowError(msg) {
 var _briefPollTimer = null;
 var _briefPollStuck = 0;
 var _briefPollLastPct = -1;
+var _briefPollLastStep = '';
 function briefPollPrefetch() {
   if (!_briefPrefetchId) return;
   fetch('/api/prefetch/' + encodeURIComponent(_briefPrefetchId), { cache: 'no-store' })
@@ -1343,7 +1344,7 @@ function briefShowStep2() {
   document.getElementById('brief-loading').style.display = 'block';
   document.getElementById('brief-subtitle').textContent = 'Extracting brief with Claude…';
   briefSetProgress(10, 'Submitting transcript pick…');
-  _briefPollLastPct = -1; _briefPollStuck = 0;
+  _briefPollLastPct = -1; _briefPollStuck = 0; _briefPollLastStep = '';
 
   // Pass the rep-confirmed website URL through to phase 2 so the scrape uses
   // exactly what the rep saw on Step 1 (not the GHL/email-domain guess).
@@ -1373,9 +1374,15 @@ function briefPollExtract() {
     .then(function(r) { return r.json(); })
     .then(function(j) {
       briefSetProgress(j.progress || 0, j.step || '');
-      if ((j.progress || 0) === _briefPollLastPct) _briefPollStuck++;
-      else { _briefPollStuck = 0; _briefPollLastPct = j.progress || 0; }
-      if (_briefPollStuck > 60) return briefShowError('Brief extraction stalled — please retry');
+      // Stall guard: only trip if NEITHER progress % NOR step text advances.
+      // The Claude extraction step holds progress at 50 for the whole call (and
+      // retries on connection drops), so the threshold must outlast the backend
+      // worst case (~217s). 360 polls × 700ms ≈ 252s. The guard only matters if
+      // the job record truly dies — a real failure surfaces via status below.
+      var _pct = j.progress || 0, _stp = j.step || '';
+      if (_pct === _briefPollLastPct && _stp === _briefPollLastStep) _briefPollStuck++;
+      else { _briefPollStuck = 0; _briefPollLastPct = _pct; _briefPollLastStep = _stp; }
+      if (_briefPollStuck > 360) return briefShowError('Brief extraction stalled — please retry');
       if (j.status === 'running') { _briefPollTimer = setTimeout(briefPollExtract, 700); return; }
       if (j.status === 'failed')  return briefShowError('Brief extraction failed: ' + (j.error || 'unknown'));
       // status === 'completed'
