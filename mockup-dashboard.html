@@ -1260,16 +1260,20 @@ function njRenderPicker(candidates, selectedId) {
     var uHref = (c.url || '').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
     var viewBtn = c.url
       ? '<a href="' + uHref + '" target="_blank" rel="noopener noreferrer" title="Open in ' + vc.app + '"'
-        + ' style="flex-shrink:0;align-self:center;display:flex;align-items:center;white-space:nowrap;padding:6px 10px;border-radius:6px;font-size:11px;font-weight:600;text-decoration:none;color:' + vc.fg + ';background:' + vc.bg + ';border:1px solid ' + vc.bd + '">' + vc.label + ' ↗</a>'
+        + ' style="flex:none;align-self:center;display:inline-flex;align-items:center;line-height:1;white-space:nowrap;padding:6px 9px;border-radius:6px;font-size:11px;font-weight:600;text-decoration:none;color:' + vc.fg + ';background:' + vc.bg + ';border:1px solid ' + vc.bd + '">' + vc.label + ' ↗</a>'
       : '';
-    return '<div style="display:flex;align-items:stretch;gap:6px">'
-      +   '<label style="flex:1;min-width:0;display:flex;align-items:flex-start;gap:10px;padding:8px;border-radius:6px;cursor:' + (noTx?'not-allowed':'pointer') + ';opacity:' + (dimmed?'0.55':'1') + ';background:' + (sel ? 'rgba(139,92,246,0.10)' : 'transparent') + ';border:1px solid ' + (sel ? 'rgba(139,92,246,0.35)' : 'rgba(255,255,255,0.04)') + '">'
-      +     '<input type="radio" name="nj-transcript-pick" value="' + c.id + '"' + (sel ? ' checked' : '') + (noTx ? ' disabled' : '') + ' onchange="njSelectTranscript(\'' + c.id + '\',\'' + src + '\')" style="margin-top:3px">'
+    // The whole row is ONE bordered card (selection highlight wraps everything).
+    // The <label> (radio + text + badges) is the selectable part and carries the
+    // dim/opacity; the View button sits beside it inside the same card so it
+    // reads as part of the row, and stays full-opacity on dimmed rows.
+    return '<div style="display:flex;align-items:center;gap:8px;padding:8px;border-radius:8px;background:' + (sel ? 'rgba(139,92,246,0.10)' : 'transparent') + ';border:1px solid ' + (sel ? 'rgba(139,92,246,0.35)' : 'rgba(255,255,255,0.04)') + '">'
+      +   '<label style="flex:1;min-width:0;display:flex;align-items:flex-start;gap:10px;cursor:' + (noTx?'not-allowed':'pointer') + ';opacity:' + (dimmed?'0.55':'1') + '">'
+      +     '<input type="radio" name="nj-transcript-pick" value="' + c.id + '"' + (sel ? ' checked' : '') + (noTx ? ' disabled' : '') + ' onchange="njSelectTranscript(\'' + c.id + '\',\'' + src + '\')" style="margin-top:3px;flex:none">'
       +     '<div style="flex:1;min-width:0">'
       +       '<div style="font-size:12.5px;color:#e4e4e7;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + (c.title || 'Untitled') + '</div>'
       +       '<div style="font-size:11px;color:#71717a;margin-top:2px">' + meta + '</div>'
       +     '</div>'
-      +     '<div style="flex-shrink:0;display:flex;gap:4px;align-items:center">' + njSourceBadge(src) + njMatchKindBadge(c.match_kind) + '</div>'
+      +     '<div style="flex:none;display:flex;gap:4px;align-items:center">' + njSourceBadge(src) + njMatchKindBadge(c.match_kind) + '</div>'
       +   '</label>'
       +   viewBtn
       + '</div>';
