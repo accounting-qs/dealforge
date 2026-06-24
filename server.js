@@ -5321,7 +5321,7 @@ const server = http.createServer(async (req, res) => {
   // outcome for each, so we can tell a network/auth problem from a payload one.
   if (req.method === 'GET' && urlPath === '/api/admin/claude-ping') {
     setCors(res);
-    const out = { build: BUILD_SHA };
+    const out = { build: BUILD_SHA, node: process.version };
     const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
     const probe = { model: 'claude-sonnet-4-6', max_tokens: 16, messages: [{ role: 'user', content: 'Reply with the single word: ok' }] };
     let t = Date.now();
@@ -5335,6 +5335,32 @@ const server = http.createServer(async (req, res) => {
       const m = await s.finalMessage();
       out.stream = { ok: true, ms: Date.now() - t, text: ((m.content[0] || {}).text || '').slice(0, 40), stop: m.stop_reason };
     } catch (e) { out.stream = { ok: false, ms: Date.now() - t, name: e.name, msg: String(e.message || '').slice(0, 120) }; }
+    // Raw native-https probe — the SAME transport (Node http/1.1) that Supabase/
+    // GHL/Fireflies use successfully. If THIS works while the SDK's fetch
+    // (undici) fails, the culprit is undici/HTTP-2, and the fix is to back the
+    // SDK with native https.
+    t = Date.now();
+    try {
+      out.rawHttps = await new Promise((resolve) => {
+        const payload = JSON.stringify(probe);
+        const r = https.request({
+          hostname: 'api.anthropic.com', path: '/v1/messages', method: 'POST',
+          headers: {
+            'x-api-key': process.env.ANTHROPIC_API_KEY,
+            'anthropic-version': '2023-06-01',
+            'content-type': 'application/json',
+            'content-length': Buffer.byteLength(payload)
+          }
+        }, (resp) => {
+          let body = '';
+          resp.on('data', c => body += c);
+          resp.on('end', () => resolve({ ok: resp.statusCode === 200, ms: Date.now() - t, status: resp.statusCode, body: body.slice(0, 120) }));
+        });
+        r.setTimeout(60000, () => { r.destroy(new Error('timeout')); });
+        r.on('error', (e) => resolve({ ok: false, ms: Date.now() - t, name: e.name, msg: String(e.message || '').slice(0, 120) }));
+        r.end(payload);
+      });
+    } catch (e) { out.rawHttps = { ok: false, ms: Date.now() - t, name: e.name, msg: String(e.message || '').slice(0, 120) }; }
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(out));
     return;
