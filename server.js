@@ -1929,9 +1929,21 @@ function formatEmployeeRangeBand(ranges) {
 //     have apollo_id, and as a manual refresh if anything ever needs it.)
 // The website column intentionally stays on the free proxy-scrape value; this
 // helper only overrides name / email / company_size when match returns them.
+// A lead is only "reachable" if its email is a real address — not null and not
+// Apollo's "email_not_unlocked@domain.com" placeholder (returned when the
+// account is out of email credits or the contact's address is gated). Used by
+// finalizeLeadList to decide which leads count toward the demo's emailed-25.
+function hasUsableEmail(lead) {
+  const e = String(lead && lead.email || '').toLowerCase().trim();
+  return e.includes('@') && !e.startsWith('email_not_unlocked@');
+}
+
+// Returns the number of credit-consuming people/match calls issued (cache hits
+// cost 0). finalizeLeadList uses this to budget its backfill pass. Mutates the
+// passed leads in place.
 async function peopleMatchAllLeads(leads, cache = null) {
   const APOLLO_KEY = process.env.APOLLO_API_KEY;
-  if (!APOLLO_KEY || !Array.isArray(leads) || !leads.length) return leads;
+  if (!APOLLO_KEY || !Array.isArray(leads) || !leads.length) return 0;
 
   // Phase 0: hydrate from prior-job cache before any Apollo call. Saves 1
   // credit per lead that the same prospect has already enriched on a previous
@@ -1942,47 +1954,73 @@ async function peopleMatchAllLeads(leads, cache = null) {
       if (!lead || !lead.apollo_id || lead.revealed) continue;
       const hit = cache.get(lead.apollo_id);
       if (!hit) continue;
+      // Copy the cheap, always-useful fields regardless of email.
       if (hit.name)         lead.name         = hit.name;
-      if (hit.email)        lead.email        = hit.email;
       if (hit.company_size) lead.company_size = hit.company_size;
       if (hit.website)      lead.website      = hit.website;
       if (hit.linkedin_url) lead.linkedin_url = hit.linkedin_url;
       if (hit.photo_url)    lead.photo_url    = hit.photo_url;
       if (hit.headline)     lead.headline     = hit.headline;
-      lead.revealed = true;
-      cacheHits++;
+      // Only treat the lead as fully revealed (and skip the paid re-match) when
+      // the cache actually holds an email. A prior run that revealed a lead but
+      // never got an address used to poison the cache: revealed=true with
+      // email=null permanently suppressed any retry, so the lead showed "—"
+      // forever. Leaving revealed=false here lets the match step try again.
+      if (hit.email) {
+        lead.email = hit.email;
+        lead.revealed = true;
+        cacheHits++;
+      }
     }
   }
 
   const targets = leads.filter(l => l && l.apollo_id && !l.revealed);
   if (!targets.length) {
-    if (cacheHits) console.log(`[lead_list] People-match: 0/${cacheHits + targets.length} new calls (${cacheHits} reused from prior jobs — 0 credits)`);
-    return leads;
+    if (cacheHits) console.log(`[lead_list] People-match: 0 new calls (${cacheHits} reused from prior jobs — 0 credits)`);
+    return 0;
   }
 
   const CONCURRENCY = 5;
   let matched = 0;
   let websiteFromEmail = 0;
 
-  for (let i = 0; i < targets.length; i += CONCURRENCY) {
-    const batch = targets.slice(i, i + CONCURRENCY);
-    await Promise.all(batch.map(async (lead) => {
+  // One retry on transient failure (429 rate-limit / timeout). A single dropped
+  // call used to silently leave a lead email-less; under real concurrency
+  // (multiple jobs matching at once) that turned into many missing addresses.
+  const matchOnce = async (id) => {
+    for (let attempt = 0; attempt < 2; attempt++) {
       try {
         const r = await fetch('https://api.apollo.io/api/v1/people/match', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'x-api-key': APOLLO_KEY },
-          body: JSON.stringify({ id: lead.apollo_id }), // NO reveal_personal_emails, NO reveal_phone_number
+          body: JSON.stringify({ id }), // NO reveal_personal_emails, NO reveal_phone_number
           signal: AbortSignal.timeout(10000)
         });
-        if (!r.ok) return;
-        const d = await r.json();
+        if (r.ok) return await r.json();
+        if (r.status !== 429) return null; // hard error — don't retry
+        await new Promise(res => setTimeout(res, 600)); // backoff before retry
+      } catch (e) {
+        if (attempt === 1) return null;
+      }
+    }
+    return null;
+  };
+
+  for (let i = 0; i < targets.length; i += CONCURRENCY) {
+    const batch = targets.slice(i, i + CONCURRENCY);
+    await Promise.all(batch.map(async (lead) => {
+      try {
+        const d = await matchOnce(lead.apollo_id);
+        if (!d) return;
         const p = d.person || {};
         if (p.first_name && p.last_name) {
           lead.name = `${p.first_name} ${p.last_name}`.trim();
         } else if (p.name) {
           lead.name = p.name;
         }
-        if (p.email) lead.email = p.email;
+        // Reject Apollo's "email_not_unlocked@domain.com" placeholder — storing
+        // it would make the lead look reachable when it isn't.
+        if (p.email && !/^email_not_unlocked@/i.test(p.email)) lead.email = p.email;
         const emp = p.organization?.estimated_num_employees;
         if (Number.isFinite(emp) && emp > 0) lead.company_size = fmtEmp(emp);
         // Validate / fill Website from the work-email domain when it's
@@ -2008,27 +2046,40 @@ async function peopleMatchAllLeads(leads, cache = null) {
       }
     }));
   }
-  console.log(`[lead_list] People-match: ${matched}/${targets.length} leads matched (${matched} enrichment credits) | reused from prior jobs: ${cacheHits} | website set from email domain: ${websiteFromEmail}`);
-  return leads;
+  const withEmail = targets.filter(hasUsableEmail).length;
+  console.log(`[lead_list] People-match: ${matched}/${targets.length} leads matched, ${withEmail} with usable email (${targets.length} enrichment credits) | reused from prior jobs: ${cacheHits} | website set from email domain: ${websiteFromEmail}`);
+  return targets.length;
 }
 
 // Shared finalizer for the lead list. Used by handleLeadList (worker path) AND
 // the POST /api/jobs/:id/rerun-apollo handler — both used to have their own
-// dedup logic. Without this, rerun-apollo persisted the raw 50-lead Apollo
-// response (no dedup, no Size column fallback), and the lead-table UI would
-// show duplicates and empty Size cells for every job that was re-run.
+// dedup logic. Without this, rerun-apollo persisted the raw Apollo response
+// (no dedup, no Size column fallback), and the lead-table UI would show
+// duplicates and empty Size cells for every job that was re-run.
 //
-// Steps:
-//   1. Dedup by company name (case-insensitive). First occurrence wins;
-//      Apollo's default ranking puts higher-relevance contacts first.
-//   2. Cap at 25 leads (spec §11b — "never two contacts from the same company").
-//   3. Apply the ICP's employee-range band as a Size fallback whenever the lead
-//      itself has no company_size (which is every lead on this Apollo plan tier,
-//      since people search responses strip estimated_num_employees).
-//   4. People-match all 25 to unlock full name + work email + real employee count
-//      (25 enrichment credits per finalize call). Step (3) still applies as a
-//      fallback whenever match doesn't return an employee count.
+// The headline behaviour is "give the rep 25 leads they can actually email."
+// Apollo's free search returns a deep, deduped candidate pool tagged with a
+// per-contact has_email flag; the paid people/match only returns an address
+// when has_email is true. We therefore:
+//   1. Dedup by company name (case-insensitive) across the FULL pool. First
+//      occurrence wins — Apollo ranks higher-relevance contacts first.
+//   2. Order email-reachable contacts ahead of the rest (stable, so relevance
+//      order is preserved within each group). The old code took the first 25 by
+//      rank and ignored has_email, so on sparse/niche ICPs most of the 25 came
+//      back address-less and the demo list showed only a handful of emails.
+//   3. People-match the first 25, then top up: every lead that still has no
+//      usable email is swapped for the next reachable candidate and matched,
+//      bounded by MATCH_BUDGET so a pathological pool can't burn unlimited
+//      enrichment credits.
+//   4. Apply the ICP's employee-range band as a Size fallback whenever the lead
+//      itself has no company_size (the people-search response strips it on this
+//      Apollo plan tier).
 async function finalizeLeadList(rawLeads, icp, enrichmentCache = null) {
+  const TARGET = 25;
+  const MATCH_BUDGET = 32; // 25 target + headroom to backfill match misses
+
+  // 1. Dedup by company across the whole pool — keep every unique company so
+  //    the has_email selection below has depth to work with.
   const seen = new Set();
   const deduped = [];
   for (const l of (rawLeads || [])) {
@@ -2036,29 +2087,58 @@ async function finalizeLeadList(rawLeads, icp, enrichmentCache = null) {
     if (!key || seen.has(key)) continue;
     seen.add(key);
     deduped.push(l);
-    if (deduped.length >= 25) break;
   }
+
+  // 2. Reachable contacts first, then the rest as backfill reserve.
+  const queue = [...deduped.filter(l => l.has_email), ...deduped.filter(l => !l.has_email)];
+
   const sizeFallback = formatEmployeeRangeBand(icp?.apollo_employee_ranges);
-  if (sizeFallback) {
-    deduped.forEach(l => { if (!l.company_size) l.company_size = sizeFallback; });
+  const applySize = list => { if (sizeFallback) list.forEach(l => { if (!l.company_size) l.company_size = sizeFallback; }); };
+
+  // 3. Match the first 25, then backfill any address-less leads from the reserve.
+  const selected = queue.slice(0, TARGET);
+  applySize(selected);
+  let creditsSpent = await peopleMatchAllLeads(selected, enrichmentCache);
+
+  let next = selected.length;
+  while (next < queue.length && creditsSpent < MATCH_BUDGET) {
+    const gaps = selected.filter(l => !hasUsableEmail(l)).length;
+    if (!gaps) break;
+    const take = Math.min(gaps, MATCH_BUDGET - creditsSpent, queue.length - next);
+    if (take <= 0) break;
+    const batch = queue.slice(next, next + take);
+    next += take;
+    applySize(batch);
+    creditsSpent += await peopleMatchAllLeads(batch, enrichmentCache);
+    // Swap each freshly-reachable reserve lead into the first remaining gap.
+    for (const cand of batch.filter(hasUsableEmail)) {
+      const idx = selected.findIndex(l => !hasUsableEmail(l));
+      if (idx === -1) break;
+      selected[idx] = cand;
+    }
   }
-  await peopleMatchAllLeads(deduped, enrichmentCache);
+
+  // 4. Surface reachable leads at the top of the table, cap at 25.
+  const leads = [...selected.filter(hasUsableEmail), ...selected.filter(l => !hasUsableEmail(l))].slice(0, TARGET);
+  const emailed = leads.filter(hasUsableEmail).length;
+  console.log(`[lead_list] Finalize: ${deduped.length} unique companies in pool → ${leads.length} leads, ${emailed} with email (${creditsSpent} enrichment credits)`);
+
   // Stale-code alarm bell. peopleMatchAllLeads filters on `l.apollo_id`; if
   // no lead has one, the match step silently does nothing and the rep ends up
-  // staring at obfuscated names. The only way 25 freshly-searched leads can
-  // all lack apollo_id is when the running container is using an older
-  // build of normalizePerson that pre-dates the apollo_id field — i.e. a
-  // module-cache miss after a Render deploy. Surface it loudly so the next
-  // time it happens we catch it in the logs instead of from a UI complaint.
-  const withId = deduped.filter(l => l && l.apollo_id).length;
-  if (deduped.length > 0 && withId === 0) {
-    console.warn(`[lead_list] ⚠ 0/${deduped.length} leads have apollo_id — `
+  // staring at obfuscated names. The only way freshly-searched leads can all
+  // lack apollo_id is when the running container is using an older build of
+  // normalizePerson that pre-dates the apollo_id field — i.e. a module-cache
+  // miss after a Render deploy. Surface it loudly so the next time it happens
+  // we catch it in the logs instead of from a UI complaint.
+  const withId = leads.filter(l => l && l.apollo_id).length;
+  if (leads.length > 0 && withId === 0) {
+    console.warn(`[lead_list] ⚠ 0/${leads.length} leads have apollo_id — `
       + `normalizePerson is running stale code (no people-match possible). `
       + `Force a clearCache redeploy on Render and rerun this job.`);
-  } else if (deduped.length > 0 && withId < deduped.length) {
-    console.warn(`[lead_list] ${withId}/${deduped.length} leads have apollo_id — partial match coverage`);
+  } else if (leads.length > 0 && withId < leads.length) {
+    console.warn(`[lead_list] ${withId}/${leads.length} leads have apollo_id — partial match coverage`);
   }
-  return { leads: deduped, sizeFallback };
+  return { leads, sizeFallback };
 }
 const PARKING_SIGNALS = ['domain for sale','this domain is for sale','buy this domain','coming soon','under construction','parked by','domain parking'];
 // ── Jina AI Reader — JS-rendering-aware website scraper ─────────────────────
@@ -2117,6 +2197,7 @@ function normalizePerson(p, source) {
     title:               p.title,
     company,
     company_size:        fmtEmp(employeeCount),
+    has_email:           !!p.has_email,                                 // Apollo search flag — true means people/match can return an address. Used by finalizeLeadList to select reachable leads.
     website,
     linkedin_url:        p.linkedin_url || null,                        // display URL — company LI fills this in via hydration; reveal swaps in personal LI
     company_linkedin_url: null,                                         // populated by enrichLeadsWithCompanyData
@@ -2514,10 +2595,15 @@ async function guaranteedLeadSearch(sanitizedPayload, confidenceMap, relaxationO
 
   const apolloPeopleSearch = async (payload) => {
     try {
+      // per_page goes AFTER the spread so it always wins — a translator-built
+      // payload that carries its own per_page can't shrink the pool. We pull a
+      // deep page (Apollo caps api_search at 100/page; 200 returns 0) so
+      // finalizeLeadList has enough unique companies to select 25 *with emails*
+      // from, instead of just the first 25 by rank. Floored at MIN_LEADS.
       const body = {
-        per_page: Math.max(payload.per_page || 50, MIN_LEADS),
         page: 1,
-        ...payload
+        ...payload,
+        per_page: Math.min(100, Math.max(payload.per_page || 100, MIN_LEADS))
       };
       // sort_by_field: 'person_name' was rejected by Apollo's api_search backend
       // ("Fielddata is disabled on [person_name] in [people_v5]" — Elasticsearch
@@ -2612,7 +2698,7 @@ async function guaranteedLeadSearch(sanitizedPayload, confidenceMap, relaxationO
       // Nuclear fallback — keep titles + any protected filters (geo and/or industry)
       const nuclear = {
         person_titles: currentPayload.person_titles,
-        per_page: 25
+        per_page: 100
       };
       if (currentPayload.organization_locations) nuclear.organization_locations = currentPayload.organization_locations;
       if (currentPayload.person_locations) nuclear.person_locations = currentPayload.person_locations;
@@ -2651,7 +2737,10 @@ async function guaranteedLeadSearch(sanitizedPayload, confidenceMap, relaxationO
   }
 
   return {
-    leads: results.people?.slice(0, 50) || [],
+    // Hand the full deep page to finalizeLeadList — it dedups by company and
+    // selects the 25 reachable leads. Capping at 50 here used to throw away
+    // half the has_email candidates before selection.
+    leads: results.people?.slice(0, 100) || [],
     totalAvailable: results.total_entries,
     finalPayload: currentPayload,
     relaxationLog: log,
