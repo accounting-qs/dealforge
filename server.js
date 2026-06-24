@@ -4995,23 +4995,46 @@ async function workerHeartbeat() {
 }
 
 async function getWorkerConflict() {
-  // Live workers seen in the last 5 minutes.
-  const since = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+  const now = Date.now();
+  const WINDOW_MS       = 150 * 1000; // seen this recently → "live" (heartbeat is every 60s, so 2 missed beats of slack)
+  const DEPLOY_GRACE_MS = 120 * 1000; // a version split younger than this is a deploy handoff, not a real conflict
+
+  // Live workers seen within the window.
+  const since = new Date(now - WINDOW_MS).toISOString();
   const hb = await supabaseRequest('GET',
-    `/rest/v1/worker_heartbeat?last_seen=gte.${since}&select=instance_id,service_name,commit_sha,last_seen&order=last_seen.desc`);
+    `/rest/v1/worker_heartbeat?last_seen=gte.${since}&select=instance_id,service_name,commit_sha,last_seen,started_at&order=last_seen.desc`);
   const instances = Array.isArray(hb.body) ? hb.body : [];
   const liveVersions = [...new Set(instances.map(i => i.commit_sha).filter(Boolean))];
 
+  // A Render zero-downtime deploy briefly runs the new build alongside the
+  // draining old one, so >1 live version is EXPECTED for a few seconds during a
+  // deploy and is NOT a real conflict. Two things stop that from crying wolf:
+  //   1. The draining instance deletes its own heartbeat row on SIGTERM (see the
+  //      shutdown handler), so the split usually disappears within seconds.
+  //   2. Grace gate below: if the youngest live worker booted < DEPLOY_GRACE_MS
+  //      ago we're mid-handoff — suppress. A genuine duplicate (a stray worker
+  //      that's still polling, e.g. an orphaned Railway process) outlives the
+  //      grace because it keeps heartbeating, and a SIGKILLed instance ages out
+  //      of the 150s window. Either way a *real* split surfaces; a deploy doesn't.
+  const startMs = instances.map(i => Date.parse(i.started_at)).filter(Number.isFinite);
+  const newestStartMs = startMs.length ? Math.max(...startMs) : 0;
+  const withinDeployGrace = newestStartMs > 0 && (now - newestStartMs) < DEPLOY_GRACE_MS;
+  const versionSplit = liveVersions.length > 1 && !withinDeployGrace;
+
   // Tasks claimed in the last 30 min by a worker that didn't stamp a version =
-  // a pre-beacon (stale) process. Catches the stale worker even though it never
-  // writes a heartbeat. Once every live worker runs beacon code, this is 0.
-  const taskSince = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+  // a pre-beacon (stale) process. Definitive (no grace) — it never heartbeats.
+  const taskSince = new Date(now - 30 * 60 * 1000).toISOString();
   const unstamped = await supabaseRequest('GET',
     `/rest/v1/tasks?started_at=gte.${taskSince}&worker_version=is.null&status=in.(processing,completed,failed,needs_input)&select=id&limit=1`);
   const hasUnstamped = Array.isArray(unstamped.body) && unstamped.body.length > 0;
 
-  const conflict = liveVersions.length > 1 || hasUnstamped;
-  return { conflict, liveVersions, instances, staleUnstampedWorker: hasUnstamped, currentVersion: BUILD_SHA };
+  const conflict = versionSplit || hasUnstamped;
+  return {
+    conflict, liveVersions, instances,
+    staleUnstampedWorker: hasUnstamped,
+    deployInProgress: liveVersions.length > 1 && withinDeployGrace, // informational: a benign handoff is happening
+    currentVersion: BUILD_SHA
+  };
 }
 
 // Start worker + recovery loops
@@ -5020,10 +5043,10 @@ if (USE_SUPABASE) {
   // in one task cycle doesn't propagate to the top-level interval and silently
   // stop the worker. The outer try/catch in processNextTask already handles most
   // cases, but an unhandled rejection from an async timer edge-case can bypass it.
-  setInterval(() => processNextTask().catch(e => console.error('[worker] Interval error:', e.message)), 3000);
-  setInterval(() => resetStuckTasks().catch(e => console.error('[recovery] Interval error:', e.message)), 2 * 60 * 1000);
+  const _taskTimer      = setInterval(() => processNextTask().catch(e => console.error('[worker] Interval error:', e.message)), 3000);
+  const _recoveryTimer  = setInterval(() => resetStuckTasks().catch(e => console.error('[recovery] Interval error:', e.message)), 2 * 60 * 1000);
   // Phase 2: 6-hour background Fireflies sync safety net
-  setInterval(() => syncFirefliesToCallLibrary().catch(e => console.error('[CallLib] Cron error:', e.message)), 6 * 60 * 60 * 1000);
+  const _calllibTimer   = setInterval(() => syncFirefliesToCallLibrary().catch(e => console.error('[CallLib] Cron error:', e.message)), 6 * 60 * 60 * 1000);
   // Version beacon: heartbeat now + every 60s, and shout if another build is live.
   workerHeartbeat().then(async () => {
     try {
@@ -5034,10 +5057,34 @@ if (USE_SUPABASE) {
       }
     } catch (e) { console.warn('[beacon] conflict check failed:', e.message); }
   });
-  setInterval(() => workerHeartbeat().catch(e => console.error('[beacon] heartbeat error:', e.message)), 60 * 1000);
+  const _heartbeatTimer = setInterval(() => workerHeartbeat().catch(e => console.error('[beacon] heartbeat error:', e.message)), 60 * 1000);
   console.log(`[worker] Started (3s interval) — build ${BUILD_SHA} on ${SERVICE_NAME}/${INSTANCE_ID}`);
   console.log('[recovery] Started (2min interval)');
   console.log('[CallLib] 6-hour background sync scheduled');
+
+  // Graceful shutdown — Render sends SIGTERM when it replaces this instance
+  // during a zero-downtime deploy. Stop polling (so the draining build can't
+  // claim new tasks), stop heartbeating, and delete our own heartbeat row so the
+  // dashboard doesn't flash a phantom "version conflict" while the new build
+  // boots. An instance that's SIGKILLed or orphaned (e.g. a stray Railway
+  // process) never runs this — which is exactly the case we DO want flagged.
+  let _shuttingDown = false;
+  async function gracefulShutdown(sig) {
+    if (_shuttingDown) return;
+    _shuttingDown = true;
+    console.log(`[worker] ${sig} — draining: stop polling + remove heartbeat (${BUILD_SHA}/${INSTANCE_ID})`);
+    clearInterval(_taskTimer); clearInterval(_recoveryTimer);
+    clearInterval(_calllibTimer); clearInterval(_heartbeatTimer);
+    try {
+      await supabaseRequest('DELETE',
+        `/rest/v1/worker_heartbeat?instance_id=eq.${encodeURIComponent(INSTANCE_ID)}`,
+        null, { 'Prefer': 'return=minimal' });
+    } catch (e) { console.warn('[worker] heartbeat cleanup failed:', e.message); }
+    // Let the DELETE round-trip land, then exit so Render can finish the cutover.
+    setTimeout(() => process.exit(0), 1500);
+  }
+  process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+  process.on('SIGINT',  () => gracefulShutdown('SIGINT'));
 } else {
   console.warn('[worker] NOT started — no Supabase config');
 }
