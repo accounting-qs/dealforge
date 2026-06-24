@@ -2074,7 +2074,7 @@ async function peopleMatchAllLeads(leads, cache = null) {
 //   4. Apply the ICP's employee-range band as a Size fallback whenever the lead
 //      itself has no company_size (the people-search response strips it on this
 //      Apollo plan tier).
-async function finalizeLeadList(rawLeads, icp, enrichmentCache = null) {
+async function finalizeLeadList(rawLeads, icp, enrichmentCache = null, progressCb = null) {
   const TARGET = 25;
   const MATCH_BUDGET = 32; // 25 target + headroom to backfill match misses
 
@@ -2122,6 +2122,14 @@ async function finalizeLeadList(rawLeads, icp, enrichmentCache = null) {
   const leads = [...selected.filter(hasUsableEmail), ...selected.filter(l => !hasUsableEmail(l))].slice(0, TARGET);
   const emailed = leads.filter(hasUsableEmail).length;
   console.log(`[lead_list] Finalize: ${deduped.length} unique companies in pool → ${leads.length} leads, ${emailed} with email (${creditsSpent} enrichment credits)`);
+
+  // Hydrate website + company LinkedIn for the final 25 only (free DDG scrape).
+  // Runs AFTER people-match so the authoritative email-domain website set by the
+  // match wins — enrichLeadsWithCompanyData only fills leads that still have no
+  // website. Moved here from fetchLeadsFromApollo so the deep paginated pool
+  // (up to ~180 unique companies) isn't scraped wholesale every run.
+  if (progressCb) await progressCb({ progress: 65, message: 'Hydrating website + company LinkedIn…' });
+  await enrichLeadsWithCompanyData(leads, progressCb);
 
   // Stale-code alarm bell. peopleMatchAllLeads filters on `l.apollo_id`; if
   // no lead has one, the match step silently does nothing and the rep ends up
@@ -2593,17 +2601,17 @@ async function guaranteedLeadSearch(sanitizedPayload, confidenceMap, relaxationO
     console.log('[Apollo] Protected filters (will not be relaxed):', [...protectedFilters]);
   }
 
-  const apolloPeopleSearch = async (payload) => {
+  const apolloPeopleSearch = async (payload, page = 1) => {
     try {
-      // per_page goes AFTER the spread so it always wins — a translator-built
+      // per_page/page go AFTER the spread so they always win — a translator-built
       // payload that carries its own per_page can't shrink the pool. We pull a
       // deep page (Apollo caps api_search at 100/page; 200 returns 0) so
       // finalizeLeadList has enough unique companies to select 25 *with emails*
       // from, instead of just the first 25 by rank. Floored at MIN_LEADS.
       const body = {
-        page: 1,
         ...payload,
-        per_page: Math.min(100, Math.max(payload.per_page || 100, MIN_LEADS))
+        per_page: Math.min(100, Math.max(payload.per_page || 100, MIN_LEADS)),
+        page
       };
       // sort_by_field: 'person_name' was rejected by Apollo's api_search backend
       // ("Fielddata is disabled on [person_name] in [people_v5]" — Elasticsearch
@@ -2736,11 +2744,46 @@ async function guaranteedLeadSearch(sanitizedPayload, confidenceMap, relaxationO
     });
   }
 
+  // ── STEP 4: Email-coverage pagination ──────────────────────────────────────
+  // Page 1 (100 contacts) of an email-sparse market often yields fewer than 25
+  // contacts that have an email — and finalizeLeadList needs 25 *emailable*
+  // unique companies for the demo. Apollo search is FREE (0 credits) and doesn't
+  // change the ~25 reveal cost, so we pull more pages of the settled payload and
+  // accumulate until we have enough emailed unique companies. A dense market
+  // hits the target on page 1 and never paginates; a sparse one (e.g. small
+  // dental/law practices) pages a few deep to find reachable leads.
+  const emailedUniqueCount = (people) => {
+    const cos = new Set();
+    for (const p of people) {
+      if (p && p.has_email && p.company) cos.add(p.company.toLowerCase().trim());
+    }
+    return cos.size;
+  };
+  const MAX_PAGES = 4; // page 1 already fetched above
+  let pooled = results.people || [];
+  let page = 1;
+  while (
+    page < MAX_PAGES &&
+    pooled.length < results.total_entries &&        // more results exist to fetch
+    emailedUniqueCount(pooled) < MIN_LEADS           // still short of 25 emailable companies
+  ) {
+    page++;
+    if (progressCb) await progressCb({ progress: Math.min(62, 54 + page * 2), message: `Gathering email-reachable leads (page ${page})…` });
+    const more = await apolloPeopleSearch(currentPayload, page);
+    if (!more.people || !more.people.length) break; // exhausted the result set
+    pooled = pooled.concat(more.people);
+  }
+  if (page > 1) {
+    log.push({ step: 'email_pagination', pagesFetched: page, pooled: pooled.length, emailedUnique: emailedUniqueCount(pooled) });
+    console.log(`[Apollo] Email-coverage pagination: ${page} pages, ${pooled.length} candidates, ${emailedUniqueCount(pooled)} emailed unique companies`);
+  }
+
   return {
-    // Hand the full deep page to finalizeLeadList — it dedups by company and
-    // selects the 25 reachable leads. Capping at 50 here used to throw away
-    // half the has_email candidates before selection.
-    leads: results.people?.slice(0, 100) || [],
+    // Hand the full accumulated pool (up to 4 pages) to finalizeLeadList — it
+    // dedups by company and selects the 25 reachable leads. The 400-cap matches
+    // MAX_PAGES × 100 so a deep sparse-market pool isn't truncated before
+    // has_email selection.
+    leads: pooled.slice(0, MAX_PAGES * 100) || [],
     totalAvailable: results.total_entries,
     finalPayload: currentPayload,
     relaxationLog: log,
@@ -3351,11 +3394,12 @@ async function fetchLeadsFromApollo(icp, progressCb) {
     console.warn('[Apollo] adjacent-TAM probe failed:', e.message);
   }
 
-  // Hydrate website + company LinkedIn via mixed_companies/search (no credit cost).
-  // People search strips these fields on this plan tier — without this step the UI
-  // shows "—" in the Website and LinkedIn columns even when the data exists in Apollo.
-  if (progressCb) await progressCb({ progress: 65, message: 'Hydrating website + company LinkedIn…' });
-  await enrichLeadsWithCompanyData(result.leads, progressCb);
+  // NOTE: website + company-LinkedIn hydration (enrichLeadsWithCompanyData) used
+  // to run here on the whole search pool. With email-coverage pagination the pool
+  // is now up to 400 candidates (~180 unique companies), so hydrating it here
+  // would fire ~180 DDG scrapes per run. It moved into finalizeLeadList, which
+  // hydrates only the final 25 selected leads — same UI result, a fraction of the
+  // lookups, and it still runs after people-match so the email-domain website wins.
 
   // Harvest real titles from the fetched leads into our own suggestion corpus.
   // The live typeahead (suggestTitles → Apollo's tags taxonomy) is the primary
@@ -6700,9 +6744,6 @@ const server = http.createServer(async (req, res) => {
             writeProgress({ status: 'running', ...snapshot })
           );
           if (result && result.leads) {
-            // Force the 95% write through even if it fell within the 700ms throttle.
-            lastWrite = 0;
-            await writeProgress({ status: 'running', progress: 95, message: 'Saving results…' });
             // Mirror handleLeadList's outreach calculation so the "Recommended/month"
             // stat refreshes with the rerun. TAM > 300K → cap at 100K/mo;
             // otherwise exhaust the market in 3 months.
@@ -6720,8 +6761,12 @@ const server = http.createServer(async (req, res) => {
             if (enrichmentCache.size) {
               console.log(`[rerun-apollo] Apollo enrichment cache: ${enrichmentCache.size} leads from prior jobs for ${job.prospect_email}`);
             }
-            const { leads: finalizedLeads } = await finalizeLeadList(result.leads, icp, enrichmentCache);
+            const { leads: finalizedLeads } = await finalizeLeadList(result.leads, icp, enrichmentCache,
+              snapshot => writeProgress({ status: 'running', ...snapshot }));
             console.log(`[rerun-apollo] Dedup: ${result.leads.length} → ${finalizedLeads.length} unique-company leads`);
+            // Force the final save-write through even if it fell within the 700ms throttle.
+            lastWrite = 0;
+            await writeProgress({ status: 'running', progress: 95, message: 'Saving results…' });
 
             // Re-read latest extracted_data so we don't clobber progress writes that
             // landed during the search (writeProgress patches extracted_data too).
