@@ -1836,13 +1836,18 @@ Return this exact JSON (null for anything not found):
   }
 }`;
 
-  const message = await anthropic.messages.create({
+  // Streamed (not .create) so the connection stays active end-to-end. A
+  // non-streaming request holds the socket open silently while Claude generates
+  // up to 3000 tokens, which lets Render's proxy / idle timeouts cut it mid-body
+  // ("Premature close"). finalMessage() returns the same Message object.
+  const stream = anthropic.messages.stream({
     model: 'claude-sonnet-4-6',
     max_tokens: 3000,
     temperature: 0,
     system: systemPrompt,
     messages: [{ role: 'user', content: userPrompt }]
   });
+  const message = await stream.finalMessage();
 
   const raw = message.content[0].text;
   return extractJsonObject(raw); // null → modal opens blank for manual entry
@@ -3588,10 +3593,13 @@ async function generateWebinarTitles(extracted, companyName, job = null, customI
   // _analysis block + per-variant _score object on top of the 12-field schema.
   // Empirically the analysis adds ~350 tokens and per-variant scores ~150 more,
   // and we don't want truncation cutting off the last variant or the closing brace.
-  const message = await anthropic.messages.create({
+  // Streamed to keep the connection alive through a 4000-token generation and
+  // avoid "Premature close" socket drops; finalMessage() yields the same Message.
+  const stream = anthropic.messages.stream({
     model: 'claude-sonnet-4-6', max_tokens: 4000, temperature: 0.7,
     system: systemPrompt, messages: [{ role: 'user', content: userPrompt }]
   });
+  const message = await stream.finalMessage();
   const raw = message.content[0].text;
   let parsed;
   parsed = extractJsonObject(raw);
@@ -3777,10 +3785,11 @@ Return this exact JSON:
     .replace(/\{\{result_delivered\}\}/g, resultDelivered || 'practical strategies')
     .replace(/\{\{customer_pain\}\}/g, customerPain || 'business owners looking to grow')
     .replace(/\{\{prospect_company\}\}/g, prospectCompany || 'the attendee\'s firm');
-  const msg = await anthropic.messages.create({
+  const stream = anthropic.messages.stream({
     model: 'claude-sonnet-4-6', max_tokens: 700, temperature: 0.7,
     messages: [{ role: 'user', content: userContent }]
   });
+  const msg = await stream.finalMessage();
   const raw = msg.content[0].text;
   return extractJsonObject(raw);
 }
@@ -4039,11 +4048,12 @@ async function handleProspectResearch(task, job) {
     let bio = null;
     if (headline) {
       const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-      const msg = await anthropic.messages.create({
+      const stream = anthropic.messages.stream({
         model: 'claude-sonnet-4-6', max_tokens: 300, temperature: 0,
         system: 'You are writing a short professional bio for a webinar host. Write in third person. 2–3 sentences maximum. Confident and credible tone. Focus on their expertise and who they help. Do not mention the webinar.',
         messages: [{ role: 'user', content: `Write a short host bio from this LinkedIn data:\n\nName: ${fullName}\nHeadline: ${headline}\nSummary: ${summary}\n\nReturn only the bio text. No labels, no markdown.` }]
       });
+      const msg = await stream.finalMessage();
       bio = msg.content[0].text.trim();
     }
 
