@@ -1023,6 +1023,7 @@ var _njManualIdActive       = false; // true while a pasted Fireflies link is th
 var _njPollTimer      = null;
 var _njPollStuck      = 0;
 var _njPollLastPct    = -1;
+var _njPollLastStep   = '';
 
 function njOpen() {
   njReset();
@@ -1045,7 +1046,7 @@ function njReset() {
   _njSelectedTranscriptSource = 'fireflies';
   _njPickerLastSelectedId = null;
   _njManualIdActive       = false;
-  _njPollLastPct = -1; _njPollStuck = 0;
+  _njPollLastPct = -1; _njPollStuck = 0; _njPollLastStep = '';
   if (_njPollTimer) { clearTimeout(_njPollTimer); _njPollTimer = null; }
   document.getElementById('nj-email').value = '';
   document.getElementById('nj-linkedin').value = '';
@@ -1095,7 +1096,7 @@ function njSearch() {
   document.getElementById('nj-results').style.display = 'none';
   document.getElementById('nj-loading').style.display = 'block';
   njSetProgress(0, 'Starting…');
-  _njPollLastPct = -1; _njPollStuck = 0;
+  _njPollLastPct = -1; _njPollStuck = 0; _njPollLastStep = '';
 
   fetch('/api/prefetch', {
     method: 'POST',
@@ -1248,14 +1249,30 @@ function njRenderPicker(candidates, selectedId) {
     var dimmed = noTx || c.dup_of_fireflies;
     var attendeesStr = (c.attendees || []).slice(0, 2).map(function(a) { return a.email || a.name; }).filter(Boolean).join(', ');
     var meta = njFormatCandidateMeta(c) + (attendeesStr ? ' · ' + attendeesStr : '') + (noTx ? ' · no transcript' : '') + (c.dup_of_fireflies ? ' · also in Fireflies' : '');
-    return '<label style="display:flex;align-items:flex-start;gap:10px;padding:8px;border-radius:6px;cursor:' + (noTx?'not-allowed':'pointer') + ';opacity:' + (dimmed?'0.55':'1') + ';background:' + (sel ? 'rgba(139,92,246,0.10)' : 'transparent') + ';border:1px solid ' + (sel ? 'rgba(139,92,246,0.35)' : 'rgba(255,255,255,0.04)') + '">'
-      +   '<input type="radio" name="nj-transcript-pick" value="' + c.id + '"' + (sel ? ' checked' : '') + (noTx ? ' disabled' : '') + ' onchange="njSelectTranscript(\'' + c.id + '\',\'' + src + '\')" style="margin-top:3px">'
-      +   '<div style="flex:1;min-width:0">'
-      +     '<div style="font-size:12.5px;color:#e4e4e7;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + (c.title || 'Untitled') + '</div>'
-      +     '<div style="font-size:11px;color:#71717a;margin-top:2px">' + meta + '</div>'
-      +   '</div>'
-      +   '<div style="flex-shrink:0;display:flex;gap:4px;align-items:center">' + njSourceBadge(src) + njMatchKindBadge(c.match_kind) + '</div>'
-      + '</label>';
+    // Dedicated "View" button — rendered as a SIBLING of the <label>, not inside
+    // it. A click anywhere inside a <label> toggles its radio, so an in-label link
+    // gets hijacked by the selection; placing the button outside the label opens
+    // the source app (Fireflies/Zoom) in a new tab cleanly. Stays bright on dimmed
+    // (no-transcript) Zoom rows so the rep can still watch the recording.
+    var vc = src === 'zoom'
+      ? { fg:'#7db8ff', bg:'rgba(45,140,255,0.14)', bd:'rgba(45,140,255,0.40)', label:'View video', app:'Zoom' }
+      : { fg:'#c4b5fd', bg:'rgba(139,92,246,0.14)', bd:'rgba(139,92,246,0.40)', label:'View transcript', app:'Fireflies' };
+    var uHref = (c.url || '').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    var viewBtn = c.url
+      ? '<a href="' + uHref + '" target="_blank" rel="noopener noreferrer" title="Open in ' + vc.app + '"'
+        + ' style="flex-shrink:0;align-self:center;display:flex;align-items:center;white-space:nowrap;padding:6px 10px;border-radius:6px;font-size:11px;font-weight:600;text-decoration:none;color:' + vc.fg + ';background:' + vc.bg + ';border:1px solid ' + vc.bd + '">' + vc.label + ' ↗</a>'
+      : '';
+    return '<div style="display:flex;align-items:stretch;gap:6px">'
+      +   '<label style="flex:1;min-width:0;display:flex;align-items:flex-start;gap:10px;padding:8px;border-radius:6px;cursor:' + (noTx?'not-allowed':'pointer') + ';opacity:' + (dimmed?'0.55':'1') + ';background:' + (sel ? 'rgba(139,92,246,0.10)' : 'transparent') + ';border:1px solid ' + (sel ? 'rgba(139,92,246,0.35)' : 'rgba(255,255,255,0.04)') + '">'
+      +     '<input type="radio" name="nj-transcript-pick" value="' + c.id + '"' + (sel ? ' checked' : '') + (noTx ? ' disabled' : '') + ' onchange="njSelectTranscript(\'' + c.id + '\',\'' + src + '\')" style="margin-top:3px">'
+      +     '<div style="flex:1;min-width:0">'
+      +       '<div style="font-size:12.5px;color:#e4e4e7;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + (c.title || 'Untitled') + '</div>'
+      +       '<div style="font-size:11px;color:#71717a;margin-top:2px">' + meta + '</div>'
+      +     '</div>'
+      +     '<div style="flex-shrink:0;display:flex;gap:4px;align-items:center">' + njSourceBadge(src) + njMatchKindBadge(c.match_kind) + '</div>'
+      +   '</label>'
+      +   viewBtn
+      + '</div>';
   }).join('') + '<label style="display:flex;align-items:center;gap:10px;padding:8px;border-radius:6px;cursor:pointer;border:1px dashed rgba(255,255,255,0.10);margin-top:4px">'
       + '<input type="radio" name="nj-transcript-pick" value="" onchange="njSelectTranscript(null)">'
       + '<div style="font-size:12px;color:#a1a1aa">Skip — build the brief without a transcript</div>'
@@ -1389,7 +1406,7 @@ function njShowBrief() {
   document.getElementById('nj-results').style.display = 'none';
   document.getElementById('nj-loading').style.display = 'block';
   njSetProgress(10, 'Submitting transcript pick…');
-  _njPollLastPct = -1; _njPollStuck = 0;
+  _njPollLastPct = -1; _njPollStuck = 0; _njPollLastStep = '';
 
   // Pass the rep-confirmed website URL through to phase 2 so the scrape uses
   // exactly what the rep saw on Step 1.
@@ -1419,9 +1436,14 @@ function njPollExtract() {
     .then(function(r) { return r.json(); })
     .then(function(j) {
       njSetProgress(j.progress || 0, j.step || '');
-      if ((j.progress || 0) === _njPollLastPct) _njPollStuck++;
-      else { _njPollStuck = 0; _njPollLastPct = j.progress || 0; }
-      if (_njPollStuck > 60) return njShowNotFound('Brief extraction stalled — please retry');
+      // Stall guard: only trip if NEITHER progress % NOR step text advances. The
+      // Claude extraction step holds progress at 50 for the whole call (and may
+      // retry on connection drops), so the threshold must outlast the backend
+      // worst case. 360 polls × 700ms ≈ 252s. A real failure surfaces via status.
+      var _pct = j.progress || 0, _stp = j.step || '';
+      if (_pct === _njPollLastPct && _stp === _njPollLastStep) _njPollStuck++;
+      else { _njPollStuck = 0; _njPollLastPct = _pct; _njPollLastStep = _stp; }
+      if (_njPollStuck > 360) return njShowNotFound('Brief extraction stalled — please retry');
       if (j.status === 'running') { _njPollTimer = setTimeout(njPollExtract, 700); return; }
       if (j.status === 'failed')  return njShowNotFound('Brief extraction failed: ' + (j.error || 'unknown'));
       _njExtractResult = j.result;
