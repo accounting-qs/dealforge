@@ -1145,6 +1145,35 @@ function njShowNotFound(msg) {
   }
 }
 
+// Map an operational backend error_kind (billing/auth/rate_limit/permission) to
+// a friendly, rep-facing warning. Returns null for ordinary failures so the
+// caller falls back to the raw technical error text.
+function njOperationalWarning(j) {
+  var K = j && j.error_kind;
+  if (K === 'billing') return { icon: '💳', title: 'AI credits ran out',
+    body: "The AI service (Anthropic) is out of credits, so the brief couldn't be generated. Add credits at console.anthropic.com → Plans &amp; Billing, then try again. This isn't a problem with this contact." };
+  if (K === 'auth') return { icon: '🔑', title: 'AI service key issue',
+    body: 'The Anthropic API key was rejected. An admin needs to check ANTHROPIC_API_KEY in the server settings, then try again.' };
+  if (K === 'rate_limit') return { icon: '⏳', title: 'AI service is busy',
+    body: 'The AI service is temporarily rate-limited or overloaded. Wait a minute and try again.' };
+  if (K === 'permission') return { icon: '🔒', title: 'AI service permission issue',
+    body: "The Anthropic key doesn't have access to this model. An admin needs to check the key's workspace/scopes." };
+  return null;
+}
+
+// Amber warning box for operational (non-bug) failures — visually distinct from
+// the red njShowNotFound error state so a rep reads it as "service hiccup, retry".
+function njShowWarning(w) {
+  document.getElementById('nj-loading').style.display = 'none';
+  var nf = document.getElementById('nj-not-found');
+  nf.style.display = 'block';
+  nf.innerHTML =
+    '<div style="border:1px solid rgba(251,191,36,0.35);background:rgba(251,191,36,0.08);border-radius:10px;padding:14px 16px;text-align:left;">' +
+      '<div style="font-size:14px;font-weight:600;color:#fcd34d;margin-bottom:6px;">' + w.icon + ' ' + w.title + '</div>' +
+      '<div style="font-size:12.5px;line-height:1.55;color:#d4d4d8;">' + w.body + '</div>' +
+    '</div>';
+}
+
 function njRenderPhase1(result) {
   document.getElementById('nj-loading').style.display = 'none';
   var email = (document.getElementById('nj-email').value || '').trim().toLowerCase();
@@ -1449,7 +1478,10 @@ function njPollExtract() {
       else { _njPollStuck = 0; _njPollLastPct = _pct; _njPollLastStep = _stp; }
       if (_njPollStuck > 360) return njShowNotFound('Brief extraction stalled — please retry');
       if (j.status === 'running') { _njPollTimer = setTimeout(njPollExtract, 700); return; }
-      if (j.status === 'failed')  return njShowNotFound('Brief extraction failed: ' + (j.error || 'unknown'));
+      if (j.status === 'failed') {
+        var _w = njOperationalWarning(j);
+        return _w ? njShowWarning(_w) : njShowNotFound('Brief extraction failed: ' + (j.error || 'unknown'));
+      }
       _njExtractResult = j.result;
       njPopulateStep2(j.result);
     })

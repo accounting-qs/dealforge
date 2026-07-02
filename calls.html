@@ -1057,6 +1057,18 @@ function briefShowError(msg) {
   document.getElementById('brief-subtitle').textContent = msg;
 }
 
+// Map an operational backend error_kind (billing/auth/rate_limit/permission) to
+// a friendly, rep-facing one-liner. Returns null for ordinary failures so the
+// caller falls back to the raw technical error text.
+function briefOperationalWarning(j) {
+  var K = j && j.error_kind;
+  if (K === 'billing') return '⚠️ AI credits ran out — the Anthropic account is out of credits, so the brief could not be generated. Add credits at console.anthropic.com → Plans & Billing, then try again. (Not a problem with this contact.)';
+  if (K === 'auth') return '⚠️ AI service key issue — the Anthropic API key was rejected. An admin needs to check ANTHROPIC_API_KEY, then try again.';
+  if (K === 'rate_limit') return '⚠️ AI service is busy — temporarily rate-limited. Wait a minute and try again.';
+  if (K === 'permission') return "⚠️ AI service permission issue — the Anthropic key can't access this model. An admin needs to check its workspace/scopes.";
+  return null;
+}
+
 // Poll loop for /api/prefetch/:id. Re-uses the same brief-progress bar for
 // phase 2 (extract-brief) by handing off in briefPollExtract().
 var _briefPollTimer = null;
@@ -1395,7 +1407,7 @@ function briefPollExtract() {
       else { _briefPollStuck = 0; _briefPollLastPct = _pct; _briefPollLastStep = _stp; }
       if (_briefPollStuck > 360) return briefShowError('Brief extraction stalled — please retry');
       if (j.status === 'running') { _briefPollTimer = setTimeout(briefPollExtract, 700); return; }
-      if (j.status === 'failed')  return briefShowError('Brief extraction failed: ' + (j.error || 'unknown'));
+      if (j.status === 'failed')  return briefShowError(briefOperationalWarning(j) || ('Brief extraction failed: ' + (j.error || 'unknown')));
       // status === 'completed'
       _briefExtractResult = j.result;
       briefPopulateStep2(j.result);

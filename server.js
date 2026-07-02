@@ -1781,6 +1781,36 @@ async function scrapeWebsite(domain) {
 // backoff. Every Claude call in this codebase is idempotent (we only read the
 // final text), so re-running is safe. finalMessage() returns the same Message
 // object messages.create() would have, so callers are unchanged.
+// Pull the human-readable reason out of an Anthropic SDK error. The SDK's
+// err.message is a "400 {json envelope}" string, so callers that slice
+// err.message truncate mid-envelope and lose the actual sentence (that's how a
+// "credit balance is too low" 400 showed up as an unreadable "…invalid_request_
+// error","message":"). The real reason lives at err.error.error.message.
+function claudeErrorReason(err) {
+  if (!err) return 'unknown error';
+  const api = err.error && (err.error.error || err.error);
+  if (api && typeof api.message === 'string') return api.message;
+  return String(err.message || err.name || 'unknown error');
+}
+
+// Classify an Anthropic failure into an operator-actionable category. Billing,
+// auth, and permission failures are NOT bugs — they need a human to top up
+// credits or fix the key — so we lead with a plain, actionable message instead
+// of a raw "400 invalid_request_error". Returns { kind, message }.
+function classifyClaudeError(err) {
+  const status = err && (err.status || err.statusCode);
+  const reason = claudeErrorReason(err);
+  if (/credit balance is too low|purchase credits|plans & billing|billing|insufficient (funds|quota)/i.test(reason))
+    return { kind: 'billing', message: `Anthropic API credits exhausted — top up at console.anthropic.com › Plans & Billing (this is a billing issue, not a code bug). Original: ${reason}` };
+  if (status === 401 || /authentication_error|invalid x-api-key|could not resolve authentication/i.test(reason))
+    return { kind: 'auth', message: `Anthropic API key rejected — check ANTHROPIC_API_KEY in the server environment. Original: ${reason}` };
+  if (status === 403 || /permission_error|permission denied/i.test(reason))
+    return { kind: 'permission', message: `Anthropic API key lacks permission for this request — check the key's workspace/scopes. Original: ${reason}` };
+  if (status === 429 || /rate limit|overloaded/i.test(reason))
+    return { kind: 'rate_limit', message: `Anthropic API rate-limited/overloaded — retry shortly. Original: ${reason}` };
+  return { kind: 'api', message: reason };
+}
+
 function isRetryableClaudeError(err) {
   if (!err) return false;
   const msg  = String(err.message || '');
@@ -1827,7 +1857,9 @@ async function claudeMessage(anthropic, params, label = 'claude') {
       const dt = Date.now() - t0;
       lastErr = err;
       const retryable = isRetryableClaudeError(err);
-      const tag = `a${attempt}:${(err && err.name) || 'Error'}:${String((err && err.message) || '').slice(0, 70)}(${dt}ms,rt=${retryable})`;
+      // Use the extracted API reason (not the raw "400 {json}" envelope) and a
+      // generous cap so the actual failure sentence is always legible.
+      const tag = `a${attempt}:${(err && (err.status || err.name)) || 'Error'}:${claudeErrorReason(err).slice(0, 200)}(${dt}ms,rt=${retryable})`;
       trail.push(tag);
       console.warn(`[${label}] Claude attempt ${attempt}/${MAX_ATTEMPTS} failed — ${tag}`);
       if (attempt < MAX_ATTEMPTS && retryable) {
@@ -1837,10 +1869,13 @@ async function claudeMessage(anthropic, params, label = 'claude') {
       break;
     }
   }
-  // Surface the full per-attempt trail so a failed job's error is diagnosable
-  // from the dashboard / API without server-log access.
-  const e = new Error(`Claude failed after ${trail.length} attempt(s) [${label}]: ${trail.join(' | ')}`);
+  // Lead with an operator-actionable message (billing/auth/etc.) so the failure
+  // is instantly legible on the dashboard, then keep the full per-attempt trail
+  // for diagnosis without server-log access.
+  const classified = classifyClaudeError(lastErr);
+  const e = new Error(`${classified.message} [${label}] — Claude failed after ${trail.length} attempt(s): ${trail.join(' | ')}`);
   e.cause = lastErr;
+  e.claudeErrorKind = classified.kind;
   throw e;
 }
 
@@ -5885,11 +5920,12 @@ const server = http.createServer(async (req, res) => {
     }
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
-      status:   job.status,
-      progress: job.progress,
-      step:     job.step,
-      result:   job.result || null,
-      error:    job.error  || null
+      status:     job.status,
+      progress:   job.progress,
+      step:       job.step,
+      result:     job.result || null,
+      error:      job.error  || null,
+      error_kind: job.error_kind || null
     }));
     return;
   }
@@ -6098,7 +6134,9 @@ const server = http.createServer(async (req, res) => {
           });
         } catch (e) {
           console.error(`[extract-brief ${id.slice(0,8)}] failed:`, e.message);
-          setProgress(id, { progress: 100, status: 'failed', step: 'Failed', error: e.message });
+          // error_kind (billing/auth/rate_limit/…) lets the UI show a friendly,
+          // rep-facing warning instead of the raw technical failure string.
+          setProgress(id, { progress: 100, status: 'failed', step: 'Failed', error: e.message, error_kind: e.claudeErrorKind || null });
         }
       })();
     } catch(e) {
@@ -6121,11 +6159,12 @@ const server = http.createServer(async (req, res) => {
     }
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
-      status:   job.status,
-      progress: job.progress,
-      step:     job.step,
-      result:   job.result || null,
-      error:    job.error  || null
+      status:     job.status,
+      progress:   job.progress,
+      step:       job.step,
+      result:     job.result || null,
+      error:      job.error  || null,
+      error_kind: job.error_kind || null
     }));
     return;
   }
