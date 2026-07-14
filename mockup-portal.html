@@ -600,6 +600,65 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
 .ramp-table tr.hot td { background: rgba(255,255,255,0.04); }
 .ramp-ramp-tag { display: inline-block; font-size: 9px; font-weight: 700; color: #52525b; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.07); border-radius: 4px; padding: 1px 5px; margin-left: 5px; vertical-align: middle; letter-spacing: 0.04em; }
 
+/* ── Sub-tabs (nested nav inside a top-level tab) ────────── */
+.subtab-nav { display: flex; gap: 6px; justify-content: center; flex-wrap: wrap; padding: 20px 20px 0; max-width: 1280px; margin: 0 auto; }
+.subtab-btn { font-size: 13px; font-weight: 600; color: #71717a; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 999px; padding: 7px 16px; cursor: pointer; transition: all 120ms; font-family: inherit; }
+.subtab-btn:hover { color: #a1a1aa; border-color: rgba(255,255,255,0.16); }
+.subtab-btn.active { color: #34d399; background: rgba(52,211,153,0.1); border-color: rgba(52,211,153,0.3); }
+.subtab-panel { display: none; }
+.subtab-panel.active { display: block; }
+/* ── "How We Build It" / "What We Optimize" static visuals ── */
+.vis-wrap { max-width: 1120px; margin: 0 auto; padding: 52px 44px 64px; }
+.vis-title { font-size: 34px; font-weight: 800; color: #f4f4f5; letter-spacing: -0.7px; margin-bottom: 10px; }
+.vis-sub { font-size: 16px; color: #a1a1aa; margin-bottom: 44px; max-width: 720px; line-height: 1.55; }
+
+/* Process flow: source engine → 5-step timeline */
+.vis-source-row { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 40px; }
+.vis-source { flex: 1; min-width: 240px; display: flex; align-items: center; gap: 16px; background: linear-gradient(135deg, rgba(52,211,153,0.14), rgba(52,180,51,0.06)); border: 1px solid rgba(52,211,153,0.3); border-radius: 18px; padding: 22px 24px; }
+.vis-source.expert { background: linear-gradient(135deg, rgba(251,191,36,0.12), rgba(255,255,255,0.02)); border-color: rgba(251,191,36,0.28); }
+.vis-source-emoji { font-size: 46px; line-height: 1; flex-shrink: 0; }
+.vis-source-txt { display: flex; flex-direction: column; gap: 4px; }
+.vis-source-label { font-size: 17px; font-weight: 700; color: #f4f4f5; }
+.vis-source-note { font-size: 13px; color: #a1a1aa; line-height: 1.45; }
+.vis-plus { font-size: 26px; font-weight: 300; color: #52525b; flex-shrink: 0; }
+
+.vis-timeline { display: grid; grid-template-columns: repeat(5, 1fr); gap: 0; position: relative; }
+.vis-tstep { position: relative; padding: 0 12px; }
+.vis-tstep:not(:last-child)::after { content: ''; position: absolute; top: 26px; right: -6px; width: 12px; height: 12px; border-top: 2px solid rgba(52,211,153,0.4); border-right: 2px solid rgba(52,211,153,0.4); transform: rotate(45deg); }
+.vis-tnode { width: 54px; height: 54px; border-radius: 15px; background: linear-gradient(135deg, rgba(52,211,153,0.16), rgba(52,180,51,0.06)); border: 1px solid rgba(52,211,153,0.3); display: flex; align-items: center; justify-content: center; font-size: 26px; margin-bottom: 16px; }
+.vis-tnum { font-size: 11px; font-weight: 800; letter-spacing: 0.1em; color: #34d399; margin-bottom: 6px; }
+.vis-tstep-title { font-size: 15px; font-weight: 700; color: #e4e4e7; margin-bottom: 6px; line-height: 1.25; }
+.vis-tstep-desc { font-size: 13px; color: #9ca3af; line-height: 1.5; }
+@media (max-width: 860px) { .vis-timeline { grid-template-columns: 1fr 1fr; gap: 24px 0; } .vis-tstep::after { display: none; } }
+
+/* Optimization: conversion-rate compounding chart + representative funnel */
+.vis-card { background: rgba(255,255,255,0.025); border: 1px solid rgba(255,255,255,0.08); border-radius: 18px; padding: 28px 30px; margin-bottom: 22px; }
+.vis-card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 26px; }
+.vis-card-title { font-size: 17px; font-weight: 700; color: #e4e4e7; }
+.vis-card-kpi { font-size: 15px; font-weight: 700; color: #34d399; }
+.vis-card-kpi span { color: #71717a; font-weight: 500; font-size: 13px; }
+.vis-rate { display: grid; grid-template-columns: repeat(5, 1fr); gap: 20px; align-items: end; height: 240px; }
+.vis-rate-col { display: flex; flex-direction: column; align-items: center; justify-content: flex-end; gap: 10px; height: 100%; }
+.vis-rate-val { font-size: 20px; font-weight: 800; color: #34d399; letter-spacing: -0.5px; }
+.vis-rate-bar { width: 100%; max-width: 68px; border-radius: 6px 6px 2px 2px; background: linear-gradient(180deg, #34d399, #059669); box-shadow: 0 0 24px rgba(52,211,153,0.15); }
+.vis-rate-label { font-size: 12px; font-weight: 600; color: #71717a; }
+/* Representative funnel — horizontal narrowing bars */
+.vis-funnel2 { display: flex; flex-direction: column; gap: 8px; }
+.vis-fstage { display: flex; align-items: center; gap: 16px; }
+.vis-fstage-label { flex: 0 0 130px; font-size: 13px; font-weight: 600; color: #a1a1aa; text-align: right; }
+.vis-fstage-track { flex: 1; }
+.vis-fstage-bar { height: 30px; border-radius: 6px; background: linear-gradient(90deg, #34b433, #34d399); display: flex; align-items: center; padding: 0 12px; }
+.vis-fstage-val { font-size: 12px; font-weight: 700; color: #052e16; }
+.vis-legend { display: flex; gap: 18px; flex-wrap: wrap; font-size: 13px; color: #9ca3af; margin-top: 8px; line-height: 1.5; }
+.vis-legend span { display: inline-flex; align-items: center; gap: 6px; }
+/* Lever map (What We Optimize) */
+.vis-levers { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px,1fr)); gap: 14px; margin-top: 8px; }
+.vis-lever { background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-left: 3px solid #34d399; border-radius: 12px; padding: 18px 20px; transition: border-color 140ms, background 140ms; }
+.vis-lever:hover { border-left-color: #34d399; background: rgba(52,211,153,0.05); }
+.vis-lever-idx { font-size: 11px; font-weight: 800; color: #34d399; opacity: 0.55; margin-bottom: 6px; }
+.vis-lever-name { font-size: 15px; font-weight: 700; color: #e4e4e7; margin-bottom: 5px; }
+.vis-lever-desc { font-size: 13px; color: #9ca3af; line-height: 1.5; }
+
 /* ── Onboarding Tab ──────────────────────────────────── */
 .ob-wrap { max-width: 1060px; margin: 0 auto; padding: 52px 40px; }
 .ob-title { font-size: 30px; font-weight: 700; color: #e4e4e7; letter-spacing: -0.5px; margin-bottom: 6px; }
@@ -1073,6 +1132,15 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
 <!-- TAB 3: WEBINAR EXPERIENCE      -->
 <!-- ═══════════════════════════════ -->
 <div class="tab-content" id="tab-2">
+  <!-- Sub-tabs: Live Preview (existing) · How We Build It · Continuous Optimization -->
+  <div class="subtab-nav">
+    <button class="subtab-btn active" data-subgroup="webinar" data-subidx="0" onclick="switchSubTab('webinar',0)">Live Preview</button>
+    <button class="subtab-btn" data-subgroup="webinar" data-subidx="1" onclick="switchSubTab('webinar',1)">How We Build It</button>
+    <button class="subtab-btn" data-subgroup="webinar" data-subidx="2" onclick="switchSubTab('webinar',2)">Continuous Optimization</button>
+  </div>
+
+  <!-- ── Sub-tab 0: Live Preview (the existing hero + chat + rep tools) ── -->
+  <div class="subtab-panel active" data-subgroup="webinar" data-subidx="0">
   <div class="webinar-wrap">
     <div class="webinar-top-bar">
       <div style="display:flex;align-items:center;gap:16px;">
@@ -1275,6 +1343,80 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
       <div id="wap-modal-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:10px;"></div>
     </div>
   </div>
+  </div><!-- /subtab-panel 0 (Live Preview) -->
+
+  <!-- ── Sub-tab 1: How We Build It — AI+Expert engine → 5-step timeline ── -->
+  <div class="subtab-panel" data-subgroup="webinar" data-subidx="1">
+    <div class="vis-wrap">
+      <div class="vis-title">How your webinar gets built</div>
+      <div class="vis-sub">A joint approach between our internally-trained AI and a top-level growth expert. You show up and deliver — we build the engine behind it.</div>
+
+      <div class="vis-source-row">
+        <div class="vis-source">
+          <div class="vis-source-emoji">🧠</div>
+          <div class="vis-source-txt">
+            <div class="vis-source-label">AI Research Engine</div>
+            <div class="vis-source-note">Trained on your knowledge + 5 years of what converts across 1,400+ webinars.</div>
+          </div>
+        </div>
+        <div class="vis-plus">+</div>
+        <div class="vis-source expert">
+          <div class="vis-source-emoji">🎓</div>
+          <div class="vis-source-txt">
+            <div class="vis-source-label">Top Growth Expert</div>
+            <div class="vis-source-note">A human strategist who finds the angle and derives it with you.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="vis-timeline">
+        <div class="vis-tstep"><div class="vis-tnode">🔎</div><div class="vis-tnum">STEP 01</div><div class="vis-tstep-title">Research</div><div class="vis-tstep-desc">The AI bot ingests your expertise, offer, and audience — paired with the expert.</div></div>
+        <div class="vis-tstep"><div class="vis-tnode">🎯</div><div class="vis-tnum">STEP 02</div><div class="vis-tstep-title">Find the angle</div><div class="vis-tstep-desc">The expert pinpoints the highest-converting angle for your market.</div></div>
+        <div class="vis-tstep"><div class="vis-tnode">📝</div><div class="vis-tnum">STEP 03</div><div class="vis-tstep-title">Build the outline</div><div class="vis-tstep-desc">Expert + AI produce the outline: narrative arc, hooks, objection handling.</div></div>
+        <div class="vis-tstep"><div class="vis-tnode">🖼️</div><div class="vis-tnum">STEP 04</div><div class="vis-tstep-title">Slides &amp; talking points</div><div class="vis-tstep-desc">Turned into slides and talking points, branded to you.</div></div>
+        <div class="vis-tstep"><div class="vis-tnode">🤝</div><div class="vis-tnum">STEP 05</div><div class="vis-tstep-title">Facilitation</div><div class="vis-tstep-desc">We derive the final presentation with you so it sounds like you — not a template.</div></div>
+      </div>
+    </div>
+  </div><!-- /subtab-panel 1 -->
+
+  <!-- ── Sub-tab 2: Continuous Optimization — rate compounds + funnel ── -->
+  <div class="subtab-panel" data-subgroup="webinar" data-subidx="2">
+    <div class="vis-wrap">
+      <div class="vis-title">We optimize your webinar to convert</div>
+      <div class="vis-sub">We watch the end-to-end numbers every cycle and tighten the angle, slides, targeting, and follow-up. Conversion compounds — a typical engagement climbs from low single digits toward a 10–30% booked-call rate.</div>
+
+      <div class="vis-card">
+        <div class="vis-card-head">
+          <div class="vis-card-title">Attendee → booked-call rate, by webinar run</div>
+          <div class="vis-card-kpi">~30% <span>by Run 5</span></div>
+        </div>
+        <div class="vis-rate">
+          <div class="vis-rate-col"><div class="vis-rate-val">3%</div><div class="vis-rate-bar" style="height:10%"></div><div class="vis-rate-label">Run 1</div></div>
+          <div class="vis-rate-col"><div class="vis-rate-val">6%</div><div class="vis-rate-bar" style="height:20%"></div><div class="vis-rate-label">Run 2</div></div>
+          <div class="vis-rate-col"><div class="vis-rate-val">13%</div><div class="vis-rate-bar" style="height:43%"></div><div class="vis-rate-label">Run 3</div></div>
+          <div class="vis-rate-col"><div class="vis-rate-val">21%</div><div class="vis-rate-bar" style="height:70%"></div><div class="vis-rate-label">Run 4</div></div>
+          <div class="vis-rate-col"><div class="vis-rate-val">30%</div><div class="vis-rate-bar" style="height:100%"></div><div class="vis-rate-label">Run 5</div></div>
+        </div>
+      </div>
+
+      <div class="vis-card">
+        <div class="vis-card-head">
+          <div class="vis-card-title">Your funnel at full velocity</div>
+          <div class="vis-card-kpi"><span>invite → registration → attend → booked call → sale</span></div>
+        </div>
+        <div class="vis-funnel2">
+          <div class="vis-fstage"><div class="vis-fstage-label">Invites</div><div class="vis-fstage-track"><div class="vis-fstage-bar" style="width:100%"><span class="vis-fstage-val">100%</span></div></div></div>
+          <div class="vis-fstage"><div class="vis-fstage-label">Registrations</div><div class="vis-fstage-track"><div class="vis-fstage-bar" style="width:62%"><span class="vis-fstage-val">Warm, opted-in</span></div></div></div>
+          <div class="vis-fstage"><div class="vis-fstage-label">Attendees</div><div class="vis-fstage-track"><div class="vis-fstage-bar" style="width:44%"><span class="vis-fstage-val">In the room</span></div></div></div>
+          <div class="vis-fstage"><div class="vis-fstage-label">Booked calls</div><div class="vis-fstage-track"><div class="vis-fstage-bar" style="width:26%"><span class="vis-fstage-val">Sales-ready</span></div></div></div>
+          <div class="vis-fstage"><div class="vis-fstage-label">Sales</div><div class="vis-fstage-track"><div class="vis-fstage-bar" style="width:14%"><span class="vis-fstage-val">Closed</span></div></div></div>
+        </div>
+        <div class="vis-legend">
+          <span>📈 We review drop-off at every stage and optimize the weakest link first.</span>
+        </div>
+      </div>
+    </div>
+  </div><!-- /subtab-panel 2 -->
 </div>
 
 <!-- ═══════════════════════════════ -->
@@ -1489,6 +1631,14 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
 <!-- TAB 5: ONBOARDING              -->
 <!-- ═══════════════════════════════ -->
 <div class="tab-content" id="tab-onboarding">
+  <!-- Sub-tabs: Roadmap (existing) · What We Optimize -->
+  <div class="subtab-nav">
+    <button class="subtab-btn active" data-subgroup="onboarding" data-subidx="0" onclick="switchSubTab('onboarding',0)">Roadmap</button>
+    <button class="subtab-btn" data-subgroup="onboarding" data-subidx="1" onclick="switchSubTab('onboarding',1)">What We Optimize</button>
+  </div>
+
+  <!-- ── Sub-tab 0: Roadmap (existing) ── -->
+  <div class="subtab-panel active" data-subgroup="onboarding" data-subidx="0">
   <div class="ob-wrap">
     <h2 class="ob-title">Your Onboarding Roadmap</h2>
     <p class="ob-sub">From signed agreement to full-velocity revenue engine — six months, step by step.</p>
@@ -1628,6 +1778,28 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
       </div>
     </div>
   </div>
+  </div><!-- /subtab-panel 0 (Roadmap) -->
+
+  <!-- ── Sub-tab 1: What We Optimize — continuous-improvement lever map ── -->
+  <div class="subtab-panel" data-subgroup="onboarding" data-subidx="1">
+    <div class="vis-wrap">
+      <div class="vis-title">What we optimize during the engagement</div>
+      <div class="vis-sub">This isn't set-and-forget. Across the first months we continuously tune every lever in your funnel — end to end — so performance compounds. A dedicated innovation team is always finding the next improvement.</div>
+      <div class="vis-levers">
+        <div class="vis-lever"><div class="vis-lever-idx">01</div><div class="vis-lever-name">Offering &amp; Business Model</div><div class="vis-lever-desc">Sharpen the offer and pricing so the funnel has the strongest possible thing to sell.</div></div>
+        <div class="vis-lever"><div class="vis-lever-idx">02</div><div class="vis-lever-name">Webinar Angle</div><div class="vis-lever-desc">Test and refine the core angle for the highest-converting hook.</div></div>
+        <div class="vis-lever"><div class="vis-lever-idx">03</div><div class="vis-lever-name">Messaging</div><div class="vis-lever-desc">Invite copy, subject lines, and positioning tuned to your market's language.</div></div>
+        <div class="vis-lever"><div class="vis-lever-idx">04</div><div class="vis-lever-name">Targeting</div><div class="vis-lever-desc">Tighten the ICP and lead segments so you reach the right people at scale.</div></div>
+        <div class="vis-lever"><div class="vis-lever-idx">05</div><div class="vis-lever-name">Time &amp; Reminders</div><div class="vis-lever-desc">Send timing and reminder cadence optimized for show-up rate.</div></div>
+        <div class="vis-lever"><div class="vis-lever-idx">06</div><div class="vis-lever-name">Webinar Presentation</div><div class="vis-lever-desc">Slides, narrative, and live facilitation refined every cycle from the numbers.</div></div>
+        <div class="vis-lever"><div class="vis-lever-idx">07</div><div class="vis-lever-name">Nurturing</div><div class="vis-lever-desc">Follow-up sequences for attendees and no-shows to capture the last 30%.</div></div>
+        <div class="vis-lever"><div class="vis-lever-idx">08</div><div class="vis-lever-name">Sales Calls</div><div class="vis-lever-desc">Booked-call framework and objection handling dialed in with your team.</div></div>
+      </div>
+      <div class="vis-legend" style="margin-top:18px;">
+        <span>🔁 Reps can point to this when explaining how we improve results over the first few months — use it or skip it depending on time.</span>
+      </div>
+    </div>
+  </div><!-- /subtab-panel 1 -->
 </div>
 
 <!-- ═══════════════════════════════ -->
@@ -1925,6 +2097,16 @@ function switchTab(i, opts) {
   if (newUrl !== window.location.pathname + window.location.search) {
     history.replaceState({ tab: i }, '', newUrl);
   }
+}
+
+// Sub-tab nav (nested inside a top-level tab). Buttons and panels are paired by
+// data-subgroup (the group name) + data-subidx (0-based). Static/purely visual —
+// no URL change, no data hydration.
+function switchSubTab(group, idx) {
+  document.querySelectorAll('.subtab-btn[data-subgroup="' + group + '"]').forEach(b =>
+    b.classList.toggle('active', Number(b.dataset.subidx) === idx));
+  document.querySelectorAll('.subtab-panel[data-subgroup="' + group + '"]').forEach(p =>
+    p.classList.toggle('active', Number(p.dataset.subidx) === idx));
 }
 
 function _tabIndexFromPath() {
@@ -2825,14 +3007,33 @@ function buildCompatSession(job) {
   try { window._latestJobTasks = tasks; window._latestJob = job; } catch(_) {}
   const meta = ext._meta || {};
   const existingGen = ext._generated || {};
-  
+
+  // ── Headline TAM resolution ────────────────────────────────────────────────
+  // The tam_estimate task (LLM-broadened Apollo) owns the headline TAM. It wins
+  // over the legacy _generated.tam_total (Apollo narrow count, written by
+  // rerun-apollo) so a lead re-run never clobbers the estimate. If the task is
+  // absent/failed/0, we fall back to _generated → lead_list Apollo total, so a
+  // job never regresses below the old behavior. tam_floor / confidence drive the
+  // "estimated" badge + "verified in Apollo: N" subline.
+  const tamTask = (tasks.tam_estimate && tasks.tam_estimate.output) || null;
+  const tamFromEstimate = !!(tamTask && tamTask.tam_total);
+  const tamTotalResolved = (tamTask && tamTask.tam_total) || existingGen.tam_total || tasks.lead_list?.output?.total || null;
+  const tamSourceResolved = tamFromEstimate
+    ? (tamTask.tam_source || 'llm_broadened_apollo')
+    : (existingGen.tam_source || tasks.lead_list?.output?.tamSource || null);
+  const recOutResolved = (tamTask && tamTask.recommendedOutreach) || existingGen.recommendedOutreach || tasks.lead_list?.output?.recommendedOutreach || null;
+  const tamFloorResolved = (tamTask && tamTask.tam_floor) ?? existingGen.tam_total ?? tasks.lead_list?.output?.total ?? null;
+  const tamConfidenceResolved = (tamTask && Number.isFinite(tamTask.confidence)) ? tamTask.confidence : null;
+
   ext._generated = applyOverrides({
     webinarTitles:        (tasks.webinar_titles && tasks.webinar_titles.output) || existingGen.webinarTitles || null,
     leads:                existingGen.leads || tasks.lead_list?.output?.leads || [],
-    apolloTotal:          existingGen.tam_total || tasks.lead_list?.output?.total || null,
+    apolloTotal:          tamTotalResolved,
     adjacentTotal:        existingGen.adjacent_tam_total ?? tasks.lead_list?.output?.adjacent_total ?? null,
-    recommendedOutreach:  existingGen.recommendedOutreach || tasks.lead_list?.output?.recommendedOutreach || null,
-    tamSource:            existingGen.tam_source || tasks.lead_list?.output?.tamSource || null,
+    recommendedOutreach:  recOutResolved,
+    tamSource:            tamSourceResolved,
+    tamFloor:             tamFloorResolved,
+    tamConfidence:        tamConfidenceResolved,
     leadsTaskStatus:      tasks.lead_list?.status || existingGen.leadsTaskStatus || null,
     // Fresh rerun results in _generated take precedence over the original
     // lead_list task output. Otherwise the relaxation panel keeps showing
@@ -2871,6 +3072,7 @@ function applyOverrides(gen, overrides) {
     ...gen,
     apolloTotal:         overrides.tam_total         ?? gen.apolloTotal,
     recommendedOutreach: overrides.recommended_outreach ?? gen.recommendedOutreach,
+    fullMarketCycle:     overrides.full_market_cycle ?? null,
     webinarTitleOverride: overrides.webinar_title    ?? null,
     roiLtv:              overrides.roi_ltv           ?? gen.roiLtv,
     roiShowRate:         overrides.roi_show_rate     ?? gen.roiShowRate,
@@ -3692,13 +3894,32 @@ function runPersonalization(session) {
           : tamTotal >= 1000
             ? (Math.round(tamTotal / 1000)) + 'K'
             : tamTotal.toLocaleString();
-        // Edit mode only: show TAM source badge so rep knows if they should verify before sharing
-        if (IS_EDIT_MODE && gen.tamSource === 'estimated') {
+        // Edit mode only: show TAM source badge so the rep knows this is an
+        // AI-broadened estimate (not a raw Apollo count) and can verify/override
+        // before sharing. Kept rep-facing — the prospect sees the clean number
+        // the rep has already vetted. Covers the legacy 'estimated' source plus
+        // the new llm_broadened_apollo / apollo_broad_fallback sources.
+        const ESTIMATED_SOURCES = ['estimated', 'llm_broadened_apollo', 'apollo_broad_fallback'];
+        if (IS_EDIT_MODE && ESTIMATED_SOURCES.includes(gen.tamSource)) {
           const badge = document.createElement('span');
-          badge.title = 'TAM is estimated — Apollo returned no org count. You can override this value.';
+          const conf = Number.isFinite(gen.tamConfidence) ? ` · confidence ${gen.tamConfidence}/10` : '';
+          badge.title = 'TAM is an AI-broadened estimate grounded in real Apollo counts across several audience slices' + conf + '. Verify and override before sharing if needed.';
           badge.style.cssText = 'margin-left:8px;font-size:11px;font-weight:600;color:#f59e0b;background:rgba(245,158,11,0.15);padding:2px 6px;border-radius:4px;vertical-align:middle;cursor:help;';
-          badge.textContent = '⚠ Estimated';
+          badge.textContent = '⚠ Estimated' + (Number.isFinite(gen.tamConfidence) ? ' (' + gen.tamConfidence + '/10)' : '');
           tamEl.parentNode.appendChild(badge);
+        }
+        // Edit mode only: "verified in Apollo" floor subline — the narrow-ICP real
+        // count, so the rep can honestly explain how the broadened number relates
+        // to a hard Apollo figure. Hidden from the prospect.
+        if (IS_EDIT_MODE && Number.isFinite(gen.tamFloor) && gen.tamFloor > 0 && gen.tamFloor < tamTotal) {
+          var floorFmt = gen.tamFloor >= 1000000
+            ? (Math.round(gen.tamFloor / 100000) / 10) + 'M'
+            : gen.tamFloor >= 1000 ? Math.round(gen.tamFloor / 1000) + 'K' : gen.tamFloor.toLocaleString();
+          var floorEl = document.createElement('div');
+          floorEl.title = 'The exact-titles Apollo count for the narrow ICP. The headline TAM broadens this to the real addressable market via seniority/department and adjacent-role slices.';
+          floorEl.style.cssText = 'font-size:11px;color:#71717a;margin-top:4px;font-weight:500;cursor:help;';
+          floorEl.textContent = 'Verified in Apollo: ' + floorFmt + ' (narrow ICP)';
+          tamEl.parentNode.appendChild(floorEl);
         }
         // Edit-mode-only: show the "Adjacent TAM" (same filters minus industry
         // keyword) so reps can see what their keyword filter is costing them.
@@ -3736,15 +3957,21 @@ function runPersonalization(session) {
         : actualCycleRounded === 1
           ? '~1 mo'
           : '~' + (Number.isInteger(actualCycleRounded) ? actualCycleRounded : actualCycleRounded.toFixed(1)) + ' mo';
+      // Full Market Cycle — rep-editable (3rd field). Prefer a saved override
+      // (free-form, e.g. "~4 mo"); otherwise show the computed TAM ÷ outreach.
       const cycleEl = document.getElementById('tam-cycle-val');
-      if (cycleEl) cycleEl.textContent = cycleMonths;
+      const cycleOverride = gen.fullMarketCycle;
+      if (cycleEl) cycleEl.textContent = (cycleOverride != null && String(cycleOverride).trim())
+        ? String(cycleOverride)
+        : cycleMonths;
       monthlyLo = Math.round(monthlyRaw * 0.85 / 1000);
       monthlyHi = Math.min(100, Math.round(monthlyRaw * 1.15 / 1000));
       const monthlyEl = document.getElementById('tam-monthly-val');
       if (monthlyEl) monthlyEl.textContent = monthlyLo + '–' + monthlyHi + 'K' + (isOutreachOverride && IS_EDIT_MODE ? ' ✏' : '');
-      // Edit mode: add override icons on TAM and outreach elements
+      // Edit mode: add override icons on all three TAM stat cards
       addEditIcon(document.getElementById('tam-total-val'), 'tam_total', 'Market Size (TAM)');
       addEditIcon(monthlyEl, 'recommended_outreach', 'Monthly Outreach Volume');
+      addEditIcon(cycleEl, 'full_market_cycle', 'Full Market Cycle');
 
       // ── Sync MONTHLY_INVITES + update all static volume elements ─────────
       MONTHLY_INVITES = isNaN(monthlyRaw) ? 30000 : monthlyRaw;

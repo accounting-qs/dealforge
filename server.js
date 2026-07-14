@@ -2539,6 +2539,39 @@ const VALID_SENIORITIES = new Set([
   'head', 'director', 'manager', 'senior', 'entry', 'intern'
 ]);
 
+// Apollo person_department_or_subdepartments accepts these exact snake_case
+// slugs. The LLM planner (tam_estimate) tends to emit human phrases like
+// "learning and development" which Apollo silently zeroes — normalizeDepartments
+// maps common variants to real slugs and drops anything unrecognized.
+const VALID_DEPARTMENTS = new Set([
+  'c_suite','product_management','engineering_technical','design','education',
+  'finance','human_resources','information_technology','legal','marketing',
+  'medical_health','operations','sales','consulting','business_development',
+  'support','administrative','accounting','arts_and_design','entrepreneurship',
+  'media_communications'
+]);
+const DEPARTMENT_ALIASES = {
+  'learning and development': 'human_resources', 'learning & development': 'human_resources',
+  'l&d': 'human_resources', 'training': 'human_resources', 'talent': 'human_resources',
+  'talent development': 'human_resources', 'people': 'human_resources', 'hr': 'human_resources',
+  'human resources': 'human_resources', 'organizational development': 'human_resources',
+  'it': 'information_technology', 'tech': 'information_technology', 'engineering': 'engineering_technical',
+  'product': 'product_management', 'biz dev': 'business_development', 'bizdev': 'business_development',
+  'medical': 'medical_health', 'healthcare': 'medical_health', 'comms': 'media_communications',
+  'communications': 'media_communications', 'marketing communications': 'marketing'
+};
+function normalizeDepartments(arr) {
+  if (!Array.isArray(arr)) return [];
+  const out = [];
+  for (const raw of arr) {
+    const s = String(raw || '').trim().toLowerCase();
+    if (!s) continue;
+    const slug = VALID_DEPARTMENTS.has(s) ? s : (DEPARTMENT_ALIASES[s] || DEPARTMENT_ALIASES[s.replace(/_/g, ' ')] || null);
+    if (slug && VALID_DEPARTMENTS.has(slug) && !out.includes(slug)) out.push(slug);
+  }
+  return out;
+}
+
 const VALID_EMAIL_STATUSES = new Set([
   'verified', 'unverified', 'likely to engage', 'unavailable'
 ]);
@@ -3426,6 +3459,49 @@ async function validateExtractedFilters(icp) {
   }
 
   return result;
+}
+
+// ── Shared outreach + TAM helpers ─────────────────────────────────────────────
+// "Lloyd's rep-proof outreach formula" — was duplicated in handleLeadList,
+// the rerun-apollo path, and mockup-portal.html. Centralized here so all three
+// stay in sync. TAM > 300K → cap at the QS practical max of 100K/mo; otherwise
+// exhaust the market in ~3 months; empty/zero market → default 30K/mo.
+function computeRecommendedOutreach(tam) {
+  const n = Number(tam) || 0;
+  if (n > 300000) return 100000;
+  if (n > 0) return Math.max(1000, Math.round(n / 3 / 1000) * 1000);
+  return 30000;
+}
+
+// Count-only Apollo probe. Runs a mixed_people/api_search with per_page:1 and
+// returns just total_entries — used by the tam_estimate task to size a broad
+// ICP "slice" without pulling records. Standalone (the richer apolloPeopleSearch
+// lives inside guaranteedLeadSearch's closure and can't be called from here).
+// Best-effort: any failure returns 0 so one bad slice never sinks the estimate.
+async function apolloCountForPayload(payload) {
+  const APOLLO_KEY = process.env.APOLLO_API_KEY;
+  if (!APOLLO_KEY) return 0;
+  try {
+    const body = { ...payload, per_page: 1, page: 1 };
+    delete body.sort_by_field;
+    delete body.sort_ascending;
+    delete body.q_keywords; // unsupported by api_search — zeros the pool
+    const res = await fetch('https://api.apollo.io/api/v1/mixed_people/api_search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'x-api-key': APOLLO_KEY },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(15000)
+    });
+    if (!res.ok) {
+      console.error(`[tam_estimate] Apollo count HTTP ${res.status} — ${await res.text().catch(() => '(unreadable)')}`);
+      return 0;
+    }
+    const data = await res.json();
+    return Number(data.total_entries) || 0;
+  } catch (e) {
+    console.error('[tam_estimate] apolloCountForPayload exception:', e.message);
+    return 0;
+  }
 }
 
 async function fetchLeadsFromApollo(icp, progressCb) {
@@ -4657,12 +4733,11 @@ async function handleLeadList(task, job) {
 
   // fetchLeadsFromApollo returns { total }; legacy callers used { totalAvailable }
   const tam    = result?.total ?? result?.totalAvailable ?? 0;
-  // Lloyd's rep-proof outreach formula:
-  // TAM > 300K → cap at 100K/mo (QS practical maximum)
-  // TAM ≤ 300K → exhaust market in exactly 3 months
-  const recommendedOutreach = tam > 300000
-    ? 100000
-    : tam > 0 ? Math.max(1000, Math.round(tam / 3 / 1000) * 1000) : 30000;
+  // Lloyd's rep-proof outreach formula (shared helper — see computeRecommendedOutreach).
+  // Note: since the tam_estimate task now owns the headline TAM, this lead_list
+  // total/outreach is the fallback the portal uses only when tam_estimate is
+  // absent/failed (see portal read precedence in mockup-portal.html).
+  const recommendedOutreach = computeRecommendedOutreach(tam);
   console.log(`[lead_list] Apollo returned ${leads.length} classified leads, TAM: ${tam}, Outreach: ${recommendedOutreach}/mo`);
   // Phase 4: fire apollo_warning notification if fewer than 5 leads
   if (leads.length < 5) {
@@ -4685,6 +4760,192 @@ async function handleLeadList(task, job) {
       finalPayload: result?.finalPayload || {},
       adjacent_total: result?.adjacent_total ?? null
     }
+  };
+}
+
+// ── tam_estimate task ─────────────────────────────────────────────────────────
+// Produces the headline TAM, decoupled from the narrow Apollo lead search.
+// Approach ("LLM-broadened Apollo", grounded): Claude reads the ICP and proposes
+// several BROAD-but-valid Apollo search slices; we probe each for its real
+// total_entries; the TAM is derived from the largest deduped real count (never a
+// summed/invented number). See specs/tam_estimate.md.
+const TAM_PLANNER_SYSTEM = `You are a fast B2B TAM query planner for a lead-generation sales demo.
+You are given an ICP (ideal customer profile) already normalized into Apollo.io search fields.
+The current system undercounts the market ~10-20x because it queries ONE narrow set of exact job titles WITH a narrow industry keyword.
+Your job: propose 4-6 BROAD but believable Apollo "slices" that together capture the real TOTAL addressable market (what they COULD target, not just their current niche), plus one narrow "floor" slice that mirrors the exact-titles query.
+
+THE TWO BIGGEST LEVERS (use them):
+1. DROP the industry keyword on the broad slices. The industry keyword (q_organization_keyword_tags) is usually the single biggest under-counter — the real TAM for a role spans many industries, not just the seed one. At least ONE broad slice MUST have NO q_organization_keyword_tags at all. Others may LOOSEN it to adjacent industries (e.g. pharmaceuticals -> also biotech, life sciences, healthcare, medical devices).
+2. WIDEN the titles. Include the seed titles PLUS adjacent decision-maker titles (the same function under different names, and neighbouring functions who also buy). A big union of real titles is your most reliable broadener.
+
+VALID FIELDS ONLY (anything else is ignored or returns 0):
+- person_titles: array of real job titles (2-4 words each).
+- person_seniorities: array. VALID VALUES ONLY: owner, founder, c_suite, partner, vp, head, director, manager, senior, entry, intern.
+- person_department_or_subdepartments: array. VALID VALUES ONLY (exact snake_case): c_suite, product_management, engineering_technical, design, education, finance, human_resources, information_technology, legal, marketing, medical_health, operations, sales, consulting, business_development, support, administrative, accounting, arts_and_design, entrepreneurship, media_communications. There is NO "learning_and_development" department in Apollo — map L&D / training / talent to human_resources. If unsure, OMIT department and use a wide title union instead.
+- organization_locations: array of country/region names.
+- organization_num_employees_ranges: array of codes like "51,200","201,500","1001,10000".
+- q_organization_keyword_tags: array of short industry phrases, OR-ed (DROP on the broad slices per lever 1).
+- revenue_range: {min,max} in USD, or omit.
+
+HARD RULES:
+- Every slice MUST contain person_titles OR person_department_or_subdepartments (or both). NEVER a slice with only person_seniorities — that matches millions of people and is not believable.
+- When you use person_department_or_subdepartments, pair it with person_seniorities to keep it to decision-makers.
+- Include exactly ONE slice labelled as the narrow exact-titles floor (seed titles + the seed industry keyword) — this anchors the baseline.
+- Include at least ONE broad slice with NO industry keyword.
+- Do NOT invent numbers. Prefer broad+believable over precise.
+- union_uplift: a small multiplier between 1.0 and 1.3 approximating the true cross-slice union beyond the single largest slice. Use 1.0 if unsure.
+
+Return ONLY this JSON (no prose, no markdown fences):
+{
+  "slices": [
+    { "label": "Exact titles (narrow floor)", "payload": { "person_titles": ["..."], "q_organization_keyword_tags": ["..."], "organization_locations": ["..."], "organization_num_employees_ranges": ["..."] } },
+    { "label": "Wide title union, no industry", "payload": { "person_titles": ["...","...","..."], "organization_locations": ["..."], "organization_num_employees_ranges": ["..."] } },
+    { "label": "Function + seniority, no industry", "payload": { "person_seniorities": ["vp","head","director"], "person_department_or_subdepartments": ["human_resources"], "organization_locations": ["..."], "organization_num_employees_ranges": ["..."] } }
+  ],
+  "confidence": 1-10,
+  "reasoning": "one sentence",
+  "union_uplift": 1.0
+}`;
+
+async function handleTamEstimate(task, job) {
+  const brief = job.extracted_data || {};
+  const icp   = brief.icp || {};
+
+  // ── Gates (mirror lead_list) ──────────────────────────────────────────────
+  const B2C_TITLE_TOKENS = /\b(homeowner|home\s?owner|resident|tenant|consumer|customer|end[-\s]?user|buyer|individual)\b/i;
+  const titleLooksB2C = Array.isArray(icp.apollo_titles) && icp.apollo_titles.length > 0 &&
+    icp.apollo_titles.every(t => B2C_TITLE_TOKENS.test(String(t || '')));
+  if (icp.target_audience_type === 'b2c' || titleLooksB2C) {
+    if (task?.id) await needsInputTask(task.id, 'TAM estimate skipped — B2C audience (Apollo is B2B-only)');
+    return null;
+  }
+  const hasTitles = Array.isArray(icp.apollo_titles) && icp.apollo_titles.length > 0;
+  const hasRole   = (typeof icp.role === 'string' && icp.role.trim()) ||
+    (Array.isArray(icp.person_seniorities) && icp.person_seniorities.length > 0);
+  if (!hasTitles && !hasRole) {
+    if (task?.id) await needsInputTask(task.id, 'Missing ICP titles/roles — cannot estimate TAM');
+    return null;
+  }
+  if (!process.env.APOLLO_API_KEY) throw new Error('APOLLO_API_KEY not set — cannot probe TAM slices');
+
+  // expandEU: reuse the same EU-chip fan-out fetchLeadsFromApollo uses so geo
+  // behaves identically across the two paths.
+  const expandEU = list => (list || []).flatMap(g => (/^european union$/i.test(g) || /^europe$/i.test(g)) ? EU_COUNTRIES : [g])
+    .filter((g, i, a) => a.indexOf(g) === i);
+
+  // ── Deterministic broad slice (also the Claude-failure fallback) ──────────
+  const broadFallback = () => {
+    const p = {};
+    if (hasTitles) p.person_titles = icp.apollo_titles;
+    if (Array.isArray(icp.person_seniorities) && icp.person_seniorities.length) p.person_seniorities = icp.person_seniorities;
+    if (Array.isArray(icp.apollo_geography) && icp.apollo_geography.length) p.organization_locations = expandEU(icp.apollo_geography);
+    if (Array.isArray(icp.apollo_employee_ranges) && icp.apollo_employee_ranges.length) p.organization_num_employees_ranges = icp.apollo_employee_ranges;
+    return p; // industry keyword intentionally dropped to widen the pool
+  };
+
+  // ── 1. Claude query-planner ───────────────────────────────────────────────
+  let plan = null;
+  try {
+    const anthropic = makeAnthropic();
+    const userPrompt = `ICP (Apollo fields):\n${JSON.stringify({
+      apollo_titles:           icp.apollo_titles || null,
+      person_seniorities:      icp.person_seniorities || null,
+      apollo_geography:        icp.apollo_geography || null,
+      apollo_employee_ranges:  icp.apollo_employee_ranges || null,
+      apollo_keyword:          icp.apollo_keyword || icp.industry || null,
+      apollo_revenue_range:    icp.apollo_revenue_range || null,
+      role:                    icp.role || null,
+      company_size:            icp.company_size || null
+    }, null, 2)}`;
+    const message = await claudeMessage(anthropic, {
+      model: 'claude-sonnet-4-6', max_tokens: 1500, temperature: 0,
+      system: TAM_PLANNER_SYSTEM,
+      messages: [{ role: 'user', content: userPrompt }]
+    }, 'tam_estimate');
+    plan = extractJsonObject(message.content[0].text);
+  } catch (e) {
+    console.warn(`[tam_estimate] planner failed (${e.claudeErrorKind || 'error'}): ${e.message} — using deterministic broad slice`);
+  }
+
+  // ── 2. Build slice list (planner output, else deterministic fallback) ─────
+  let sliceDefs;
+  let tamSource;
+  if (plan && Array.isArray(plan.slices) && plan.slices.length) {
+    sliceDefs = plan.slices
+      .filter(s => s && s.payload && typeof s.payload === 'object')
+      .map(s => {
+        const p = { ...s.payload };
+        if (Array.isArray(p.organization_locations)) p.organization_locations = expandEU(p.organization_locations);
+        // Normalize department slugs (LLM often emits human phrases Apollo zeroes).
+        if (p.person_department_or_subdepartments !== undefined) {
+          const depts = normalizeDepartments(p.person_department_or_subdepartments);
+          if (depts.length) p.person_department_or_subdepartments = depts;
+          else delete p.person_department_or_subdepartments;
+        }
+        return { label: String(s.label || 'slice').slice(0, 60), payload: sanitizeApolloPayload(p).payload };
+      })
+      // Drop unbounded slices: a slice with seniorities but NO titles and NO
+      // department matches millions of people (e.g. "all VPs") and is not a
+      // believable market — it would blow up the TAM. Require titles or dept.
+      .filter(s => {
+        const p = s.payload;
+        const hasTitles = Array.isArray(p.person_titles) && p.person_titles.length > 0;
+        const hasDept   = Array.isArray(p.person_department_or_subdepartments) && p.person_department_or_subdepartments.length > 0;
+        if (!hasTitles && !hasDept) {
+          console.warn(`[tam_estimate] dropping unbounded slice "${s.label}" (seniority-only, no titles/dept)`);
+          return false;
+        }
+        return Object.keys(p).length > 0;
+      });
+    tamSource = 'llm_broadened_apollo';
+  }
+  if (!sliceDefs || !sliceDefs.length) {
+    sliceDefs = [{ label: 'Broad (deterministic)', payload: sanitizeApolloPayload(broadFallback()).payload }];
+    tamSource = 'apollo_broad_fallback';
+  }
+
+  // ── 3. Probe each slice for its real total_entries ────────────────────────
+  const slices = [];
+  for (const s of sliceDefs) {
+    const total = await apolloCountForPayload(s.payload);
+    const keys = Object.keys(s.payload);
+    slices.push({
+      label: s.label,
+      total,
+      payload_summary: keys.map(k => `${k}:${JSON.stringify(s.payload[k])}`).join(' · ').slice(0, 240)
+    });
+    console.log(`[tam_estimate] slice "${s.label}" → ${total}`);
+  }
+
+  // ── 4. Grounded aggregation ───────────────────────────────────────────────
+  const floorSlice = slices.find(s => /floor|exact|narrow/i.test(s.label));
+  const tamFloor = floorSlice ? floorSlice.total : Math.min(...slices.map(s => s.total).filter(n => n > 0), 0) || 0;
+  const largest  = Math.max(0, ...slices.map(s => s.total));
+  let uplift = Number(plan?.union_uplift);
+  if (!Number.isFinite(uplift)) uplift = 1.0;
+  uplift = Math.min(1.5, Math.max(1.0, uplift));
+  let tamTotal = Math.round(largest * uplift);
+  // Broadening must never shrink the number below the narrow floor.
+  if (tamFloor > tamTotal) tamTotal = tamFloor;
+  // All probes returned 0 → surface the floor (may be 0; portal then falls back
+  // to the lead_list Apollo total). Never a fabricated non-zero.
+  if (!(tamTotal > 0)) tamTotal = tamFloor;
+
+  let confidence = Number(plan?.confidence);
+  if (!Number.isFinite(confidence) || confidence < 1 || confidence > 10) confidence = null;
+
+  const recommendedOutreach = computeRecommendedOutreach(tamTotal);
+  console.log(`[tam_estimate] TAM=${tamTotal} (floor=${tamFloor}, largest=${largest}, uplift=${uplift}, src=${tamSource}), outreach=${recommendedOutreach}/mo`);
+
+  return {
+    tam_total: tamTotal,
+    tam_floor: tamFloor,
+    recommendedOutreach,
+    tam_source: tamSource,
+    confidence,
+    reasoning: (plan && typeof plan.reasoning === 'string') ? plan.reasoning.slice(0, 400) : null,
+    union_uplift: uplift,
+    slices
   };
 }
 
@@ -4847,7 +5108,13 @@ async function checkAndSpawnStageTasks(jobId) {
   // Stage 2: spawn when extract is completed
   const extractDone = byType['extract']?.status === 'completed';
   if (extractDone) {
+    // tam_estimate (LLM-broadened TAM) only spawns when the rep chose the 'llm'
+    // method at job creation (default). 'apollo' skips it, so the portal falls
+    // back to Apollo's exact lead_list total.
+    const jobRow = await getJob(jobId);
+    const tamMethod = jobRow?.extracted_data?.tam_method || 'llm';
     const stage2Types = ['brand_scrape', 'lead_list', 'webinar_titles', 'roi_model'];
+    if (tamMethod !== 'apollo') stage2Types.push('tam_estimate');
     const toCreate = stage2Types.filter(t => !byType[t]);
     if (toCreate.length) {
       console.log(`[orchestrator] Spawning Stage 2 tasks: ${toCreate.join(', ')}`);
@@ -4919,6 +5186,7 @@ async function processNextTask() {
         case 'prospect_research': output = await handleProspectResearch(task, job);  break;
         case 'brand_scrape':      output = await handleBrandScrape(task, job);       break;
         case 'lead_list':         output = await handleLeadList(task, job);          break;
+        case 'tam_estimate':      output = await handleTamEstimate(task, job);       break;
         case 'webinar_titles':    output = await handleWebinarTitles(task, job);     break;
         case 'roi_model':         output = await handleRoiModel(task, job);          break;
         case 'calendar_visual':   output = await handleCalendarVisual(task, job);    break;
@@ -5151,8 +5419,14 @@ async function getWorkerConflict() {
   };
 }
 
-// Start worker + recovery loops
-if (USE_SUPABASE) {
+// Start worker + recovery loops.
+// DISABLE_WORKER=1 runs the HTTP server (portal + API) WITHOUT the polling
+// worker/recovery/beacon loops — for safe LOCAL testing against the shared
+// Supabase, so a dev instance never claims/processes production tasks.
+if (USE_SUPABASE && process.env.DISABLE_WORKER === '1') {
+  console.log('[worker] DISABLED via DISABLE_WORKER=1 — serving HTTP only, not claiming tasks (safe for local testing)');
+}
+if (USE_SUPABASE && process.env.DISABLE_WORKER !== '1') {
   // Wrap each invocation in .catch() so a network error (ECONNRESET, ETIMEDOUT)
   // in one task cycle doesn't propagate to the top-level interval and silently
   // stop the worker. The outer try/catch in processNextTask already handles most
@@ -6250,6 +6524,12 @@ const server = http.createServer(async (req, res) => {
       const transcriptSource = String(body.transcript_source || body.transcriptSource || 'fireflies');
       const brief      = body.brief || null;
       const repName    = (body.repName || body.rep_name || '').trim() || null; // B5 fix
+      // TAM method chosen by the rep before Generate: 'llm' (grounded Apollo,
+      // default) spawns the tam_estimate task; 'apollo' (pure Apollo count) skips
+      // it so the portal shows Apollo's exact total. Stamped on the brief so it
+      // survives extract's mergeBrief and is readable by checkAndSpawnStageTasks.
+      const tamMethod  = (body.tam_method === 'apollo') ? 'apollo' : 'llm';
+      if (brief && typeof brief === 'object') brief.tam_method = tamMethod;
 
       if (!email || !email.includes('@')) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -6586,8 +6866,9 @@ const server = http.createServer(async (req, res) => {
   // ── PATCH /api/jobs/:id/overrides — rep field override system ──────────────────
   // Stores rep manual edits in extracted_data._overrides (separate from AI-generated data).
   // Overrides persist across pipeline re-runs. Portal reads _overrides first, then _generated.
-  // Allowed fields: tam_total, recommended_outreach, webinar_title, roi_ltv, roi_show_rate,
-  //   roi_close_rate, webinar_logo_url, webinar_hero_image_url, webinar_headshot_url
+  // Allowed fields: tam_total, recommended_outreach, full_market_cycle, webinar_title,
+  //   roi_ltv, roi_show_rate, roi_close_rate, webinar_logo_url, webinar_hero_image_url,
+  //   webinar_headshot_url
   //   (the three webinar_* fields let the rep cherry-pick which scraped image goes
   //    in each visual slot of the webinar slide / mock).
   // ── POST /api/jobs/:id/upload-asset — rep uploads their own image ─────────
@@ -6683,7 +6964,7 @@ const server = http.createServer(async (req, res) => {
     try {
       const body = await parseBody(req);
       const ALLOWED = [
-        'tam_total','recommended_outreach','webinar_title','roi_ltv','roi_show_rate','roi_close_rate',
+        'tam_total','recommended_outreach','full_market_cycle','webinar_title','roi_ltv','roi_show_rate','roi_close_rate',
         'webinar_logo_url','webinar_hero_image_url','webinar_headshot_url',
         // Per-variant calendar copy overrides (A/B/C). Set in rep edit mode from
         // the Calendar Invite tab. Empty string clears the override (falls back
@@ -6729,6 +7010,12 @@ const server = http.createServer(async (req, res) => {
       const existingData = job.extracted_data || {};
       const existingOverrides = existingData._overrides || {};
       const mergedOverrides = { ...existingOverrides, ...safeOverrides, _updated_at: new Date().toISOString() };
+      // Full Market Cycle is a function of TAM ÷ outreach. If the rep edits either
+      // of those, a previously-set cycle override is now stale — drop it so the
+      // card recomputes (unless the rep is setting the cycle in this same call).
+      if ((('tam_total' in safeOverrides) || ('recommended_outreach' in safeOverrides)) && !('full_market_cycle' in safeOverrides)) {
+        delete mergedOverrides.full_market_cycle;
+      }
       const updatedData = { ...existingData, _overrides: mergedOverrides };
       const r = await supabaseRequest('PATCH', `/rest/v1/jobs?id=eq.${jobId}`,
         { extracted_data: updatedData, updated_at: new Date().toISOString() },
@@ -6798,7 +7085,7 @@ const server = http.createServer(async (req, res) => {
       // overrides (LTV, show rate, close rate, webinar title) are independent
       // of the filter set and stay put.
       if (anyIcpFieldChanged && updatedData._overrides) {
-        const { tam_total, recommended_outreach, ...keptOverrides } = updatedData._overrides;
+        const { tam_total, recommended_outreach, full_market_cycle, ...keptOverrides } = updatedData._overrides;
         if (Object.keys(keptOverrides).length > 0) {
           updatedData._overrides = keptOverrides;
         } else {
@@ -7048,13 +7335,13 @@ const server = http.createServer(async (req, res) => {
             writeProgress({ status: 'running', ...snapshot })
           );
           if (result && result.leads) {
-            // Mirror handleLeadList's outreach calculation so the "Recommended/month"
-            // stat refreshes with the rerun. TAM > 300K → cap at 100K/mo;
-            // otherwise exhaust the market in 3 months.
+            // Apollo's narrow lead-search count. Shared outreach helper keeps this
+            // in sync with handleLeadList / tam_estimate. This value is written to
+            // _generated.tam_total as a FALLBACK layer — the portal prefers the
+            // tam_estimate task's LLM-broadened TAM over it, so a lead re-run does
+            // not clobber the headline TAM.
             const tam = result.total || 0;
-            const recommendedOutreach = tam > 300000
-              ? 100000
-              : tam > 0 ? Math.max(1000, Math.round(tam / 3 / 1000) * 1000) : 30000;
+            const recommendedOutreach = computeRecommendedOutreach(tam);
 
             // Dedup + size fallback + people-match — same shared helper
             // handleLeadList uses, so a rerun produces an identically-shaped list
