@@ -3322,6 +3322,48 @@ async function suggestIndustries(q) {
   }
 }
 
+// Adjacent-industry fetch for the TAM broadener. Unlike suggestIndustries()
+// (which ranks query-token matches first — good for SNAPPING a value to its
+// closest canonical form, but for "pharmaceuticals" it surfaces narrow
+// sub-types like "specialty pharmaceuticals"), this ranks the PRIMARY canonical
+// industry (o.industry) of co-occurring companies by FREQUENCY, and excludes
+// near-synonyms that merely contain the seed word — so we get the broad
+// neighbouring verticals (pharmaceuticals -> biotechnology, hospital & health
+// care, medical devices, research). Free (no Apollo credits).
+async function fetchAdjacentIndustries(seed, limit = 5) {
+  const APOLLO_KEY = process.env.APOLLO_API_KEY;
+  if (!seed) return [];
+  if (!APOLLO_KEY) return [seed];
+  try {
+    const r = await fetch('https://api.apollo.io/v1/organizations/search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'x-api-key': APOLLO_KEY },
+      body: JSON.stringify({ q_organization_keyword_tags: [seed], per_page: 100 }),
+      signal: AbortSignal.timeout(9000)
+    });
+    if (!r.ok) return [seed];
+    const data = await r.json();
+    const seedTok = String(seed).toLowerCase();
+    const counts = new Map();
+    (data.organizations || []).forEach(o => {
+      const ind = String(o.industry || '').trim();
+      if (ind) counts.set(ind, (counts.get(ind) || 0) + 1);
+    });
+    const others = [...counts.entries()]
+      .filter(([name]) => {
+        const n = name.toLowerCase();
+        return n !== seedTok && !n.includes(seedTok); // drop near-synonyms of the seed
+      })
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, Math.max(0, limit - 1))
+      .map(([name]) => name);
+    return [seed, ...others];
+  } catch (e) {
+    console.warn('[fetchAdjacentIndustries]', e.message);
+    return [seed];
+  }
+}
+
 // ── Extracted-filter taxonomy validation ──────────────────────────────────────
 // Claude extracts apollo_titles / apollo_geography / apollo_keyword as free text.
 // Before the first lead search we snap recognized values to Apollo's canonical
@@ -4843,11 +4885,11 @@ async function handleTamEstimate(task, job) {
   let adjacentIndustries = [];
   if (seedIndustry) {
     let live = [];
-    try { live = await suggestIndustries(seedIndustry); } catch (e) { console.warn('[tam_estimate] suggestIndustries failed:', e.message); }
-    adjacentIndustries = [seedIndustry, ...live]
+    try { live = await fetchAdjacentIndustries(seedIndustry, 5); } catch (e) { console.warn('[tam_estimate] fetchAdjacentIndustries failed:', e.message); }
+    adjacentIndustries = (live.length ? live : [seedIndustry])
       .map(s => String(s || '').trim()).filter(Boolean)
       .filter((s, i, a) => a.findIndex(x => x.toLowerCase() === s.toLowerCase()) === i)
-      .slice(0, 6);
+      .slice(0, 5);
     console.log(`[tam_estimate] seed industry "${seedIndustry}" → adjacent: ${JSON.stringify(adjacentIndustries)}`);
   }
   const allowedInd = new Set(adjacentIndustries.map(s => s.toLowerCase()));
@@ -4956,25 +4998,36 @@ async function handleTamEstimate(task, job) {
     console.log(`[tam_estimate] slice "${s.label}" → ${total}`);
   }
 
-  // ── 4. Grounded aggregation ───────────────────────────────────────────────
+  // ── 4. Grounded aggregation — MEDIAN of the broad slices ──────────────────
+  // Robust to both a single explosive slice (e.g. an over-broad "operations"
+  // slice that hits 170K) and a single narrow one. Taking the max made the
+  // headline swing 50× between runs; the median of the broad (non-floor) slice
+  // counts is stable and defensible — it's the middle real Apollo count across
+  // several ways of drawing the same market. Never below the narrow floor.
   const floorSlice = slices.find(s => /floor|exact|narrow/i.test(s.label));
-  const tamFloor = floorSlice ? floorSlice.total : Math.min(...slices.map(s => s.total).filter(n => n > 0), 0) || 0;
-  const largest  = Math.max(0, ...slices.map(s => s.total));
-  let uplift = Number(plan?.union_uplift);
-  if (!Number.isFinite(uplift)) uplift = 1.0;
-  uplift = Math.min(1.5, Math.max(1.0, uplift));
-  let tamTotal = Math.round(largest * uplift);
-  // Broadening must never shrink the number below the narrow floor.
-  if (tamFloor > tamTotal) tamTotal = tamFloor;
-  // All probes returned 0 → surface the floor (may be 0; portal then falls back
-  // to the lead_list Apollo total). Never a fabricated non-zero.
-  if (!(tamTotal > 0)) tamTotal = tamFloor;
+  const tamFloor   = floorSlice ? floorSlice.total : 0;
+  let broadVals    = slices.filter(s => s !== floorSlice).map(s => s.total).filter(n => n > 0).sort((a, b) => a - b);
+  // Drop dud broad slices — ones the LLM mis-built that barely broadened (< 20%
+  // of the top broad slice). Without this an occasional near-floor slice drags
+  // the median down and reintroduces run-to-run wobble.
+  if (broadVals.length > 2) {
+    const topBroad = broadVals[broadVals.length - 1];
+    broadVals = broadVals.filter(n => n >= topBroad * 0.2);
+  }
+  const median = broadVals.length
+    ? (broadVals.length % 2
+        ? broadVals[(broadVals.length - 1) / 2]
+        : Math.round((broadVals[broadVals.length / 2 - 1] + broadVals[broadVals.length / 2]) / 2))
+    : 0;
+  let tamTotal = median || tamFloor;
+  if (tamFloor > tamTotal) tamTotal = tamFloor;   // never shrink below the floor
+  if (!(tamTotal > 0)) tamTotal = tamFloor;        // all-zero → floor (portal falls back)
 
   let confidence = Number(plan?.confidence);
   if (!Number.isFinite(confidence) || confidence < 1 || confidence > 10) confidence = null;
 
   const recommendedOutreach = computeRecommendedOutreach(tamTotal);
-  console.log(`[tam_estimate] TAM=${tamTotal} (floor=${tamFloor}, largest=${largest}, uplift=${uplift}, src=${tamSource}), outreach=${recommendedOutreach}/mo`);
+  console.log(`[tam_estimate] TAM=${tamTotal} (floor=${tamFloor}, median of [${broadVals.join(',')}], src=${tamSource}), outreach=${recommendedOutreach}/mo`);
 
   return {
     tam_total: tamTotal,
@@ -4983,7 +5036,6 @@ async function handleTamEstimate(task, job) {
     tam_source: tamSource,
     confidence,
     reasoning: (plan && typeof plan.reasoning === 'string') ? plan.reasoning.slice(0, 400) : null,
-    union_uplift: uplift,
     slices
   };
 }
@@ -6775,6 +6827,75 @@ const server = http.createServer(async (req, res) => {
       res.end(JSON.stringify({ ok: true, reset: resetIds }));
     } catch(e) {
       console.error('[POST /api/jobs/:id/regenerate]', e.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  // ── POST /api/jobs/:id/rerun-tam — switch TAM method + recompute inline ──────
+  // Body: { tam_method: 'llm' | 'apollo' }. Persists the method on
+  // extracted_data.tam_method, clears stale TAM overrides, then:
+  //   'llm'    → runs handleTamEstimate inline (AI-broadened Apollo) and writes
+  //              the result to the tam_estimate task (created if missing).
+  //   'apollo' → skips the tam_estimate task (status 'skipped', output null) so
+  //              the portal falls back to Apollo's exact lead_list total.
+  // Runs synchronously (~10-20s for 'llm') and returns the new numbers.
+  if (req.method === 'POST' && /^\/api\/jobs\/[^/]+\/rerun-tam$/.test(urlPath)) {
+    setCors(res);
+    const jobId = urlPath.split('/')[3];
+    try {
+      const body = await parseBody(req).catch(() => ({}));
+      const method = (body && body.tam_method === 'apollo') ? 'apollo' : 'llm';
+      const job = await getJob(jobId);
+      if (!job) { res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'Job not found' })); return; }
+
+      // Persist method + clear stale TAM overrides so the fresh number shows.
+      const existingData = job.extracted_data || {};
+      const ov = { ...(existingData._overrides || {}) };
+      delete ov.tam_total; delete ov.recommended_outreach; delete ov.full_market_cycle;
+      const updatedData = { ...existingData, tam_method: method };
+      if (Object.keys(ov).length) updatedData._overrides = ov; else delete updatedData._overrides;
+      await supabaseRequest('PATCH', `/rest/v1/jobs?id=eq.${jobId}`,
+        { extracted_data: updatedData, updated_at: new Date().toISOString() }, { 'Prefer': 'return=minimal' });
+
+      // Ensure a tam_estimate task row exists. Only create when missing —
+      // createTasks 409s on an existing (job_id, task_type) row.
+      let tasks = await getTasksByJobId(jobId);
+      let tamTask = tasks.find(t => t.task_type === 'tam_estimate');
+      if (!tamTask) {
+        try { await createTasks(jobId, ['tam_estimate']); }
+        catch (e) { console.warn(`[rerun-tam] createTasks: ${e.message}`); }
+        tasks = await getTasksByJobId(jobId);
+        tamTask = tasks.find(t => t.task_type === 'tam_estimate');
+      }
+
+      if (method === 'apollo') {
+        if (tamTask) {
+          await supabaseRequest('PATCH', `/rest/v1/tasks?id=eq.${tamTask.id}`,
+            { status: 'skipped', output_data: null, error_message: null, updated_at: new Date().toISOString() },
+            { 'Prefer': 'return=minimal' });
+        }
+        const leadTotal = tasks.find(t => t.task_type === 'lead_list')?.output_data?.total ?? null;
+        console.log(`[rerun-tam] ${jobId} → apollo (skipped tam_estimate; lead_list total ${leadTotal})`);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, tam_method: 'apollo', output: { tam_total: leadTotal, tam_source: 'apollo_api_live' } }));
+        return;
+      }
+
+      // llm — run the estimate inline (fresh job so it reads the updated data).
+      const freshJob = await getJob(jobId);
+      const output = await handleTamEstimate({ id: tamTask ? tamTask.id : null }, freshJob);
+      if (output) {
+        await supabaseRequest('PATCH', `/rest/v1/tasks?id=eq.${tamTask.id}`,
+          { status: 'completed', output_data: output, error_message: null, completed_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+          { 'Prefer': 'return=minimal' });
+      }
+      console.log(`[rerun-tam] ${jobId} → llm (tam_total ${output ? output.tam_total : 'needs_input'})`);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, tam_method: 'llm', output: output || null }));
+    } catch (e) {
+      console.error('[POST /api/jobs/:id/rerun-tam]', e.message);
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: e.message }));
     }

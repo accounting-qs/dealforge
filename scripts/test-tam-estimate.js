@@ -74,14 +74,20 @@ async function apolloPost(url, body) {
   if (!r.ok) return null;
   return r.json();
 }
-async function suggestIndustries(q) {
-  if (!KEY || !q) return [];
-  const d = await apolloPost('https://api.apollo.io/v1/organizations/search', { q_organization_keyword_tags: [q], per_page: 25 });
-  if (!d) return [];
+// Mirrors fetchAdjacentIndustries() in server.js — ranks the PRIMARY canonical
+// industry of co-occurring companies by frequency, drops near-synonyms of the
+// seed. (Not suggestIndustries, which query-matches and surfaces narrow variants.)
+async function fetchAdjacentIndustries(seed, limit = 5) {
+  if (!KEY || !seed) return seed ? [seed] : [];
+  const d = await apolloPost('https://api.apollo.io/v1/organizations/search', { q_organization_keyword_tags: [seed], per_page: 100 });
+  if (!d) return [seed];
+  const seedTok = String(seed).toLowerCase();
   const counts = new Map();
-  const bump = s => { if (!s) return; const v = String(s).trim(); if (v) counts.set(v, (counts.get(v) || 0) + 1); };
-  (d.organizations || []).forEach(o => { bump(o.industry); if (Array.isArray(o.industries)) o.industries.forEach(bump); });
-  return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8).map(([s]) => s);
+  (d.organizations || []).forEach(o => { const ind = String(o.industry || '').trim(); if (ind) counts.set(ind, (counts.get(ind) || 0) + 1); });
+  const others = [...counts.entries()]
+    .filter(([name]) => { const n = name.toLowerCase(); return n !== seedTok && !n.includes(seedTok); })
+    .sort((a, b) => b[1] - a[1]).slice(0, Math.max(0, limit - 1)).map(([name]) => name);
+  return [seed, ...others];
 }
 async function apolloCount(payload) {
   const d = await apolloPost('https://api.apollo.io/api/v1/mixed_people/api_search', { ...payload, per_page: 1 });
@@ -94,9 +100,9 @@ async function apolloCount(payload) {
   const seedIndustry = (SAMPLE_ICP.apollo_keyword || SAMPLE_ICP.industry || '').trim() || null;
   let adjacentIndustries = [];
   if (seedIndustry) {
-    const live = await suggestIndustries(seedIndustry);
-    adjacentIndustries = [seedIndustry, ...live].map(s => String(s || '').trim()).filter(Boolean)
-      .filter((s, i, a) => a.findIndex(x => x.toLowerCase() === s.toLowerCase()) === i).slice(0, 6);
+    const live = await fetchAdjacentIndustries(seedIndustry, 5);
+    adjacentIndustries = (live.length ? live : [seedIndustry]).map(s => String(s || '').trim()).filter(Boolean)
+      .filter((s, i, a) => a.findIndex(x => x.toLowerCase() === s.toLowerCase()) === i).slice(0, 5);
     console.log('Adjacent industries (Apollo taxonomy):', JSON.stringify(adjacentIndustries));
   }
   const allowedInd = new Set(adjacentIndustries.map(s => s.toLowerCase()));
@@ -141,16 +147,17 @@ async function apolloCount(payload) {
     console.log(`  • ${s.label}: ${total.toLocaleString()}   [ind: ${JSON.stringify(s.payload.q_organization_keyword_tags || 'none')}]`);
   }
 
+  // Aggregation: median of broad slices (robust), dropping near-floor duds.
   const floorSlice = slices.find(s => /floor|exact|narrow/i.test(s.label));
   const tamFloor = floorSlice ? floorSlice.total : 0;
-  const largest = Math.max(0, ...slices.map(s => s.total));
-  let uplift = Number(plan?.union_uplift); if (!Number.isFinite(uplift)) uplift = 1.0;
-  uplift = Math.min(1.5, Math.max(1.0, uplift));
-  let tam = Math.round(largest * uplift);
+  let broadVals = slices.filter(s => s !== floorSlice).map(s => s.total).filter(n => n > 0).sort((a, b) => a - b);
+  if (broadVals.length > 2) { const top = broadVals[broadVals.length - 1]; broadVals = broadVals.filter(n => n >= top * 0.2); }
+  const median = broadVals.length ? (broadVals.length % 2 ? broadVals[(broadVals.length - 1) / 2] : Math.round((broadVals[broadVals.length / 2 - 1] + broadVals[broadVals.length / 2]) / 2)) : 0;
+  let tam = median || tamFloor;
   if (tamFloor > tam) tam = tamFloor;
 
   console.log('\n─────────────────────────────');
   console.log('TAM floor (narrow):', tamFloor.toLocaleString());
-  console.log('TAM headline      :', tam.toLocaleString(), `(largest ${largest.toLocaleString()} × ${uplift})`);
+  console.log('TAM headline      :', tam.toLocaleString(), `(median of [${broadVals.join(',')}])`);
   console.log('Broadening factor :', tamFloor ? (tam / tamFloor).toFixed(1) + '×' : 'n/a');
 })();
