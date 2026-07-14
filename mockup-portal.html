@@ -1973,10 +1973,11 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
       <!-- ── TAM Method ── -->
       <div class="pi-section">
         <div class="pi-section-title">TAM Method</div>
-        <div class="pi-section-sub">How the Total Addressable Market number is produced. <strong style="color:#e4e4e7">AI Grounded</strong> broadens the ICP across adjacent Apollo industries + wide titles (real counts). <strong style="color:#e4e4e7">Apollo Exact</strong> uses Apollo's exact count for the ICP filters. Switch and rerun to recompute.</div>
+        <div class="pi-section-sub">How the Total Addressable Market number is produced. <strong style="color:#e4e4e7">AI Grounded</strong> broadens the ICP across adjacent Apollo industries + wide titles (real counts). <strong style="color:#e4e4e7">AI Estimate</strong> is an AI-only guess with no Apollo (shown as “Estimated”). <strong style="color:#e4e4e7">Apollo Exact</strong> uses Apollo's exact count. Apollo still fetches the 25 sample leads regardless. Switch and rerun to recompute.</div>
         <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;">
           <div style="display:inline-flex;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:9px;padding:3px;gap:3px;">
             <button type="button" id="pi-tam-llm" onclick="piSetTamMethod('llm')" style="font-size:12px;font-weight:600;color:#a1a1aa;background:none;border:none;border-radius:7px;padding:7px 14px;cursor:pointer;font-family:inherit;">AI Grounded</button>
+            <button type="button" id="pi-tam-llm_pure" onclick="piSetTamMethod('llm_pure')" style="font-size:12px;font-weight:600;color:#a1a1aa;background:none;border:none;border-radius:7px;padding:7px 14px;cursor:pointer;font-family:inherit;">AI Estimate</button>
             <button type="button" id="pi-tam-apollo" onclick="piSetTamMethod('apollo')" style="font-size:12px;font-weight:600;color:#a1a1aa;background:none;border:none;border-radius:7px;padding:7px 14px;cursor:pointer;font-family:inherit;">Apollo Exact</button>
           </div>
           <button id="pi-tam-rerun-btn" type="button" onclick="rerunTam()"
@@ -3040,7 +3041,12 @@ function buildCompatSession(job) {
     ? (tamTask.tam_source || 'llm_broadened_apollo')
     : (existingGen.tam_source || tasks.lead_list?.output?.tamSource || null);
   const recOutResolved = (tamTask && tamTask.recommendedOutreach) || existingGen.recommendedOutreach || tasks.lead_list?.output?.recommendedOutreach || null;
-  const tamFloorResolved = (tamTask && tamTask.tam_floor) ?? existingGen.tam_total ?? tasks.lead_list?.output?.total ?? null;
+  // Pure AI estimate has no Apollo floor — do NOT backfill from the lead_list
+  // total, or the "Verified in Apollo: N" subline would falsely present an
+  // ungrounded guess as anchored to a real count.
+  const tamFloorResolved = (tamSourceResolved === 'llm_pure_estimate')
+    ? null
+    : ((tamTask && tamTask.tam_floor) ?? existingGen.tam_total ?? tasks.lead_list?.output?.total ?? null);
   const tamConfidenceResolved = (tamTask && Number.isFinite(tamTask.confidence)) ? tamTask.confidence : null;
 
   ext._generated = applyOverrides({
@@ -3917,11 +3923,14 @@ function runPersonalization(session) {
         // before sharing. Kept rep-facing — the prospect sees the clean number
         // the rep has already vetted. Covers the legacy 'estimated' source plus
         // the new llm_broadened_apollo / apollo_broad_fallback sources.
-        const ESTIMATED_SOURCES = ['estimated', 'llm_broadened_apollo', 'apollo_broad_fallback'];
+        const ESTIMATED_SOURCES = ['estimated', 'llm_broadened_apollo', 'apollo_broad_fallback', 'llm_pure_estimate'];
         if (IS_EDIT_MODE && ESTIMATED_SOURCES.includes(gen.tamSource)) {
           const badge = document.createElement('span');
           const conf = Number.isFinite(gen.tamConfidence) ? ` · confidence ${gen.tamConfidence}/10` : '';
-          badge.title = 'TAM is an AI-broadened estimate grounded in real Apollo counts across several audience slices' + conf + '. Verify and override before sharing if needed.';
+          badge.title = (gen.tamSource === 'llm_pure_estimate'
+            ? 'TAM is an AI-only estimate (no Apollo counts) — a directional guess'
+            : 'TAM is an AI-broadened estimate grounded in real Apollo counts across several audience slices')
+            + conf + '. Verify and override before sharing if needed.';
           badge.style.cssText = 'margin-left:8px;font-size:11px;font-weight:600;color:#f59e0b;background:rgba(245,158,11,0.15);padding:2px 6px;border-radius:4px;vertical-align:middle;cursor:help;';
           badge.textContent = '⚠ Estimated' + (Number.isFinite(gen.tamConfidence) ? ' (' + gen.tamConfidence + '/10)' : '');
           tamEl.parentNode.appendChild(badge);
@@ -5901,14 +5910,20 @@ function _piSetStatus(msg, color) {
 
 // ── TAM method (Prospect Infos tab) ──────────────────────────────────────────
 var _piTamMethod = 'llm';
+var _PI_TAM_METHODS = ['llm', 'llm_pure', 'apollo'];
+var _PI_TAM_LABELS = { llm: 'AI Grounded', llm_pure: 'AI Estimate', apollo: 'Apollo Exact' };
 function piSetTamMethod(m) {
-  _piTamMethod = (m === 'apollo') ? 'apollo' : 'llm';
-  var a = document.getElementById('pi-tam-llm'), b = document.getElementById('pi-tam-apollo');
-  if (a) { const on = _piTamMethod === 'llm'; a.style.background = on ? 'linear-gradient(135deg,#34b433,#1a8c19)' : 'none'; a.style.color = on ? '#fff' : '#a1a1aa'; }
-  if (b) { const on = _piTamMethod === 'apollo'; b.style.background = on ? 'linear-gradient(135deg,#34b433,#1a8c19)' : 'none'; b.style.color = on ? '#fff' : '#a1a1aa'; }
+  _piTamMethod = _PI_TAM_METHODS.indexOf(m) >= 0 ? m : 'llm';
+  _PI_TAM_METHODS.forEach(function(key) {
+    var btn = document.getElementById('pi-tam-' + key);
+    if (!btn) return;
+    var on = _piTamMethod === key;
+    btn.style.background = on ? 'linear-gradient(135deg,#34b433,#1a8c19)' : 'none';
+    btn.style.color = on ? '#fff' : '#a1a1aa';
+  });
 }
 function _piInitTamMethod(brief) {
-  const m = (brief && brief.tam_method === 'apollo') ? 'apollo' : 'llm';
+  const m = (brief && _PI_TAM_METHODS.indexOf(brief.tam_method) >= 0) ? brief.tam_method : 'llm';
   piSetTamMethod(m);
   const cur = document.getElementById('pi-tam-current');
   if (cur) {
@@ -5918,7 +5933,7 @@ function _piInitTamMethod(brief) {
       || g.tam_source || (t.lead_list && t.lead_list.output && t.lead_list.output.tamSource) || 'apollo';
     const tam = (t.tam_estimate && t.tam_estimate.output && t.tam_estimate.output.tam_total)
       || g.tam_total || (t.lead_list && t.lead_list.output && t.lead_list.output.total) || null;
-    cur.textContent = 'Current: ' + (m === 'apollo' ? 'Apollo Exact' : 'AI Grounded')
+    cur.textContent = 'Current: ' + (_PI_TAM_LABELS[m] || 'AI Grounded')
       + (tam ? ' · TAM ' + Number(tam).toLocaleString() : '') + (src ? ' · source: ' + src : '');
   }
 }
@@ -5928,7 +5943,12 @@ async function rerunTam() {
   const st  = document.getElementById('pi-tam-status');
   if (!jobId) { if (st) { st.textContent = '⚠️ No job ID'; st.style.color = '#fbbf24'; } return; }
   if (btn) { btn.disabled = true; btn.style.opacity = '.6'; }
-  if (st) { st.textContent = _piTamMethod === 'llm' ? 'Rerunning (AI broadening + Apollo probes)…' : 'Switching to Apollo exact…'; st.style.color = '#94a3b8'; }
+  if (st) {
+    var _msg = _piTamMethod === 'llm' ? 'Rerunning (AI broadening + Apollo probes)…'
+             : _piTamMethod === 'llm_pure' ? 'Rerunning (AI estimate, no Apollo)…'
+             : 'Switching to Apollo exact…';
+    st.textContent = _msg; st.style.color = '#94a3b8';
+  }
   try {
     const r = await fetch('/api/jobs/' + encodeURIComponent(jobId) + '/rerun-tam', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },

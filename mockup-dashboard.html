@@ -455,6 +455,7 @@
         </div>
         <div class="nj-seg" role="group" aria-label="TAM method">
           <button type="button" id="nj-tam-llm" class="nj-seg-btn active" onclick="njSetTamMethod('llm')">AI Grounded</button>
+          <button type="button" id="nj-tam-llm_pure" class="nj-seg-btn" onclick="njSetTamMethod('llm_pure')">AI Estimate</button>
           <button type="button" id="nj-tam-apollo" class="nj-seg-btn" onclick="njSetTamMethod('apollo')">Apollo Exact</button>
         </div>
       </div>
@@ -1651,18 +1652,23 @@ function njBack() {
   if (_njPollTimer) { clearTimeout(_njPollTimer); _njPollTimer = null; }
 }
 
-// TAM method for the next job: 'llm' (grounded Apollo, default) or 'apollo' (pure Apollo count).
+// TAM method for the next job: 'llm' (grounded Apollo, default), 'llm_pure'
+// (AI-only estimate, no Apollo), or 'apollo' (pure Apollo count).
 var _njTamMethod = 'llm';
+var _NJ_TAM_METHODS = ['llm', 'llm_pure', 'apollo'];
+var _NJ_TAM_HINTS = {
+  llm:      'AI broadens the ICP into several real Apollo slices for a grounded market size (recommended).',
+  llm_pure: 'AI estimates the market size from its own knowledge — no Apollo counts. A directional guess, shown as “Estimated”. (Apollo is still used for the 25 sample leads.)',
+  apollo:   'Uses Apollo’s exact count for the ICP filters — a real number, but narrower (can undercount the true market).'
+};
 function njSetTamMethod(m) {
-  _njTamMethod = (m === 'apollo') ? 'apollo' : 'llm';
-  var llmBtn = document.getElementById('nj-tam-llm');
-  var apBtn  = document.getElementById('nj-tam-apollo');
-  var hint   = document.getElementById('nj-tam-method-hint');
-  if (llmBtn) llmBtn.classList.toggle('active', _njTamMethod === 'llm');
-  if (apBtn)  apBtn.classList.toggle('active', _njTamMethod === 'apollo');
-  if (hint) hint.textContent = _njTamMethod === 'apollo'
-    ? 'Uses Apollo’s exact count for the ICP filters — a real number, but narrower (can undercount the true market).'
-    : 'AI broadens the ICP into several real Apollo slices for a grounded market size (recommended).';
+  _njTamMethod = _NJ_TAM_METHODS.indexOf(m) >= 0 ? m : 'llm';
+  _NJ_TAM_METHODS.forEach(function(key) {
+    var btn = document.getElementById('nj-tam-' + key);
+    if (btn) btn.classList.toggle('active', _njTamMethod === key);
+  });
+  var hint = document.getElementById('nj-tam-method-hint');
+  if (hint) hint.textContent = _NJ_TAM_HINTS[_njTamMethod];
 }
 
 function njGenerate() {

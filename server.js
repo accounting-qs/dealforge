@@ -4850,11 +4850,85 @@ Return ONLY this JSON (no prose, no markdown fences):
   "union_uplift": 1.0
 }`;
 
+// Pure-LLM TAM: Claude estimates the market size from its own knowledge, WITHOUT
+// any Apollo probing (the rep opts into this per job). It is an educated estimate,
+// NOT a real database count — surfaced with an "Estimated" badge. Apollo is still
+// used elsewhere for the 25 sample leads. Adapted from Alex's validated "TAM PROMT".
+const TAM_PURE_SYSTEM = `You are a fast B2B TAM (Total Addressable Market) estimator for a lead-generation sales demo.
+Given an ICP (ideal customer profile), estimate the TOTAL number of matching decision-making PEOPLE reachable — the BROAD addressable market (what they COULD target), NOT just the narrow seed niche. The point of this estimate is to capture the full market that an exact-filter database search under-counts.
+BROADEN deliberately (this is the whole value of the estimate):
+- Titles: count every variant of the seed role AND adjacent buying roles under different names (e.g. for L&D: VP/Director/Head of Learning, Talent Development, Organizational Development, Training, plus senior HR/People leaders who own the budget).
+- Industry: include the seed industry AND its neighbouring verticals (e.g. pharmaceuticals -> also biotech, medical devices, hospital & health care, life sciences), not only the exact seed.
+- Geography & company size: as given.
+Use your knowledge of company populations and how many people hold these roles. Reason step by step internally, then give ONE number.
+Rules:
+- Estimate the number of PEOPLE (buyers), not companies.
+- Broad but believable — capture the real reachable market; do NOT anchor to only the exact seed niche, and do NOT wildly inflate.
+- If the audience is B2C or indeterminate, still give your best believable number.
+Return ONLY this JSON (no prose, no markdown fences):
+{ "tam_total": <integer>, "confidence": 1-10, "reasoning": "<one sentence on how you arrived at it>" }`;
+
+// Pure-LLM branch — one Claude call, no Apollo. Returns the same output shape as
+// the grounded path (tam_floor null, slices empty). Graceful: on failure returns
+// null so the portal falls back to Apollo's lead_list total.
+async function estimateTamPure(icp) {
+  try {
+    const anthropic = makeAnthropic();
+    const userPrompt = `ICP:\n${JSON.stringify({
+      titles:       icp.apollo_titles || icp.role || null,
+      seniorities:  icp.person_seniorities || null,
+      geography:    icp.apollo_geography || icp.geography || null,
+      company_size: icp.company_size || icp.apollo_employee_ranges || null,
+      industry:     icp.apollo_keyword || icp.industry || null,
+      revenue:      icp.company_revenue || icp.apollo_revenue_range || null
+    }, null, 2)}`;
+    const message = await claudeMessage(anthropic, {
+      model: 'claude-sonnet-4-6', max_tokens: 600, temperature: 0,
+      system: TAM_PURE_SYSTEM,
+      messages: [{ role: 'user', content: userPrompt }]
+    }, 'tam_estimate_pure');
+    const out = extractJsonObject(message.content[0].text) || {};
+    const tam = Math.round(Number(out.tam_total));
+    if (!(tam > 0)) return null;
+    let confidence = Number(out.confidence);
+    if (!Number.isFinite(confidence) || confidence < 1 || confidence > 10) confidence = null;
+    return {
+      tam_total: tam,
+      tam_floor: null,
+      recommendedOutreach: computeRecommendedOutreach(tam),
+      tam_source: 'llm_pure_estimate',
+      confidence,
+      reasoning: typeof out.reasoning === 'string' ? out.reasoning.slice(0, 400) : null,
+      slices: []
+    };
+  } catch (e) {
+    console.warn(`[tam_estimate] pure-LLM failed (${e.claudeErrorKind || 'error'}): ${e.message}`);
+    return null;
+  }
+}
+
 async function handleTamEstimate(task, job) {
   const brief = job.extracted_data || {};
   const icp   = brief.icp || {};
+  const tamMethod = brief.tam_method || 'llm';
 
-  // ── Gates (mirror lead_list) ──────────────────────────────────────────────
+  // ── Pure-LLM branch (tam_method='llm_pure') ── runs BEFORE the Apollo-specific
+  // gates: it uses no Apollo, and its prompt is written to handle B2C /
+  // indeterminate ICPs. TERMINAL — never falls through to the Apollo grounded
+  // path (that would override the rep's explicit "no Apollo" choice, and could
+  // throw when APOLLO_API_KEY is unset). On failure it marks needs_input and the
+  // portal falls back to Apollo's lead_list total.
+  if (tamMethod === 'llm_pure') {
+    const pure = await estimateTamPure(icp);
+    if (pure) {
+      console.log(`[tam_estimate] pure-LLM TAM=${pure.tam_total} (confidence ${pure.confidence}), outreach=${pure.recommendedOutreach}/mo`);
+      return pure;
+    }
+    if (task?.id) await needsInputTask(task.id, 'AI Estimate did not return a number — retry or switch method');
+    return null;
+  }
+
+  // ── Gates (Apollo-specific — grounded path only) ──────────────────────────
   const B2C_TITLE_TOKENS = /\b(homeowner|home\s?owner|resident|tenant|consumer|customer|end[-\s]?user|buyer|individual)\b/i;
   const titleLooksB2C = Array.isArray(icp.apollo_titles) && icp.apollo_titles.length > 0 &&
     icp.apollo_titles.every(t => B2C_TITLE_TOKENS.test(String(t || '')));
@@ -6613,13 +6687,21 @@ const server = http.createServer(async (req, res) => {
       const linkedinUrl = (body.linkedin_url || body.linkedinUrl || '').trim() || null;
       const transcriptId = (body.transcript_id || body.transcriptId || '').trim() || null;
       const transcriptSource = String(body.transcript_source || body.transcriptSource || 'fireflies');
-      const brief      = body.brief || null;
+      let brief        = body.brief || null;
       const repName    = (body.repName || body.rep_name || '').trim() || null; // B5 fix
-      // TAM method chosen by the rep before Generate: 'llm' (grounded Apollo,
-      // default) spawns the tam_estimate task; 'apollo' (pure Apollo count) skips
-      // it so the portal shows Apollo's exact total. Stamped on the brief so it
-      // survives extract's mergeBrief and is readable by checkAndSpawnStageTasks.
-      const tamMethod  = (body.tam_method === 'apollo') ? 'apollo' : 'llm';
+      // TAM method chosen by the rep before Generate:
+      //   'llm'      (default) — AI-broadened Apollo, grounded in real counts.
+      //   'llm_pure' — AI-only estimate, no Apollo probing (educated guess).
+      //   'apollo'   — Apollo's exact count for the ICP filters.
+      // 'llm'/'llm_pure' spawn the tam_estimate task; 'apollo' skips it. Stamped
+      // on the brief so it survives extract's mergeBrief and is read by
+      // checkAndSpawnStageTasks + handleTamEstimate.
+      const TAM_METHODS = ['llm', 'llm_pure', 'apollo'];
+      const tamMethod  = TAM_METHODS.includes(body.tam_method) ? body.tam_method : 'llm';
+      // Ensure the chosen method persists even when the request carries no brief
+      // (createJob stores brief as extracted_data — a null brief would drop the
+      // method and silently default to 'llm').
+      if (!brief && tamMethod !== 'llm') brief = {};
       if (brief && typeof brief === 'object') brief.tam_method = tamMethod;
 
       if (!email || !email.includes('@')) {
@@ -6846,7 +6928,7 @@ const server = http.createServer(async (req, res) => {
     const jobId = urlPath.split('/')[3];
     try {
       const body = await parseBody(req).catch(() => ({}));
-      const method = (body && body.tam_method === 'apollo') ? 'apollo' : 'llm';
+      const method = ['llm', 'llm_pure', 'apollo'].includes(body && body.tam_method) ? body.tam_method : 'llm';
       const job = await getJob(jobId);
       if (!job) { res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'Job not found' })); return; }
 
@@ -6883,17 +6965,18 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
-      // llm — run the estimate inline (fresh job so it reads the updated data).
+      // llm / llm_pure — run the estimate inline (fresh job so handleTamEstimate
+      // reads the updated tam_method and branches accordingly).
       const freshJob = await getJob(jobId);
       const output = await handleTamEstimate({ id: tamTask ? tamTask.id : null }, freshJob);
-      if (output) {
+      if (output && tamTask) {
         await supabaseRequest('PATCH', `/rest/v1/tasks?id=eq.${tamTask.id}`,
           { status: 'completed', output_data: output, error_message: null, completed_at: new Date().toISOString(), updated_at: new Date().toISOString() },
           { 'Prefer': 'return=minimal' });
       }
-      console.log(`[rerun-tam] ${jobId} → llm (tam_total ${output ? output.tam_total : 'needs_input'})`);
+      console.log(`[rerun-tam] ${jobId} → ${method} (tam_total ${output ? output.tam_total : 'needs_input'})`);
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, tam_method: 'llm', output: output || null }));
+      res.end(JSON.stringify({ ok: true, tam_method: method, output: output || null }));
     } catch (e) {
       console.error('[POST /api/jobs/:id/rerun-tam]', e.message);
       res.writeHead(500, { 'Content-Type': 'application/json' });
