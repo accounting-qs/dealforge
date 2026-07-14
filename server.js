@@ -4770,13 +4770,14 @@ async function handleLeadList(task, job) {
 // total_entries; the TAM is derived from the largest deduped real count (never a
 // summed/invented number). See specs/tam_estimate.md.
 const TAM_PLANNER_SYSTEM = `You are a fast B2B TAM query planner for a lead-generation sales demo.
-You are given an ICP (ideal customer profile) already normalized into Apollo.io search fields.
-The current system undercounts the market ~10-20x because it queries ONE narrow set of exact job titles WITH a narrow industry keyword.
-Your job: propose 4-6 BROAD but believable Apollo "slices" that together capture the real TOTAL addressable market (what they COULD target, not just their current niche), plus one narrow "floor" slice that mirrors the exact-titles query.
+You are given an ICP (ideal customer profile) already normalized into Apollo.io search fields, and a list of ADJACENT INDUSTRIES (real Apollo industry values near the buyer's industry).
+The current system undercounts the market ~10-20x because it queries ONE narrow set of exact job titles WITH a single narrow industry.
+Your job: propose 4-6 BROAD but believable Apollo "slices" that capture the real addressable market, plus one narrow "floor" slice that mirrors the exact-titles query.
 
-THE TWO BIGGEST LEVERS (use them):
-1. DROP the industry keyword on the broad slices. The industry keyword (q_organization_keyword_tags) is usually the single biggest under-counter — the real TAM for a role spans many industries, not just the seed one. At least ONE broad slice MUST have NO q_organization_keyword_tags at all. Others may LOOSEN it to adjacent industries (e.g. pharmaceuticals -> also biotech, life sciences, healthcare, medical devices).
-2. WIDEN the titles. Include the seed titles PLUS adjacent decision-maker titles (the same function under different names, and neighbouring functions who also buy). A big union of real titles is your most reliable broadener.
+BROADENING STRATEGY — broaden the ROLE, keep the market:
+1. WIDEN THE TITLES aggressively — this is your main lever. Include the seed titles PLUS every adjacent decision-maker title (the same function under different names, and neighbouring functions who also buy). A large union of real titles is the most reliable broadener. Aim for 12-20 titles on the broad slices.
+2. KEEP THE INDUSTRY, but broaden it to the ADJACENT INDUSTRIES provided (do NOT drop the industry entirely, and do NOT keep only the single seed industry). Put the adjacent industries in q_organization_keyword_tags on the broad slices. This keeps the TAM to "their kind of client".
+3. Keep geography and company size as given (wide).
 
 VALID FIELDS ONLY (anything else is ignored or returns 0):
 - person_titles: array of real job titles (2-4 words each).
@@ -4784,23 +4785,23 @@ VALID FIELDS ONLY (anything else is ignored or returns 0):
 - person_department_or_subdepartments: array. VALID VALUES ONLY (exact snake_case): c_suite, product_management, engineering_technical, design, education, finance, human_resources, information_technology, legal, marketing, medical_health, operations, sales, consulting, business_development, support, administrative, accounting, arts_and_design, entrepreneurship, media_communications. There is NO "learning_and_development" department in Apollo — map L&D / training / talent to human_resources. If unsure, OMIT department and use a wide title union instead.
 - organization_locations: array of country/region names.
 - organization_num_employees_ranges: array of codes like "51,200","201,500","1001,10000".
-- q_organization_keyword_tags: array of short industry phrases, OR-ed (DROP on the broad slices per lever 1).
+- q_organization_keyword_tags: array of industry values — USE THE PROVIDED ADJACENT INDUSTRIES on the broad slices.
 - revenue_range: {min,max} in USD, or omit.
 
 HARD RULES:
 - Every slice MUST contain person_titles OR person_department_or_subdepartments (or both). NEVER a slice with only person_seniorities — that matches millions of people and is not believable.
 - When you use person_department_or_subdepartments, pair it with person_seniorities to keep it to decision-makers.
-- Include exactly ONE slice labelled as the narrow exact-titles floor (seed titles + the seed industry keyword) — this anchors the baseline.
-- Include at least ONE broad slice with NO industry keyword.
+- Include exactly ONE slice labelled as the narrow exact-titles floor (seed titles + the single seed industry) — this anchors the baseline.
+- Every OTHER (broad) slice keeps an industry filter set to the ADJACENT INDUSTRIES provided.
 - Do NOT invent numbers. Prefer broad+believable over precise.
 - union_uplift: a small multiplier between 1.0 and 1.3 approximating the true cross-slice union beyond the single largest slice. Use 1.0 if unsure.
 
 Return ONLY this JSON (no prose, no markdown fences):
 {
   "slices": [
-    { "label": "Exact titles (narrow floor)", "payload": { "person_titles": ["..."], "q_organization_keyword_tags": ["..."], "organization_locations": ["..."], "organization_num_employees_ranges": ["..."] } },
-    { "label": "Wide title union, no industry", "payload": { "person_titles": ["...","...","..."], "organization_locations": ["..."], "organization_num_employees_ranges": ["..."] } },
-    { "label": "Function + seniority, no industry", "payload": { "person_seniorities": ["vp","head","director"], "person_department_or_subdepartments": ["human_resources"], "organization_locations": ["..."], "organization_num_employees_ranges": ["..."] } }
+    { "label": "Exact titles (narrow floor)", "payload": { "person_titles": ["..."], "q_organization_keyword_tags": ["<seed industry only>"], "organization_locations": ["..."], "organization_num_employees_ranges": ["..."] } },
+    { "label": "Wide title union, adjacent industries", "payload": { "person_titles": ["...12-20 titles..."], "q_organization_keyword_tags": ["<adjacent industries>"], "organization_locations": ["..."], "organization_num_employees_ranges": ["..."] } },
+    { "label": "Function + seniority, adjacent industries", "payload": { "person_seniorities": ["vp","head","director"], "person_department_or_subdepartments": ["human_resources"], "q_organization_keyword_tags": ["<adjacent industries>"], "organization_locations": ["..."], "organization_num_employees_ranges": ["..."] } }
   ],
   "confidence": 1-10,
   "reasoning": "one sentence",
@@ -4833,14 +4834,34 @@ async function handleTamEstimate(task, job) {
   const expandEU = list => (list || []).flatMap(g => (/^european union$/i.test(g) || /^europe$/i.test(g)) ? EU_COUNTRIES : [g])
     .filter((g, i, a) => a.indexOf(g) === i);
 
+  // ── Adjacent-industry taxonomy (grounded in Apollo's real industry values) ──
+  // Policy: broaden the ROLE (titles), keep the market (industry) but widen it to
+  // the neighbouring verticals. suggestIndustries() returns canonical Apollo
+  // industry names that co-occur with the seed — free (no credits). The seed
+  // itself always leads. Empty/failed → just the seed (or nothing if no seed).
+  const seedIndustry = (icp.apollo_keyword || icp.industry || '').trim() || null;
+  let adjacentIndustries = [];
+  if (seedIndustry) {
+    let live = [];
+    try { live = await suggestIndustries(seedIndustry); } catch (e) { console.warn('[tam_estimate] suggestIndustries failed:', e.message); }
+    adjacentIndustries = [seedIndustry, ...live]
+      .map(s => String(s || '').trim()).filter(Boolean)
+      .filter((s, i, a) => a.findIndex(x => x.toLowerCase() === s.toLowerCase()) === i)
+      .slice(0, 6);
+    console.log(`[tam_estimate] seed industry "${seedIndustry}" → adjacent: ${JSON.stringify(adjacentIndustries)}`);
+  }
+  const allowedInd = new Set(adjacentIndustries.map(s => s.toLowerCase()));
+
   // ── Deterministic broad slice (also the Claude-failure fallback) ──────────
+  // Broaden titles; keep industry scoped to the adjacent verticals (not dropped).
   const broadFallback = () => {
     const p = {};
     if (hasTitles) p.person_titles = icp.apollo_titles;
     if (Array.isArray(icp.person_seniorities) && icp.person_seniorities.length) p.person_seniorities = icp.person_seniorities;
+    if (adjacentIndustries.length) p.q_organization_keyword_tags = adjacentIndustries;
     if (Array.isArray(icp.apollo_geography) && icp.apollo_geography.length) p.organization_locations = expandEU(icp.apollo_geography);
     if (Array.isArray(icp.apollo_employee_ranges) && icp.apollo_employee_ranges.length) p.organization_num_employees_ranges = icp.apollo_employee_ranges;
-    return p; // industry keyword intentionally dropped to widen the pool
+    return p;
   };
 
   // ── 1. Claude query-planner ───────────────────────────────────────────────
@@ -4856,7 +4877,7 @@ async function handleTamEstimate(task, job) {
       apollo_revenue_range:    icp.apollo_revenue_range || null,
       role:                    icp.role || null,
       company_size:            icp.company_size || null
-    }, null, 2)}`;
+    }, null, 2)}\n\nSEED INDUSTRY (use alone on the floor slice): ${seedIndustry ? JSON.stringify(seedIndustry) : 'none'}\nADJACENT INDUSTRIES (real Apollo values — use these on every broad slice's q_organization_keyword_tags): ${adjacentIndustries.length ? JSON.stringify(adjacentIndustries) : 'none (omit industry on broad slices)'}`;
     const message = await claudeMessage(anthropic, {
       model: 'claude-sonnet-4-6', max_tokens: 1500, temperature: 0,
       system: TAM_PLANNER_SYSTEM,
@@ -4896,6 +4917,24 @@ async function handleTamEstimate(task, job) {
           return false;
         }
         return Object.keys(p).length > 0;
+      })
+      // Enforce the industry policy deterministically (don't rely on the LLM):
+      // the floor slice uses the single seed industry; every broad slice's
+      // industry is SNAPPED to the canonical adjacent set (values not in the
+      // Apollo taxonomy are dropped) and backfilled with the adjacent set if the
+      // LLM's values don't match — so we keep the industry, broadened, never
+      // dropped, and always grounded in real Apollo values.
+      .map(s => {
+        const isFloor = /floor|exact|narrow/i.test(s.label);
+        if (isFloor) {
+          if (seedIndustry) s.payload.q_organization_keyword_tags = [seedIndustry];
+        } else if (adjacentIndustries.length) {
+          const cur = Array.isArray(s.payload.q_organization_keyword_tags)
+            ? s.payload.q_organization_keyword_tags.filter(v => allowedInd.has(String(v).trim().toLowerCase()))
+            : [];
+          s.payload.q_organization_keyword_tags = cur.length ? cur : adjacentIndustries.slice();
+        }
+        return s;
       });
     tamSource = 'llm_broadened_apollo';
   }
