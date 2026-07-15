@@ -17,9 +17,11 @@ Produces the **headline Total Addressable Market (TAM) number** shown at the top
 **Why this task exists.** Today the TAM is Apollo's `total_entries` for the exact ICP lead-search payload (`handleLeadList`, `server.js:4659`). Because that payload uses one narrow set of titles, the count under-represents the real market by ~10–20× and causes reps to wrongly disqualify prospects. The 25 leads *should* stay narrow (they must be the sharp, best-fit sample), but the TAM *should* reflect the broad addressable market.
 
 **Three rep-selectable methods** (chosen at job creation via the dashboard toggle, switchable + re-runnable from the Prospect Infos tab; stored as `extracted_data.tam_method`):
-- **`llm` — AI Grounded (default).** Claude generates several *broad but valid* Apollo "slices" (adjacent industries + wide title unions); we probe each for its real `total_entries` and take the **median** of the broad slices. Grounded in real counts. `tam_source: llm_broadened_apollo`.
+- **`apollo` — Apollo Exact (DEFAULT).** No `tam_estimate` task runs (skipped at spawn / set to `skipped` on rerun); the portal shows Apollo's exact `lead_list` `total`. `tam_source: apollo_api_live`. This is the default at job creation; the rep opts into an AI method when they want the market broadened.
+- **`llm` — AI Grounded.** Claude generates several *broad but valid* Apollo "slices" (adjacent industries + wide title unions); we probe each for its real `total_entries` and take the **median** of the broad slices. Grounded in real counts. `tam_source: llm_broadened_apollo`.
 - **`llm_pure` — AI Estimate.** Claude estimates the market size from its own knowledge, **with NO Apollo probing** (`estimateTamPure()` — one Claude call, temp 0 so it's stable). A directional guess, not a real count — always badged "Estimated". `tam_source: llm_pure_estimate`, `tam_floor: null`, `slices: []`. Apollo is still used for the 25 sample leads.
-- **`apollo` — Apollo Exact.** No `tam_estimate` task runs (skipped at spawn / set to `skipped` on rerun); the portal shows Apollo's exact `lead_list` `total`. `tam_source: apollo_api_live`.
+
+The `POST /api/jobs` fallback and the Prospect Infos display default are both `apollo`.
 
 `handleTamEstimate` reads `brief.tam_method`: `llm_pure` → `estimateTamPure()` (falls through to the grounded path if Claude fails); otherwise the grounded Apollo-broadening path below. `apollo` never reaches the handler (gated at spawn / skipped on rerun).
 

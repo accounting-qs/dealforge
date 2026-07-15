@@ -5909,7 +5909,7 @@ function _piSetStatus(msg, color) {
 }
 
 // ── TAM method (Prospect Infos tab) ──────────────────────────────────────────
-var _piTamMethod = 'llm';
+var _piTamMethod = 'apollo';
 var _PI_TAM_METHODS = ['llm', 'llm_pure', 'apollo'];
 var _PI_TAM_LABELS = { llm: 'AI Grounded', llm_pure: 'AI Estimate', apollo: 'Apollo Exact' };
 function piSetTamMethod(m) {
@@ -5923,7 +5923,9 @@ function piSetTamMethod(m) {
   });
 }
 function _piInitTamMethod(brief) {
-  const m = (brief && _PI_TAM_METHODS.indexOf(brief.tam_method) >= 0) ? brief.tam_method : 'llm';
+  // Default to 'apollo' when a job has no stored method (matches the job-creation
+  // default; old pre-feature jobs show the Apollo count, so this is accurate).
+  const m = (brief && _PI_TAM_METHODS.indexOf(brief.tam_method) >= 0) ? brief.tam_method : 'apollo';
   piSetTamMethod(m);
   const cur = document.getElementById('pi-tam-current');
   if (cur) {

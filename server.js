@@ -6690,18 +6690,18 @@ const server = http.createServer(async (req, res) => {
       let brief        = body.brief || null;
       const repName    = (body.repName || body.rep_name || '').trim() || null; // B5 fix
       // TAM method chosen by the rep before Generate:
-      //   'llm'      (default) — AI-broadened Apollo, grounded in real counts.
+      //   'apollo'   (DEFAULT) — Apollo's exact count for the ICP filters.
+      //   'llm'      — AI-broadened Apollo, grounded in real counts.
       //   'llm_pure' — AI-only estimate, no Apollo probing (educated guess).
-      //   'apollo'   — Apollo's exact count for the ICP filters.
       // 'llm'/'llm_pure' spawn the tam_estimate task; 'apollo' skips it. Stamped
       // on the brief so it survives extract's mergeBrief and is read by
       // checkAndSpawnStageTasks + handleTamEstimate.
       const TAM_METHODS = ['llm', 'llm_pure', 'apollo'];
-      const tamMethod  = TAM_METHODS.includes(body.tam_method) ? body.tam_method : 'llm';
+      const tamMethod  = TAM_METHODS.includes(body.tam_method) ? body.tam_method : 'apollo';
       // Ensure the chosen method persists even when the request carries no brief
       // (createJob stores brief as extracted_data — a null brief would drop the
-      // method and silently default to 'llm').
-      if (!brief && tamMethod !== 'llm') brief = {};
+      // method and silently default it downstream).
+      if (!brief) brief = {};
       if (brief && typeof brief === 'object') brief.tam_method = tamMethod;
 
       if (!email || !email.includes('@')) {
