@@ -955,6 +955,9 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
       </div>
       <div id="tam-kpi-line" style="display:none;font-size:12px;color:#52525b;margin-top:10px;line-height:1.5;"></div>
       <div id="lead-diagnostics-panel" class="lead-diag" style="display:none;"></div>
+      <!-- Rep-only: explains a thin/degenerate lead list (e.g. a keyword that
+           resolves to one aggregator org) so it's fixable, not a silent short list. -->
+      <div id="lead-warning-banner" class="rep-only" style="display:none;margin-top:12px;padding:11px 14px;border-radius:8px;font-size:12.5px;line-height:1.5;"></div>
 
     </div>
 
@@ -3065,6 +3068,9 @@ function buildCompatSession(job) {
     // absolute_fallback step that's no longer used) every time the rep
     // re-runs the search.
     apollo_diagnostics:   existingGen.apollo_diagnostics || tasks.lead_list?.output?.apollo_diagnostics || null,
+    // Thin/degenerate lead-list explanation ({ level, message }) — shown as a
+    // rep-only banner on the Lead List so a short list is understandable/fixable.
+    leadWarning:          existingGen.lead_warning ?? tasks.lead_list?.output?.lead_warning ?? null,
     // AI-generated copy from Stage 3 tasks — portal reads these instead of hardcoded strings
     calendarEmails:       tasks.calendar_visual?.output?.emails || existingGen.calendarEmails || null,
     calendarTitle:        tasks.calendar_visual?.output?.title  || existingGen.calendarTitle  || null,
@@ -4585,6 +4591,32 @@ function runPersonalization(session) {
         }
       }
     } catch(e) { console.warn('[lead-market-too-small] render error:', e.message); }
+
+    // ── Lead-list warning banner (rep edit-mode only) ─────────────────────────
+    // Explains a thin / degenerate result (e.g. a keyword resolving to one
+    // aggregator org) so the rep can fix the filters instead of puzzling over a
+    // short list. Prospects never see it (rep-only + edit-mode gated).
+    try {
+      var lwb = document.getElementById('lead-warning-banner');
+      if (lwb) {
+        var lw = gen.leadWarning;
+        if (IS_EDIT_MODE && lw && lw.message) {
+          var palette = lw.level === 'error'
+            ? { bg: 'rgba(239,68,68,0.08)',  bd: 'rgba(239,68,68,0.3)',  fg: '#fca5a5', icon: '⚠' }
+            : lw.level === 'warn'
+              ? { bg: 'rgba(245,158,11,0.08)', bd: 'rgba(245,158,11,0.3)', fg: '#fbbf24', icon: '⚠' }
+              : { bg: 'rgba(96,165,250,0.08)', bd: 'rgba(96,165,250,0.28)', fg: '#93c5fd', icon: 'ℹ' };
+          lwb.style.background = palette.bg;
+          lwb.style.border = '1px solid ' + palette.bd;
+          lwb.style.color = palette.fg;
+          lwb.innerHTML = '<strong>' + palette.icon + ' Lead list:</strong> ' +
+            String(lw.message).replace(/[<>]/g, '');
+          lwb.style.display = 'block';
+        } else {
+          lwb.style.display = 'none';
+        }
+      }
+    } catch(e) { console.warn('[lead-warning-banner] render error:', e.message); }
 
     // ── Render Apollo Diagnostics (rep edit-mode only) ────────────────────────
     // The diagnostics panel summarizes what the search engine had to do to find

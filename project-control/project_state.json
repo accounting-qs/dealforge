@@ -5,7 +5,7 @@
   "last_updated": "2026-07-14T00:00:00Z",
   "current_state": {
     "phase_name": "Phase 2 - Build & Test",
-    "status": "local-testing (TAM rework + UI sub-tabs awaiting rep sign-off before push)"
+    "status": "TAM 3-method rework shipped; lead-list sparse/degenerate handling added (fill 25 with email-less backfill at 0 credits + degenerate-query warning)"
   },
   "project_overview": {
     "what": "Deal Forge is an internal sales tool for Quantum Scaling reps. After completing a Call 1 (Business Audit), the rep triggers the app with the Fireflies meeting ID. An AI pipeline extracts the prospect's ICP and business context, then generates 7 custom assets: a verified lead list, interactive Google Calendar invite visual, 3 webinar title options, an interactive ROI calculator pre-populated with their numbers, a prospect research profile, and brand-scraped visual identity. All assets are ready before Call 2. The in-portal Webinar Experience tab renders a one-slide branded hero + ICP-aware live chat at view time (no separate pipeline task).",

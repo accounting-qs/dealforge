@@ -2264,39 +2264,38 @@ async function finalizeLeadList(rawLeads, icp, enrichmentCache = null, progressC
     deduped.push(l);
   }
 
-  // 2. Reachable contacts first, then the rest as backfill reserve.
-  const queue = [...deduped.filter(l => l.has_email), ...deduped.filter(l => !l.has_email)];
-
   const sizeFallback = formatEmployeeRangeBand(icp?.apollo_employee_ranges);
   const applySize = list => { if (sizeFallback) list.forEach(l => { if (!l.company_size) l.company_size = sizeFallback; }); };
 
-  // 3. Match the first 25, then backfill any address-less leads from the reserve.
-  const selected = queue.slice(0, TARGET);
-  applySize(selected);
-  let creditsSpent = await peopleMatchAllLeads(selected, enrichmentCache);
-
-  let next = selected.length;
-  while (next < queue.length && creditsSpent < MATCH_BUDGET) {
-    const gaps = selected.filter(l => !hasUsableEmail(l)).length;
-    if (!gaps) break;
-    const take = Math.min(gaps, MATCH_BUDGET - creditsSpent, queue.length - next);
+  // 2. Reveal (paid people/match) ONLY leads that have an email. A match on a
+  //    has_email=false lead can't return an address — it would just waste a
+  //    credit — so non-emailed leads are never matched; they become free
+  //    backfill. Reveal emailed leads adaptively in batches until 25 have a
+  //    usable address or the credit budget is hit (a little headroom per batch
+  //    covers match misses).
+  const emailedPool    = deduped.filter(l => l.has_email);
+  const nonEmailedPool = deduped.filter(l => !l.has_email);
+  const revealed = [];
+  let creditsSpent = 0, cursor = 0;
+  while (revealed.length < TARGET && cursor < emailedPool.length && creditsSpent < MATCH_BUDGET) {
+    const take = Math.min((TARGET - revealed.length) + 3, MATCH_BUDGET - creditsSpent, emailedPool.length - cursor);
     if (take <= 0) break;
-    const batch = queue.slice(next, next + take);
-    next += take;
+    const batch = emailedPool.slice(cursor, cursor + take);
+    cursor += take;
     applySize(batch);
     creditsSpent += await peopleMatchAllLeads(batch, enrichmentCache);
-    // Swap each freshly-reachable reserve lead into the first remaining gap.
-    for (const cand of batch.filter(hasUsableEmail)) {
-      const idx = selected.findIndex(l => !hasUsableEmail(l));
-      if (idx === -1) break;
-      selected[idx] = cand;
-    }
+    for (const l of batch) if (hasUsableEmail(l)) revealed.push(l);
   }
 
-  // 4. Surface reachable leads at the top of the table, cap at 25.
-  const leads = [...selected.filter(hasUsableEmail), ...selected.filter(l => !hasUsableEmail(l))].slice(0, TARGET);
+  // 3. Assemble up to 25: revealed-with-address first, then free backfill
+  //    (emailed leads we didn't reveal, then non-emailed) so the rep always sees
+  //    up to 25 rows even on a sparse/niche market — at NO extra credit cost.
+  const usedSet  = new Set(revealed);
+  const backfill = [...emailedPool.filter(l => !usedSet.has(l)), ...nonEmailedPool];
+  const leads = [...revealed, ...backfill].slice(0, TARGET);
+  applySize(leads);
   const emailed = leads.filter(hasUsableEmail).length;
-  console.log(`[lead_list] Finalize: ${deduped.length} unique companies in pool → ${leads.length} leads, ${emailed} with email (${creditsSpent} enrichment credits)`);
+  console.log(`[lead_list] Finalize: ${deduped.length} unique companies → ${leads.length} leads, ${emailed} emailed + ${leads.length - emailed} backfilled (${creditsSpent} credits)`);
 
   // Hydrate website + company LinkedIn for the final 25 only (free DDG scrape).
   // Runs AFTER people-match so the authoritative email-domain website set by the
@@ -2960,6 +2959,11 @@ async function guaranteedLeadSearch(sanitizedPayload, confidenceMap, relaxationO
   // accumulate until we have enough emailed unique companies. A dense market
   // hits the target on page 1 and never paginates; a sparse one (e.g. small
   // dental/law practices) pages a few deep to find reachable leads.
+  const uniqueCompanyCount = (people) => {
+    const cos = new Set();
+    for (const p of people) { if (p && p.company) cos.add(p.company.toLowerCase().trim()); }
+    return cos.size;
+  };
   const emailedUniqueCount = (people) => {
     const cos = new Set();
     for (const p of people) {
@@ -2967,31 +2971,44 @@ async function guaranteedLeadSearch(sanitizedPayload, confidenceMap, relaxationO
     }
     return cos.size;
   };
-  const MAX_PAGES = 4; // page 1 already fetched above
+  // Apollo search is FREE (0 credits), so we page deep to gather enough DISTINCT
+  // companies to fill 25 — whether or not they have emails (finalizeLeadList
+  // reveals only the emailed ones, and backfills the rest at no credit cost).
+  // Stop when we have 25 emailed-unique OR 25 distinct companies, exhaust the
+  // result set, hit the page cap, or a page adds NO new company (degenerate
+  // query — e.g. a keyword that resolves to one aggregator org, where 34K
+  // "matches" are all the same company).
+  const MAX_PAGES = 8; // page 1 already fetched above
   let pooled = results.people || [];
   let page = 1;
+  let lastUnique = uniqueCompanyCount(pooled);
   while (
     page < MAX_PAGES &&
     pooled.length < results.total_entries &&        // more results exist to fetch
-    emailedUniqueCount(pooled) < MIN_LEADS           // still short of 25 emailable companies
+    emailedUniqueCount(pooled) < MIN_LEADS &&        // still short of 25 emailable companies
+    uniqueCompanyCount(pooled) < MIN_LEADS            // AND short of 25 distinct companies to fill with
   ) {
     page++;
-    if (progressCb) await progressCb({ progress: Math.min(62, 54 + page * 2), message: `Gathering email-reachable leads (page ${page})…` });
+    if (progressCb) await progressCb({ progress: Math.min(62, 54 + page * 1), message: `Gathering leads (page ${page})…` });
     const more = await apolloPeopleSearch(currentPayload, page);
     if (!more.people || !more.people.length) break; // exhausted the result set
     pooled = pooled.concat(more.people);
+    const nowUnique = uniqueCompanyCount(pooled);
+    if (nowUnique === lastUnique) break;             // degenerate: no new companies this page — stop
+    lastUnique = nowUnique;
   }
-  if (page > 1) {
-    log.push({ step: 'email_pagination', pagesFetched: page, pooled: pooled.length, emailedUnique: emailedUniqueCount(pooled) });
-    console.log(`[Apollo] Email-coverage pagination: ${page} pages, ${pooled.length} candidates, ${emailedUniqueCount(pooled)} emailed unique companies`);
+  const finalUniqueCos = uniqueCompanyCount(pooled);
+  if (page > 1 || finalUniqueCos < MIN_LEADS) {
+    log.push({ step: 'email_pagination', pagesFetched: page, pooled: pooled.length, uniqueCompanies: finalUniqueCos, emailedUnique: emailedUniqueCount(pooled) });
+    console.log(`[Apollo] Coverage pagination: ${page} pages, ${pooled.length} candidates, ${finalUniqueCos} unique companies (${emailedUniqueCount(pooled)} emailable)`);
   }
 
   return {
-    // Hand the full accumulated pool (up to 4 pages) to finalizeLeadList — it
-    // dedups by company and selects the 25 reachable leads. The 400-cap matches
-    // MAX_PAGES × 100 so a deep sparse-market pool isn't truncated before
-    // has_email selection.
+    // Hand the full accumulated pool to finalizeLeadList — it dedups by company
+    // and selects up to 25 leads (emailed revealed, rest backfilled). Pool cap
+    // matches MAX_PAGES × 100 so a deep sparse-market pool isn't truncated.
     leads: pooled.slice(0, MAX_PAGES * 100) || [],
+    uniqueCompanies: finalUniqueCos,
     totalAvailable: results.total_entries,
     finalPayload: currentPayload,
     relaxationLog: log,
@@ -3515,6 +3532,30 @@ function computeRecommendedOutreach(tam) {
   return 30000;
 }
 
+// Build a rep-facing explanation when the lead list comes back thin, so a sparse
+// or degenerate result is understandable + fixable instead of a silent "1 lead".
+// Returns { level, message } or null. Shared by handleLeadList + rerun-apollo.
+function buildLeadWarning({ leads, total, uniqueCompanies, icp }) {
+  const n      = Array.isArray(leads) ? leads.length : 0;
+  const totalN = Number(total) || 0;
+  const uc     = (uniqueCompanies == null) ? null : Number(uniqueCompanies);
+  const noTitles = !(Array.isArray(icp?.apollo_titles) && icp.apollo_titles.length);
+  const titleFix = noTitles ? ' Add job titles (e.g. CEO) and' : ' Try to';
+  // Degenerate: a huge match count that resolves to ~one company — a keyword that
+  // maps to a single aggregator listing (e.g. "family office" → 34K records, all
+  // one org). No amount of paging finds 25 distinct companies that don't exist.
+  if (uc != null && uc <= 2 && totalN >= 1000) {
+    return { level: 'error', message: `Apollo shows ${totalN.toLocaleString()} matches but they resolve to only ${uc} distinct compan${uc === 1 ? 'y' : 'ies'} — this industry keyword is too narrow or dominated by one aggregator listing.${titleFix} use a broader industry, then re-run.` };
+  }
+  if (n < 5) {
+    return { level: 'warn', message: `Only ${n} lead${n === 1 ? '' : 's'} could be built for these filters.${noTitles ? ' Add job titles (e.g. CEO) and' : ''} broaden the geography or industry, then re-run.` };
+  }
+  if (n < 20) {
+    return { level: 'info', message: `${n} leads found — a bit thin.${noTitles ? ' Adding job titles' : ' Broadening the industry or geography'} may surface more.` };
+  }
+  return null;
+}
+
 // Count-only Apollo probe. Runs a mixed_people/api_search with per_page:1 and
 // returns just total_entries — used by the tam_estimate task to size a broad
 // ICP "slice" without pulling records. Standalone (the richer apolloPeopleSearch
@@ -3710,6 +3751,7 @@ async function fetchLeadsFromApollo(icp, progressCb) {
     leads: result.leads,
     total: result.totalAvailable,
     adjacent_total: adjacentTotal,
+    uniqueCompanies: result.uniqueCompanies ?? null,   // distinct companies in the search pool — tiny vs total = degenerate query
     tamSource: 'apollo',
     wasRelaxed: result.wasRelaxed,
     relaxationLog: result.relaxationLog,
@@ -3718,6 +3760,7 @@ async function fetchLeadsFromApollo(icp, progressCb) {
       wasRelaxed: result.wasRelaxed,
       relaxationLog: result.relaxationLog,
       finalPayload: result.finalPayload,
+      uniqueCompanies: result.uniqueCompanies ?? null,
       adjacent_total: adjacentTotal
     }
   };
@@ -4780,13 +4823,15 @@ async function handleLeadList(task, job) {
   // total/outreach is the fallback the portal uses only when tam_estimate is
   // absent/failed (see portal read precedence in mockup-portal.html).
   const recommendedOutreach = computeRecommendedOutreach(tam);
-  console.log(`[lead_list] Apollo returned ${leads.length} classified leads, TAM: ${tam}, Outreach: ${recommendedOutreach}/mo`);
-  // Phase 4: fire apollo_warning notification if fewer than 5 leads
-  if (leads.length < 5) {
+  const uniqueCompanies = result?.uniqueCompanies ?? null;
+  console.log(`[lead_list] Apollo returned ${leads.length} classified leads (${uniqueCompanies ?? '?'} unique cos), TAM: ${tam}, Outreach: ${recommendedOutreach}/mo`);
+  // Explain a thin/degenerate result to the rep instead of a silent short list.
+  const leadWarning = buildLeadWarning({ leads, total: tam, uniqueCompanies, icp });
+  if (leadWarning && leadWarning.level !== 'info') {
     await createNotification({
       type:  'apollo_warning',
-      title: `Low leads: only ${leads.length} found`,
-      body:  `Apollo returned fewer than 5 leads. Consider broadening the ICP filters.`,
+      title: leadWarning.level === 'error' ? 'Lead query too narrow' : `Low leads: only ${leads.length} found`,
+      body:  leadWarning.message,
       jobId: task?.job_id || null
     });
   }
@@ -4795,11 +4840,15 @@ async function handleLeadList(task, job) {
     total: tam,
     adjacent_total: result?.adjacent_total ?? null,    // industry-keyword-stripped TAM, surfaced in the UI as "Adjacent"
     recommendedOutreach,
+    uniqueCompanies,
+    lead_warning: leadWarning,
     tamSource: 'apollo_api_live',
     apollo_diagnostics: {
       wasRelaxed: result?.wasRelaxed || false,
       relaxationLog: result?.relaxationLog || [],
       finalPayload: result?.finalPayload || {},
+      uniqueCompanies,
+      lead_warning: leadWarning,
       adjacent_total: result?.adjacent_total ?? null
     }
   };
@@ -7598,6 +7647,17 @@ const server = http.createServer(async (req, res) => {
             const { leads: finalizedLeads } = await finalizeLeadList(result.leads, icp, enrichmentCache,
               snapshot => writeProgress({ status: 'running', ...snapshot }));
             console.log(`[rerun-apollo] Dedup: ${result.leads.length} → ${finalizedLeads.length} unique-company leads`);
+            // Same thin/degenerate explanation as the initial run (rerun is the
+            // exact path that produced the silent "1 lead" after a filter edit).
+            const rerunWarning = buildLeadWarning({ leads: finalizedLeads, total: tam, uniqueCompanies: result.uniqueCompanies ?? null, icp });
+            if (rerunWarning && rerunWarning.level !== 'info') {
+              await createNotification({
+                type:  'apollo_warning',
+                title: rerunWarning.level === 'error' ? 'Lead query too narrow' : `Low leads: only ${finalizedLeads.length} found`,
+                body:  rerunWarning.message,
+                jobId: jobId
+              }).catch(() => {});
+            }
             // Force the final save-write through even if it fell within the 700ms throttle.
             lastWrite = 0;
             await writeProgress({ status: 'running', progress: 95, message: 'Saving results…' });
@@ -7617,6 +7677,8 @@ const server = http.createServer(async (req, res) => {
                 adjacent_tam_total:   result.adjacent_total ?? null,
                 tam_source:           result.tamSource,
                 recommendedOutreach:  recommendedOutreach,
+                uniqueCompanies:      result.uniqueCompanies ?? null,
+                lead_warning:         rerunWarning,
                 leadsTaskStatus:     'completed',
                 apollo_diagnostics:   result.diagnostics,
                 apollo_rerun:         {
