@@ -510,6 +510,14 @@ html[data-mode="prospect"] .rep-only { display: none !important; }
 .roi-field-big { background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.09); border-radius: 14px; padding: 22px 26px; transition: border-color 140ms; }
 .roi-field-big:focus-within { border-color: rgba(52,180,51,0.5); }
 .roi-field-label { font-size: 11px; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; color: #52525b; margin-bottom: 10px; }
+.roi-fallback-badge { display: inline-block; margin-left: 6px; padding: 1px 6px; font-size: 9px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: #a16207; background: #fef9c3; border: 1px solid #fde68a; border-radius: 4px; vertical-align: middle; cursor: help; }
+.roi-fallback-badge[hidden] { display: none; }
+/* ROI inputs render EMPTY + shimmering until resolveRoiInputs() fills them, so
+   no default number ever paints and swaps. JS removes .roi-loading once resolved. */
+.roi-field-input.roi-loading { color: transparent; pointer-events: none; background-image: linear-gradient(90deg, #f4f4f5 25%, #e4e4e7 37%, #f4f4f5 63%); background-size: 400% 100%; animation: roiShimmer 1.3s ease infinite; }
+.roi-field-input.roi-loading::placeholder { color: transparent; }
+@keyframes roiShimmer { 0% { background-position: 100% 50%; } 100% { background-position: 0 50%; } }
+.roi-continue-btn:disabled { opacity: 0.55; cursor: default; }
 .roi-field-input-row { display: flex; align-items: center; gap: 8px; }
 .roi-field-affix { font-size: 30px; font-weight: 300; color: #3f3f46; user-select: none; }
 .roi-field-input { background: none; border: none; outline: none; font-size: 40px; font-weight: 700; color: #e4e4e7; width: 100%; min-width: 0; }
@@ -768,6 +776,10 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
     window.__TAB_SLUG_FROM_PATH = (__pathMatch && __pathMatch[2]) || null;
   })();
 </script>
+<!-- ROI seed sources, injected server-side (see resolveRoiSeed in server.js).
+     Tells the client which ROI inputs are showing a fallback default vs a real
+     saved/extracted value, so the "default" badge shows only on fallbacks. -->
+<script>window.__ROI_SEED = {{ROI_SEED_JSON}};</script>
 </head>
 <body>
 
@@ -1450,32 +1462,35 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
             <span id="roi-locked-monthly">30,000</span> prospects / month
           </div>
 
+          <!-- Inputs start EMPTY + shimmering (roi-loading). resolveRoiInputs()
+               fills them once the saved/fallback values resolve — so the rep
+               never sees a default number that then swaps to the real one. -->
           <div class="roi-input-group">
             <div class="roi-field-big">
               <div class="roi-field-label">Average Client LTV</div>
               <div class="roi-field-input-row">
                 <span class="roi-field-affix">$</span>
-                <input class="roi-field-input" type="number" id="ltv" value="48000" placeholder="48000">
+                <input class="roi-field-input roi-loading" type="number" id="ltv" value="" placeholder="LTV">
               </div>
             </div>
             <div class="roi-field-big">
-              <div class="roi-field-label">Sales Call Show Rate</div>
+              <div class="roi-field-label">Sales Call Show Rate<span class="roi-fallback-badge" id="show-rate-fallback-badge" title="Default benchmark — not from this prospect's call. Edit to save their real number." hidden>default</span></div>
               <div class="roi-field-input-row">
-                <input class="roi-field-input" type="number" id="show-rate" value="75" placeholder="75">
+                <input class="roi-field-input roi-loading" type="number" id="show-rate" value="" placeholder="Show %">
                 <span class="roi-field-affix">%</span>
               </div>
             </div>
             <div class="roi-field-big">
-              <div class="roi-field-label">Sales Close Rate</div>
+              <div class="roi-field-label">Sales Close Rate<span class="roi-fallback-badge" id="close-rate-fallback-badge" title="Default benchmark — not from this prospect's call. Edit to save their real number." hidden>default</span></div>
               <div class="roi-field-input-row">
-                <input class="roi-field-input" type="number" id="close-rate" value="25" placeholder="25">
+                <input class="roi-field-input roi-loading" type="number" id="close-rate" value="" placeholder="Close %">
                 <span class="roi-field-affix">%</span>
               </div>
             </div>
           </div>
           <p style="font-size:12px;color:#52525b;margin-bottom:32px;">Webinar attendance &amp; booking rates are QS benchmarks — adjustable conservative or aggressive on the next step.</p>
 
-          <button class="roi-continue-btn" onclick="roiCalcAndNext()">Calculate My Revenue →</button>
+          <button class="roi-continue-btn" id="roi-calc-btn" onclick="roiCalcAndNext()" disabled>Loading…</button>
         </div>
 
         <!-- ── Slide 1: Funnel ── -->
@@ -3251,9 +3266,52 @@ function wireROIEditMode() {
     inp.style.borderColor = 'rgba(134,239,172,0.4)';
     inp.addEventListener('change', () => {
       const v = parseFloat(inp.value);
-      if (!isNaN(v) && v > 0) saveOverride(field, v, null);
+      if (!isNaN(v) && v > 0) {
+        saveOverride(field, v, null);
+        // The rep just set a real value → it's no longer a fallback default.
+        const badge = document.getElementById(id + '-fallback-badge');
+        if (badge) badge.hidden = true;
+      }
     });
   });
+}
+
+// ── ROI input resolution ──────────────────────────────────────────────────────
+// The ROI inputs paint EMPTY + shimmering (.roi-loading). This fills them once
+// the resolved values are known, so the rep never sees a default number that
+// then swaps to the real one. Source-of-truth is window.__ROI_SEED, injected
+// server-side (resolveRoiSeed in server.js): { values, sources }. No fetch —
+// it's inline in <head>, so this resolves as soon as the DOM is ready.
+//   • real value (saved override or call-extracted) → shown, no badge
+//   • fallback default (rates 75/25)                → shown, "default" badge (REP VIEW ONLY)
+//   • LTV with no value                             → left blank for the rep to enter
+function resolveRoiInputs() {
+  const seed = window.__ROI_SEED || {};
+  const vals = seed.values  || {};
+  const src  = seed.sources || {};
+  [
+    { id: 'ltv',        val: vals.ltv,   source: src.ltv },
+    { id: 'show-rate',  val: vals.show,  source: src.show },
+    { id: 'close-rate', val: vals.close, source: src.close },
+  ].forEach(({ id, val, source }) => {
+    const inp = document.getElementById(id);
+    if (inp) {
+      inp.value = (val != null ? val : '');
+      inp.classList.remove('roi-loading');
+    }
+    // "default" badge — rep view only, and only when this field is a fallback
+    const badge = document.getElementById(id + '-fallback-badge');
+    if (badge) badge.hidden = !(IS_EDIT_MODE && source === 'fallback');
+  });
+  // Inputs are ready — activate the calculate button and run the first calc.
+  const btn = document.getElementById('roi-calc-btn');
+  if (btn) { btn.disabled = false; btn.textContent = 'Calculate My Revenue →'; }
+  if (typeof roiCalc === 'function') roiCalc();
+}
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', resolveRoiInputs);
+} else {
+  resolveRoiInputs();
 }
 
 // ── Personalization from session / job data ───────────────────────────────────

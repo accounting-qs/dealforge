@@ -4041,6 +4041,50 @@ function parseRate(s, defaultVal) {
   if (isNaN(n)) return defaultVal;
   return n > 1 ? n / 100 : n;
 }
+// Fallback rates used when neither a rep override nor an AI-extracted value
+// exists. These match the portal's historical ROI defaults and are BADGED as
+// "default" in the rep (?edit=true) view so a fallback is never mistaken for a
+// real, call-derived number. LTV has no fabricated default — it stays blank.
+const ROI_FALLBACK = { show: 75, close: 25 };
+
+// Resolve the three ROI-calculator seed values (+ per-field source) for
+// server-side injection into the portal HTML, so the rep sees their saved
+// number on first paint — no default→saved flash. Precedence per field:
+//   1. rep override (_overrides.roi_*)      → source 'override'
+//   2. AI-extracted metrics/business value  → source 'extracted'
+//   3. rates: ROI_FALLBACK (badged)         → source 'fallback'
+//      LTV : blank (no fabricated default)  → source 'none'
+// Rates are returned as percent integers (75) to match the % inputs. Mirrors
+// the metrics|business field resolution in handleRoiModel.
+function resolveRoiSeed(job) {
+  const ext = (job && job.extracted_data) || {};
+  const ov  = ext._overrides || {};
+  const ltvRaw   = (ext.metrics && ext.metrics.ltv)        || (ext.business && ext.business.ltv);
+  const showRaw  = (ext.metrics && ext.metrics.show_rate)  || (ext.business && ext.business.show_rate);
+  const closeRaw = (ext.metrics && ext.metrics.close_rate) || (ext.business && ext.business.close_rate);
+
+  // LTV — override → extracted → blank (rep enters it manually; no default)
+  let ltvVal = '', ltvSrc = 'none';
+  if (Number.isFinite(ov.roi_ltv)) { ltvVal = String(ov.roi_ltv); ltvSrc = 'override'; }
+  else { const p = parseLtv(ltvRaw); if (Number.isFinite(p)) { ltvVal = String(p); ltvSrc = 'extracted'; } }
+
+  // Show rate — override → extracted → 75% fallback (badged)
+  let showVal, showSrc;
+  if (Number.isFinite(ov.roi_show_rate)) { showVal = String(ov.roi_show_rate); showSrc = 'override'; }
+  else { const d = parseRate(showRaw, null); if (d != null) { showVal = String(Math.round(d * 100)); showSrc = 'extracted'; }
+         else { showVal = String(ROI_FALLBACK.show); showSrc = 'fallback'; } }
+
+  // Close rate — override → extracted → 25% fallback (badged)
+  let closeVal, closeSrc;
+  if (Number.isFinite(ov.roi_close_rate)) { closeVal = String(ov.roi_close_rate); closeSrc = 'override'; }
+  else { const d = parseRate(closeRaw, null); if (d != null) { closeVal = String(Math.round(d * 100)); closeSrc = 'extracted'; }
+         else { closeVal = String(ROI_FALLBACK.close); closeSrc = 'fallback'; } }
+
+  return {
+    ltv: ltvVal, show: showVal, close: closeVal,
+    sources: { ltv: ltvSrc, show: showSrc, close: closeSrc },
+  };
+}
 function calcRoiProjections(ltv, closeRate, showRate) {
   // Phase 1 params
   const p1 = { prospects: 7500, reg: 0.005, attend: 0.35, book: 0.08 };
@@ -8342,6 +8386,7 @@ const server = http.createServer(async (req, res) => {
   // handed out to prospects 302 to the new path-based shape so links stay live.
   const UUID_PATH_RE = /^\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:\/([a-z0-9-]+))?\/?$/i;
   const portalMatch = urlPath.match(UUID_PATH_RE);
+  let portalJobId = null;  // set when a portal deep-link resolves → drives ROI seed injection
   if (portalMatch) {
     if (!portalMatch[2]) {
       const qs = req.url.includes('?') ? req.url.slice(req.url.indexOf('?')) : '';
@@ -8349,6 +8394,7 @@ const server = http.createServer(async (req, res) => {
       res.end();
       return;
     }
+    portalJobId = portalMatch[1];
     urlPath = '/mockup-portal.html';
   } else if (urlPath === '/' || urlPath === '') {
     const qIdx = req.url.indexOf('?');
@@ -8382,6 +8428,43 @@ const server = http.createServer(async (req, res) => {
   if (urlPath === '/settings')           urlPath = '/settings.html';
   if (urlPath === '/prompts' || urlPath === '/prompts.html') urlPath = '/settings.html';  // legacy alias
   if (urlPath === '/prospect' || urlPath.startsWith('/prospect?')) urlPath = '/prospect.html';
+
+  // ── Portal HTML: seed the ROI calculator inputs server-side so the rep's
+  //    saved values (or the AI-extracted numbers) appear on FIRST paint. The
+  //    portal fetches job data client-side afterward, so without this the
+  //    hardcoded value="" would paint first and then swap to the saved value.
+  //    Degrades gracefully: any fetch error → empty inputs, never a 500. ──────
+  if (urlPath === '/mockup-portal.html') {
+    // Default (no job / preview): LTV blank, rates fall back to 75/25 (badged).
+    let roiSeed = {
+      ltv: '', show: String(ROI_FALLBACK.show), close: String(ROI_FALLBACK.close),
+      sources: { ltv: 'none', show: 'fallback', close: 'fallback' },
+    };
+    if (portalJobId) {
+      try {
+        const job = await getJob(portalJobId);
+        if (job) roiSeed = resolveRoiSeed(job);
+      } catch (e) {
+        console.error('[portal] ROI seed failed:', e && e.message);
+      }
+    }
+    // Client-side resolveRoiInputs() reads window.__ROI_SEED to fill the inputs
+    // (values) and decide the "default" badge (sources, rep view only). The
+    // inputs start empty+shimmering, so no default number paints then swaps.
+    // '<' escaped to prevent a </script> breakout.
+    const seedJson = JSON.stringify({
+      values:  { ltv: roiSeed.ltv, show: roiSeed.show, close: roiSeed.close },
+      sources: roiSeed.sources,
+    }).replace(/</g, '\\u003c');
+    fs.readFile(path.join(__dirname, 'mockup-portal.html'), (err, data) => {
+      if (err) { res.writeHead(404); res.end('Not found'); return; }
+      const html = data.toString().replace(/\{\{ROI_SEED_JSON\}\}/g, seedJson);
+      res.writeHead(200, { 'Content-Type': 'text/html', 'Cache-Control': 'no-store' });
+      res.end(html);
+    });
+    return;
+  }
+
   const filePath = path.join(__dirname, urlPath);
   const ext      = path.extname(filePath);
   fs.readFile(filePath, (err, data) => {
