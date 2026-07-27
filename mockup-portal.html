@@ -3979,6 +3979,12 @@ function runPersonalization(session) {
     if (tamTotal) {
       const tamEl = document.getElementById('tam-total-val');
       if (tamEl) {
+        // runPersonalization() re-runs on many events (override save, Apollo
+        // re-run, status-poll refetch). These sublines are appended, so without
+        // clearing the previous set they stack up (duplicate "+NNK without
+        // industry keyword" / "Verified in Apollo" / "⚠ Estimated"). Remove any
+        // prior sublines first so re-renders are idempotent.
+        if (tamEl.parentNode) tamEl.parentNode.querySelectorAll('.tam-subline').forEach(function(n) { n.remove(); });
         // Format the number for display — always safe since tamTotal is now a parsed integer
         tamEl.textContent = tamTotal >= 1000000
           ? (Math.round(tamTotal / 100000) / 10) + 'M'
@@ -3993,6 +3999,7 @@ function runPersonalization(session) {
         const ESTIMATED_SOURCES = ['estimated', 'llm_broadened_apollo', 'apollo_broad_fallback', 'llm_pure_estimate'];
         if (IS_EDIT_MODE && ESTIMATED_SOURCES.includes(gen.tamSource)) {
           const badge = document.createElement('span');
+          badge.className = 'tam-subline';
           const conf = Number.isFinite(gen.tamConfidence) ? ` · confidence ${gen.tamConfidence}/10` : '';
           badge.title = (gen.tamSource === 'llm_pure_estimate'
             ? 'TAM is an AI-only estimate (no Apollo counts) — a directional guess'
@@ -4010,6 +4017,7 @@ function runPersonalization(session) {
             ? (Math.round(gen.tamFloor / 100000) / 10) + 'M'
             : gen.tamFloor >= 1000 ? Math.round(gen.tamFloor / 1000) + 'K' : gen.tamFloor.toLocaleString();
           var floorEl = document.createElement('div');
+          floorEl.className = 'tam-subline';
           floorEl.title = 'The exact-titles Apollo count for the narrow ICP. The headline TAM broadens this to the real addressable market via seniority/department and adjacent-role slices.';
           floorEl.style.cssText = 'font-size:11px;color:#71717a;margin-top:4px;font-weight:500;cursor:help;';
           floorEl.textContent = 'Verified in Apollo: ' + floorFmt + ' (narrow ICP)';
@@ -4026,6 +4034,7 @@ function runPersonalization(session) {
               ? Math.round(gen.adjacentTotal / 1000) + 'K'
               : gen.adjacentTotal.toLocaleString();
           var adjEl = document.createElement('div');
+          adjEl.className = 'tam-subline';
           adjEl.title = 'TAM with the industry keyword filter dropped. Reps: if this is much larger than the strict TAM, your keyword filter is the biggest narrowing factor — consider broadening or removing it.';
           adjEl.style.cssText = 'font-size:11px;color:#71717a;margin-top:4px;font-weight:500;cursor:help;';
           adjEl.textContent = '+' + adjFmt + ' without industry keyword';
