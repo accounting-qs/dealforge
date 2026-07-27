@@ -936,11 +936,11 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
             <div class="tam-stat-label">Total Addressable Market</div>
           </div>
           <div>
-            <div class="tam-stat-value" id="tam-monthly-val">30–35K</div>
+            <div class="tam-stat-value stat-shimmer" id="tam-monthly-val">&nbsp;</div>
             <div class="tam-stat-label">Recommended / Month</div>
           </div>
           <div>
-            <div class="tam-stat-value" id="tam-cycle-val">~3 mo</div>
+            <div class="tam-stat-value stat-shimmer" id="tam-cycle-val">&nbsp;</div>
             <div class="tam-stat-label">Full Market Cycle</div>
           </div>
         </div>
@@ -1522,7 +1522,7 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
             <div class="roi-fbar-row">
               <div class="roi-fbar-meta">
                 <span class="roi-fbar-label">Webinar Attendees</span>
-                <span class="roi-fbar-num" id="r-attendees">90</span>
+                <span class="roi-fbar-num" id="r-attendees">—</span>
               </div>
               <div class="roi-fbar rfb-2" id="rfb-2" style="width:70%"></div>
             </div>
@@ -1537,7 +1537,7 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
             <div class="roi-fbar-row">
               <div class="roi-fbar-meta">
                 <span class="roi-fbar-label">Calls Booked</span>
-                <span class="roi-fbar-num" id="r-booked">13</span>
+                <span class="roi-fbar-num" id="r-booked">—</span>
               </div>
               <div class="roi-fbar rfb-3" id="rfb-3" style="width:30%"></div>
             </div>
@@ -1547,7 +1547,7 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
             <div class="roi-fbar-row">
               <div class="roi-fbar-meta">
                 <span class="roi-fbar-label">Calls Held</span>
-                <span class="roi-fbar-num" id="r-held">8</span>
+                <span class="roi-fbar-num" id="r-held">—</span>
               </div>
               <div class="roi-fbar rfb-4" id="rfb-4" style="width:18%"></div>
             </div>
@@ -1557,7 +1557,7 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
             <div class="roi-fbar-row">
               <div class="roi-fbar-meta">
                 <span class="roi-fbar-label">New Clients / Month</span>
-                <span class="roi-fbar-num" id="r-clients">2</span>
+                <span class="roi-fbar-num" id="r-clients">—</span>
               </div>
               <div class="roi-fbar rfb-5" id="rfb-5" style="width:8%"></div>
             </div>
@@ -4055,13 +4055,16 @@ function runPersonalization(session) {
       // (free-form, e.g. "~4 mo"); otherwise show the computed TAM ÷ outreach.
       const cycleEl = document.getElementById('tam-cycle-val');
       const cycleOverride = gen.fullMarketCycle;
-      if (cycleEl) cycleEl.textContent = (cycleOverride != null && String(cycleOverride).trim())
-        ? String(cycleOverride)
-        : cycleMonths;
+      if (cycleEl) {
+        cycleEl.classList.remove('stat-shimmer');
+        cycleEl.textContent = (cycleOverride != null && String(cycleOverride).trim())
+          ? String(cycleOverride)
+          : cycleMonths;
+      }
       monthlyLo = Math.round(monthlyRaw * 0.85 / 1000);
       monthlyHi = Math.min(100, Math.round(monthlyRaw * 1.15 / 1000));
       const monthlyEl = document.getElementById('tam-monthly-val');
-      if (monthlyEl) monthlyEl.textContent = monthlyLo + '–' + monthlyHi + 'K' + (isOutreachOverride && IS_EDIT_MODE ? ' ✏' : '');
+      if (monthlyEl) { monthlyEl.classList.remove('stat-shimmer'); monthlyEl.textContent = monthlyLo + '–' + monthlyHi + 'K' + (isOutreachOverride && IS_EDIT_MODE ? ' ✏' : ''); }
       // Edit mode: add override icons on all three TAM stat cards
       addEditIcon(document.getElementById('tam-total-val'), 'tam_total', 'Market Size (TAM)');
       addEditIcon(monthlyEl, 'recommended_outreach', 'Monthly Outreach Volume');
@@ -4105,18 +4108,26 @@ function runPersonalization(session) {
       var tamSearchEl = document.getElementById('tam-total-val');
       if (tamSearchEl) tamSearchEl.innerHTML = '<span style="font-size:16px;color:#52525b;letter-spacing:normal;font-weight:500;">Searching\u2026</span>';
       var tamMonthSearch = document.getElementById('tam-monthly-val');
-      if (tamMonthSearch) tamMonthSearch.innerHTML = '<span style="font-size:16px;color:#52525b;letter-spacing:normal;font-weight:500;">Computing</span>';
+      if (tamMonthSearch) { tamMonthSearch.classList.remove('stat-shimmer'); tamMonthSearch.innerHTML = '<span style="font-size:16px;color:#52525b;letter-spacing:normal;font-weight:500;">Computing</span>'; }
     }
 
-    // Safety: if the outreach volume never resolved (e.g. no TAM / 0 leads),
-    // don't leave the pill shimmering forever — fall back to the default once.
-    ['roi-locked-monthly', 'roi-fbar-monthly'].forEach(function(id) {
-      var el = document.getElementById(id);
-      if (el && el.classList.contains('stat-shimmer')) {
-        el.classList.remove('stat-shimmer');
-        el.textContent = (Number.isFinite(MONTHLY_INVITES) ? Math.round(MONTHLY_INVITES) : 30000).toLocaleString();
-      }
-    });
+    // Safety: on a TERMINAL-but-no-TAM job (leads finished, 0 results) the
+    // if(tamTotal) branch never ran, so clear any leftover shimmer to a sensible
+    // fallback. While leads are still pending we intentionally leave the shimmer
+    // in place — it IS the loading state, matching the "Searching…" TAM card.
+    var _leadsPending = (!gen.leadsTaskStatus || gen.leadsTaskStatus === 'pending');
+    if (!tamTotal && !_leadsPending) {
+      [document.getElementById('roi-locked-monthly'), document.getElementById('roi-fbar-monthly')].forEach(function(el) {
+        if (el && el.classList.contains('stat-shimmer')) {
+          el.classList.remove('stat-shimmer');
+          el.textContent = (Number.isFinite(MONTHLY_INVITES) ? Math.round(MONTHLY_INVITES) : 30000).toLocaleString();
+        }
+      });
+      ['tam-monthly-val', 'tam-cycle-val'].forEach(function(id) {
+        var el = document.getElementById(id);
+        if (el && el.classList.contains('stat-shimmer')) { el.classList.remove('stat-shimmer'); el.textContent = '—'; }
+      });
+    }
 
     // ── Calendar invite personalization ──────────────────────────────────────
     const calTitle = document.getElementById('cal-title');
