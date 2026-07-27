@@ -518,6 +518,9 @@ html[data-mode="prospect"] .rep-only { display: none !important; }
 .roi-field-input.roi-loading::placeholder { color: transparent; }
 @keyframes roiShimmer { 0% { background-position: 100% 50%; } 100% { background-position: 0 50%; } }
 .roi-continue-btn:disabled { opacity: 0.55; cursor: default; }
+/* Skeleton for TAM-derived numbers (outreach volume) that are computed client-side
+   after the fetch — shimmer until resolved so a hardcoded default never flashes. */
+.stat-shimmer { display: inline-block; min-width: 3em; height: 0.85em; vertical-align: middle; border-radius: 5px; color: transparent !important; background-image: linear-gradient(90deg, #27272a 25%, #3f3f46 37%, #27272a 63%); background-size: 400% 100%; animation: roiShimmer 1.3s ease infinite; }
 .roi-field-input-row { display: flex; align-items: center; gap: 8px; }
 .roi-field-affix { font-size: 30px; font-weight: 300; color: #3f3f46; user-select: none; }
 .roi-field-input { background: none; border: none; outline: none; font-size: 40px; font-weight: 700; color: #e4e4e7; width: 100%; min-width: 0; }
@@ -1459,7 +1462,7 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
 
           <div class="roi-locked-pill">
             <span class="roi-locked-label">Outreach</span>
-            <span id="roi-locked-monthly">30,000</span> prospects / month
+            <span id="roi-locked-monthly" class="stat-shimmer">&nbsp;</span> prospects / month
           </div>
 
           <!-- Inputs start EMPTY + shimmering (roi-loading). resolveRoiInputs()
@@ -1497,14 +1500,14 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
         <div class="roi-slide">
           <button class="roi-back-btn" onclick="roiGoSlide(0)">← Back</button>
           <h2 class="roi-funnel-title">Monthly Funnel Breakdown</h2>
-          <p class="roi-funnel-sub" id="roi-funnel-sub">30,000 outreaches/month. Toggle each step conservative or aggressive to stress-test the numbers.</p>
+          <p class="roi-funnel-sub" id="roi-funnel-sub">Calculating outreach volume…</p>
 
           <div class="roi-funnel-rows">
             <!-- Bar 1: Monthly Outreach (100%) -->
             <div class="roi-fbar-row">
               <div class="roi-fbar-meta">
                 <span class="roi-fbar-label">Monthly Outreach</span>
-                <span class="roi-fbar-num" id="roi-fbar-monthly">30,000</span>
+                <span class="roi-fbar-num stat-shimmer" id="roi-fbar-monthly">&nbsp;</span>
               </div>
               <div class="roi-fbar rfb-1"></div>
             </div>
@@ -4081,12 +4084,14 @@ function runPersonalization(session) {
           cycleBadge.innerHTML = 'With a focused TAM of ' + tamStr + ', ' + vol + ' outreaches/mo' + overrideNote + ' exhausts your market in <strong>~' + actualCycleRounded.toFixed(1) + ' months</strong> — rotate webinar topics each cycle to stay fresh.';
         }
       }
+      // Outreach volume resolved — fill the displays and clear their loading
+      // shimmer so the real (TAM-derived) number appears without a default flash.
       const roiLocked = document.getElementById('roi-locked-monthly');
-      if (roiLocked) roiLocked.textContent = volFull;
+      if (roiLocked) { roiLocked.classList.remove('stat-shimmer'); roiLocked.textContent = volFull; }
       const roiFunnelSub = document.getElementById('roi-funnel-sub');
       if (roiFunnelSub) roiFunnelSub.textContent = volFull + ' outreaches/month. Toggle each step conservative or aggressive to stress-test the numbers.';
       const roiFbarMonthly = document.getElementById('roi-fbar-monthly');
-      if (roiFbarMonthly) roiFbarMonthly.textContent = volFull;
+      if (roiFbarMonthly) { roiFbarMonthly.classList.remove('stat-shimmer'); roiFbarMonthly.textContent = volFull; }
 
       // Pre-populate ROI inputs from saved overrides (persisted rep values)
       if (gen.roiLtv)       { const el = document.getElementById('ltv');        if (el) el.value = gen.roiLtv; }
@@ -4102,6 +4107,16 @@ function runPersonalization(session) {
       var tamMonthSearch = document.getElementById('tam-monthly-val');
       if (tamMonthSearch) tamMonthSearch.innerHTML = '<span style="font-size:16px;color:#52525b;letter-spacing:normal;font-weight:500;">Computing</span>';
     }
+
+    // Safety: if the outreach volume never resolved (e.g. no TAM / 0 leads),
+    // don't leave the pill shimmering forever — fall back to the default once.
+    ['roi-locked-monthly', 'roi-fbar-monthly'].forEach(function(id) {
+      var el = document.getElementById(id);
+      if (el && el.classList.contains('stat-shimmer')) {
+        el.classList.remove('stat-shimmer');
+        el.textContent = (Number.isFinite(MONTHLY_INVITES) ? Math.round(MONTHLY_INVITES) : 30000).toLocaleString();
+      }
+    });
 
     // ── Calendar invite personalization ──────────────────────────────────────
     const calTitle = document.getElementById('cal-title');
