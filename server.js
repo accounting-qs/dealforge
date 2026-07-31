@@ -1081,7 +1081,9 @@ function _annotateTranscript(sentences, attendees, repEmailSet) {
     .map(s => {
       const role = classify(s.speaker_name);
       const name = s.speaker_name || 'Speaker';
-      return `[${role}] ${name}: ${String(s.text).trim()}`;
+      // Scrub broken surrogate halves at the source — this text is both sent to
+      // Claude and persisted to Supabase, and both reject lone surrogates.
+      return stripLoneSurrogates(`[${role}] ${name}: ${String(s.text).trim()}`);
     });
   const labeled = (rep + prospect) > 0;
   return { text: lines.join('\n'), labeled, counts: { rep, prospect, unknown } };
@@ -1760,7 +1762,7 @@ async function scrapeWebsite(domain) {
     const aboutText = await jinaFetch(`${baseUrl}/about`);
     if (aboutText.length > jinaText.length) bodyText = aboutText;
   }
-  bodyText = bodyText.slice(0, 3000);
+  bodyText = truncateChars(bodyText, 3000);
 
   // Extract title + metaDesc from raw HTML (they're in <head>, always server-rendered)
   const title = (html.match(/<title[^>]*>([^<]+)<\/title>/i) || [])[1]?.trim() ||
@@ -1772,6 +1774,61 @@ async function scrapeWebsite(domain) {
 
   console.log(`[scrape] ${cleanDomain} — Jina:${jinaText.length}chars, HTML:${html.length}chars (${htmlSource}), title:"${title.slice(0,60)}"`);
   return { html, title, metaDesc, bodyText, html_source: htmlSource };
+}
+
+// ── Unicode hygiene for outbound JSON bodies ─────────────────────────────────
+// Transcripts and scraped pages carry emoji (and other astral-plane chars) as
+// UTF-16 surrogate PAIRS. Slicing a JS string at a fixed character count can cut
+// between the two halves, leaving a LONE surrogate. JSON.stringify happily
+// encodes that as "\ud83d" and the Anthropic API rejects the whole request with
+// a hard 400 — "no low surrogate in string: line N column M". It is NOT
+// retryable: every attempt ships the same broken body, so the task dies on the
+// first try. Postgres/PostgREST reject the same sequence, so this also protects
+// anything we persist.
+//
+// truncateChars() never creates a lone surrogate; stripLoneSurrogates() removes
+// any that arrived already broken (Fireflies sometimes returns mangled text).
+const LONE_SURROGATE_RE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
+
+function stripLoneSurrogates(str) {
+  if (typeof str !== 'string') return str;
+  // charCodeAt scan is far cheaper than running the regex over every string.
+  for (let i = 0; i < str.length; i++) {
+    const c = str.charCodeAt(i);
+    if (c >= 0xD800 && c <= 0xDFFF) return str.replace(LONE_SURROGATE_RE, '');
+  }
+  return str;
+}
+
+// Slice to at most `max` UTF-16 code units without splitting a surrogate pair.
+function truncateChars(str, max) {
+  if (typeof str !== 'string' || str.length <= max) return str;
+  const code = str.charCodeAt(max - 1);
+  const end = (code >= 0xD800 && code <= 0xDBFF) ? max - 1 : max; // don't end on a high surrogate
+  return str.slice(0, end);
+}
+
+// Deep-clean every string in a Claude request payload. Returns { params, fixed }
+// where `fixed` counts the strings that had to be repaired (0 → original object
+// is returned untouched, so the normal path allocates nothing extra).
+function sanitizeClaudeParams(params) {
+  let fixed = 0;
+  const walk = (v) => {
+    if (typeof v === 'string') {
+      const clean = stripLoneSurrogates(v);
+      if (clean !== v) fixed++;
+      return clean;
+    }
+    if (Array.isArray(v)) return v.map(walk);
+    if (v && typeof v === 'object' && Object.getPrototypeOf(v) === Object.prototype) {
+      const out = {};
+      for (const k of Object.keys(v)) out[k] = walk(v[k]);
+      return out;
+    }
+    return v;
+  };
+  const cleaned = walk(params);
+  return { params: fixed ? cleaned : params, fixed };
 }
 
 // ── Claude call wrapper — stream + retry on connection drops ─────────────────
@@ -1838,6 +1895,11 @@ const CLAUDE_ATTEMPT_TIMEOUT_MS = 70 * 1000;
 async function claudeMessage(anthropic, params, label = 'claude') {
   const MAX_ATTEMPTS = 3;
   const BACKOFFS = [2000, 5000]; // between attempt 1→2 and 2→3
+  // Last line of defence: a lone surrogate anywhere in the prompt is a hard,
+  // non-retryable 400 from the API. Scrub before the first attempt.
+  const sanitized = sanitizeClaudeParams(params);
+  if (sanitized.fixed) console.warn(`[${label}] stripped lone surrogate(s) from ${sanitized.fixed} prompt string(s) before sending`);
+  params = sanitized.params;
   const trail = [];              // per-attempt diagnostics, surfaced in the thrown error
   let lastErr;
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
@@ -1925,7 +1987,7 @@ Name: ${knownName || 'extract from transcript'}
 Website: ${knownWebsite || 'extract from transcript'}
 
 ${transcriptContent ? `${transcriptContent}\n---` : '(No transcript available)'}
-${websiteContent ? `\nWEBSITE CONTENT:\n---\n${websiteContent.slice(0, 2000)}\n---` : ''}
+${websiteContent ? `\nWEBSITE CONTENT:\n---\n${truncateChars(websiteContent, 2000)}\n---` : ''}
 
 Return this exact JSON (null for anything not found):
 {
@@ -4243,7 +4305,7 @@ async function handleExtract(task, job) {
         duration:   zt.duration || 0,
         dateString: zt.date ? new Date(zt.date).toLocaleDateString('en-US') : '',
         // Zoom has no Fireflies-style summary; feed the labeled transcript text.
-        summary:    { short_summary: (annotated.text || '').slice(0, 14000) }
+        summary:    { short_summary: truncateChars(annotated.text || '', 14000) }
       }];
       transcriptSource = 'live_zoom';
       console.log(`[extract] Using rep-picked Zoom transcript ${pick.id} (${zt.sentences.length} lines)`);
@@ -6585,8 +6647,8 @@ const server = http.createServer(async (req, res) => {
                 `STRICT RULE: extract prospect-side fields (offer_description, angle.*, verbatim.*, icp.*, situation.*) ONLY from [PROSPECT] turns. Treat [REP] turns as PITCH CONTEXT only — never use them as the source of what the prospect's business does, who its customers are, or what its results are. If a field can only be supported by [REP] turns, return null with _provenance "missing".\n\n`
               : '';
             const txContent = rawSentences
-              ? `${labelLegend}VERBATIM TRANSCRIPT:\n${rawSentences.slice(0, 12000)}\n\nSUMMARY NOTES:\n${summaryParts.slice(0, 2000)}`
-              : summaryParts.slice(0, 14000);
+              ? `${labelLegend}VERBATIM TRANSCRIPT:\n${truncateChars(rawSentences, 12000)}\n\nSUMMARY NOTES:\n${truncateChars(summaryParts, 2000)}`
+              : truncateChars(summaryParts, 14000);
 
             setProgress(id, { progress: 50, step: 'Extracting brief with Claude…' });
             console.log(`[extract-brief ${id.slice(0,8)}] Claude context: ${txContent.length} chars (${rawSentences.length} verbatim, labeled=${annotated.labeled} rep:${annotated.counts.rep} prospect:${annotated.counts.prospect})`);
