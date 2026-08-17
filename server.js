@@ -2288,6 +2288,196 @@ async function peopleMatchAllLeads(leads, cache = null) {
   return targets.length;
 }
 
+// ── Even title distribution ───────────────────────────────────────────────────
+// Apollo's person_titles is an OR filter, and Apollo ranks the union by its own
+// relevance — which is dominated by whichever title has the biggest matching
+// population. A rep who enters 10 titles therefore gets a list dominated by one
+// of them (observed on a 10-title tattoo-studio ICP: ~90% of the 25 were
+// "Tattoo Artist"). These three helpers spread the final 25 evenly across the
+// titles that were actually searched. The retrieval half of the fix — making
+// sure the pool CONTAINS the other titles at all — is the fan-out step in
+// guaranteedLeadSearch; re-ordering alone can't balance a single-title pool.
+
+// Reduce a title to a space-delimited word sequence so ICP chips and messy
+// real-world titles compare on equal footing. The NFD + combining-mark strip
+// folds accents BEFORE the character-class filter: this product fans every EU
+// chip out to 27 countries (see expandEU), so "Geschäftsführer" and
+// "Geschaftsfuhrer" have to land on the same key — and a plain [^a-z0-9] filter
+// would have shredded the first into "gesch ftsf hrer". Unicode letter/number
+// classes keep non-Latin scripts intact for the same reason.
+// Accepted collision: "C++" and "C#" normalize alike. Irrelevant in the
+// owner-operator SMB markets this runs against; noted so it isn't a surprise.
+//   "Business Owner/ Tattoo Artist" → "business owner tattoo artist"
+function normalizeTitleKey(s) {
+  return String(s || '')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim();
+}
+
+// Whole-word-sequence containment over two already-normalized titles. Padding
+// both sides is what keeps a searched "Artist" out of "Artistic Director" while
+// still matching "Business Owner Tattoo Artist" — a bare substring test
+// over-matches, and an equality test misses every compound title, which in
+// owner-operator markets is most of them. This subsumes splitTitleParts:
+// normalizing punctuation to spaces makes every delimiter-split part a
+// contiguous word run of the whole, so a separate parts pass adds nothing.
+function titleContainsPhrase(hayNorm, needleNorm) {
+  if (!hayNorm || !needleNorm) return false;
+  return ` ${hayNorm} `.includes(` ${needleNorm} `);
+}
+
+// Person dedupe + title round-robin + company dedupe, in one pass. Replaces the
+// plain company dedupe that used to open finalizeLeadList.
+//
+// Bucket membership is a UNION, not a partition: real titles are compound
+// ("Business Owner/ Tattoo Artist"), so one lead legitimately belongs to several
+// buckets. Each lead is still CONSUMED once — whichever bucket reaches it first
+// claims it and the rest skip past — so the split self-balances without needing
+// a bipartite matching.
+//
+// The company claim is folded INTO the rotation rather than run afterwards. Run
+// afterwards, a bucket whose winner collided with an already-claimed company
+// would forfeit that slot with nothing to compensate it — which is exactly the
+// "one shop, five artists" case this whole fix exists for. Advancing within the
+// same turn keeps every title's share intact.
+//
+// Returns { leads, poolCounts, balanced }. `leads` is the company-deduped,
+// title-balanced pool; everything downstream (has_email partition → reveal loop
+// → slice 25) is unchanged and inherits the balance because Array#filter is stable.
+function balanceLeadsByTitle(rawLeads, searchedTitles) {
+  // Case-insensitive title dedupe — a duplicated chip ("Owner" twice, or a
+  // translator emitting both "Owner" and "owner") would otherwise take two turns
+  // per round and double its own weight.
+  const titles = [];
+  const titleSeen = new Set();
+  for (const t of (Array.isArray(searchedTitles) ? searchedTitles : [])) {
+    const raw = String(t || '').trim();
+    const k = normalizeTitleKey(raw);
+    if (!raw || !k || titleSeen.has(k)) continue;
+    titleSeen.add(k);
+    titles.push(raw);
+  }
+
+  // ── 1. Person dedupe, unioning the fan-out's _matched_title tags ───────────
+  // The fan-out re-returns people the combined search already found. First-wins
+  // keeps the combined-pool copy (Apollo relevance order), but that copy is the
+  // UNTAGGED one — so we fold every duplicate's tag into it rather than letting
+  // dedupe throw them away. That matters because relaxFilter can set
+  // include_similar_titles, after which a person_titles:["Piercer"] slice
+  // legitimately returns someone titled "Body Modification Specialist" — a lead
+  // no string rule of ours would ever bucket. The tag is the only ground truth.
+  const byPerson = new Map();
+  const people = [];
+  for (const l of (rawLeads || [])) {
+    if (!l) continue;
+    const key = l.apollo_id
+      || `${String(l.name || '').trim().toLowerCase()}|${String(l.company || '').trim().toLowerCase()}`;
+    const prior = (key === '|') ? null : byPerson.get(key);  // no id AND no name/company: never collapse
+    if (prior) {
+      if (l._matched_title && !prior._matched_titles.includes(l._matched_title)) {
+        prior._matched_titles.push(l._matched_title);
+      }
+      continue;
+    }
+    l._matched_titles = l._matched_title ? [l._matched_title] : [];
+    if (key !== '|') byPerson.set(key, l);
+    people.push(l);
+  }
+
+  // One person per company — the hard product rule. A lead with no company name
+  // is dropped, matching the dedupe this replaces.
+  const claimed = new Set();
+  const out = [];
+  const coKey = l => String((l && l.company) || '').trim().toLowerCase();
+  const claim = (l) => {
+    const co = coKey(l);
+    if (!co || claimed.has(co)) return false;
+    claimed.add(co);
+    out.push(l);
+    return true;
+  };
+
+  // Nothing to balance. Degenerates to exactly the old behaviour: company dedupe
+  // in Apollo rank order.
+  if (titles.length < 2) {
+    for (const l of people) claim(l);
+    return { leads: out, poolCounts: null, balanced: false };
+  }
+
+  // ── 2. Buckets (union membership) ─────────────────────────────────────────
+  const norms = titles.map(t => ({ raw: t, norm: normalizeTitleKey(t) }));
+  const buckets = new Map(titles.map(t => [t, []]));
+  const unbucketed = [];
+  for (const l of people) {
+    const leadNorm = normalizeTitleKey(l.title);
+    let hit = false;
+    for (const { raw, norm } of norms) {
+      // Apollo's own tag first (authoritative), string inference second.
+      if (l._matched_titles.includes(raw) || titleContainsPhrase(leadNorm, norm)) {
+        buckets.get(raw).push(l);
+        hit = true;
+      }
+    }
+    if (!hit) unbucketed.push(l);
+  }
+
+  const poolCounts = Object.fromEntries(titles.map(t => [t, buckets.get(t).length]));
+
+  // Float email-reachable leads to the front of each bucket. Array#sort is
+  // stable in V8, so Apollo's relevance order survives inside each group. This
+  // is what makes the balance SURVIVE the has_email partition further down:
+  // without it, a title whose people mostly lack listed addresses has its
+  // round-robin slots filtered straight out of emailedPool, and the reveal loop
+  // refills them from whichever title happens to be email-rich — quietly
+  // undoing the split right before the final 25 are chosen.
+  for (const q of buckets.values()) q.sort((a, b) => (b.has_email ? 1 : 0) - (a.has_email ? 1 : 0));
+
+  // ── 3. Round-robin, scarcest bucket first ─────────────────────────────────
+  // Ascending pool depth, ties broken by the rep's chip order. The failure being
+  // fixed is abundant titles crowding out scarce ones, so letting the scarce
+  // bucket pick first directly inverts it — a scarce title can never be starved
+  // by an abundant one whose members overlap it (e.g. when every "Shop Manager"
+  // in this market is also a "Tattoo Artist"). Computed once, so reruns on the
+  // same pool reproduce. Bonus: with 25 slots over 10 titles someone gets 3 and
+  // someone gets 2, and this hands the extra to the scarcest — the right
+  // direction. The slice(0, TARGET) trim downstream cuts the tail, i.e. the most
+  // abundant titles, for the same reason. Don't "fix" either later.
+  const order = [...titles].sort((a, b) =>
+    (buckets.get(a).length - buckets.get(b).length) || (titles.indexOf(a) - titles.indexOf(b)));
+
+  // Persistent per-bucket cursor rather than shift() — keeps the whole rotation
+  // O(total) instead of O(n²).
+  const taken = new Set();
+  const cursor = new Map(titles.map(t => [t, 0]));
+  let progressed = true;
+  while (progressed) {
+    progressed = false;
+    for (const t of order) {
+      const q = buckets.get(t);
+      let i = cursor.get(t);
+      // Skip leads another bucket already claimed, and leads whose company is
+      // already represented. Advancing within this same turn is what stops a
+      // company collision from costing this title its slot.
+      while (i < q.length && (taken.has(q[i]) || !coKey(q[i]) || claimed.has(coKey(q[i])))) i++;
+      cursor.set(t, i + 1);
+      if (i >= q.length) continue;
+      const lead = q[i];
+      taken.add(lead);
+      lead._title_bucket = t;          // which title won this slot — drives title_mix
+      claim(lead);
+      progressed = true;
+    }
+  }
+
+  // Leads matching no entered title go last (still company-deduped) so they only
+  // ever surface as backfill, after every title has been exhausted.
+  for (const l of unbucketed) if (!taken.has(l)) claim(l);
+
+  return { leads: out, poolCounts, balanced: true };
+}
+
 // Shared finalizer for the lead list. Used by handleLeadList (worker path) AND
 // the POST /api/jobs/:id/rerun-apollo handler — both used to have their own
 // dedup logic. Without this, rerun-apollo persisted the raw Apollo response
@@ -2311,20 +2501,29 @@ async function peopleMatchAllLeads(leads, cache = null) {
 //   4. Apply the ICP's employee-range band as a Size fallback whenever the lead
 //      itself has no company_size (the people-search response strips it on this
 //      Apollo plan tier).
-async function finalizeLeadList(rawLeads, icp, enrichmentCache = null, progressCb = null) {
+async function finalizeLeadList(rawLeads, icp, enrichmentCache = null, progressCb = null, searchedTitles = null) {
   const TARGET = 25;
   const MATCH_BUDGET = 32; // 25 target + headroom to backfill match misses
 
-  // 1. Dedup by company across the whole pool — keep every unique company so
-  //    the has_email selection below has depth to work with.
-  const seen = new Set();
-  const deduped = [];
-  for (const l of (rawLeads || [])) {
-    const key = (l.company || '').trim().toLowerCase();
-    if (!key || seen.has(key)) continue;
-    seen.add(key);
-    deduped.push(l);
-  }
+  // The titles the search ACTUALLY ran with. guaranteedLeadSearch's relaxation
+  // loop can rewrite person_titles, and a translator-built icp.apollo_payload
+  // replaces icp.apollo_titles wholesale (see fetchLeadsFromApollo's
+  // hasTranslatedPayload branch), so finalPayload.person_titles is
+  // authoritative. icp.apollo_titles is only the fallback for a caller that
+  // passes nothing at all — an EXPLICIT empty array means "searched without
+  // titles" and must not fall back, or we'd bucket by titles Apollo never used.
+  const titles = (searchedTitles !== undefined && searchedTitles !== null)
+    ? (Array.isArray(searchedTitles) ? searchedTitles : [])
+    : (Array.isArray(icp?.apollo_titles) ? icp.apollo_titles : []);
+
+  // 1. Person dedupe → even split across the rep's titles → one-per-company, in
+  //    a single pass (see balanceLeadsByTitle). Ordering the pool by title here,
+  //    rather than after the company dedupe, is deliberate: company slots are
+  //    handed out first-come, so a dominant title left at the front of the pool
+  //    would claim every company and undo the split before the has_email pass
+  //    ever sees it. With fewer than 2 titles this is byte-for-byte the old
+  //    company-dedupe-in-Apollo-rank-order behaviour.
+  const { leads: deduped, poolCounts, balanced } = balanceLeadsByTitle(rawLeads, titles);
 
   const sizeFallback = formatEmployeeRangeBand(icp?.apollo_employee_ranges);
   const applySize = list => { if (sizeFallback) list.forEach(l => { if (!l.company_size) l.company_size = sizeFallback; }); };
@@ -2359,6 +2558,26 @@ async function finalizeLeadList(rawLeads, icp, enrichmentCache = null, progressC
   const emailed = leads.filter(hasUsableEmail).length;
   console.log(`[lead_list] Finalize: ${deduped.length} unique companies → ${leads.length} leads, ${emailed} emailed + ${leads.length - emailed} backfilled (${creditsSpent} credits)`);
 
+  // The split we actually achieved across the FINAL 25 — the number this whole
+  // change is judged on. Seeded with every searched title so a title that
+  // produced nothing reads as 0 rather than vanishing from the list: "Piercer 0"
+  // tells the rep to drop that chip. poolCounts alongside it separates "Apollo
+  // has nobody with this title here" from "we found them but companies ran out".
+  let titleMix = null;
+  if (balanced) {
+    const counts = {};
+    for (const t of titles) { const k = String(t || '').trim(); if (k) counts[k] = 0; }
+    let unmatched = 0;
+    for (const l of leads) {
+      if (l._title_bucket && counts[l._title_bucket] !== undefined) counts[l._title_bucket]++;
+      else unmatched++;
+    }
+    titleMix = { counts, pool_counts: poolCounts, unmatched };
+    console.log(`[lead_list] Title mix (final ${leads.length}): `
+      + Object.entries(counts).map(([t, n]) => `${t}=${n}`).join(' · ')
+      + ` | no-title-match: ${unmatched}`);
+  }
+
   // Hydrate website + company LinkedIn for the final 25 only (free DDG scrape).
   // Runs AFTER people-match so the authoritative email-domain website set by the
   // match wins — enrichLeadsWithCompanyData only fills leads that still have no
@@ -2382,7 +2601,7 @@ async function finalizeLeadList(rawLeads, icp, enrichmentCache = null, progressC
   } else if (leads.length > 0 && withId < leads.length) {
     console.warn(`[lead_list] ${withId}/${leads.length} leads have apollo_id — partial match coverage`);
   }
-  return { leads, sizeFallback };
+  return { leads, sizeFallback, titleMix };
 }
 const PARKING_SIGNALS = ['domain for sale','this domain is for sale','buy this domain','coming soon','under construction','parked by','domain parking'];
 // ── Jina AI Reader — JS-rendering-aware website scraper ─────────────────────
@@ -2844,6 +3063,19 @@ function relaxFilter(payload, filterName) {
 async function guaranteedLeadSearch(sanitizedPayload, confidenceMap, relaxationOrder, progressCb) {
   const MIN_LEADS = 25;
   const MAX_ATTEMPTS = 6;
+  // Per-title fan-out budget (STEP 5). Apollo search is free, so these bound
+  // latency, not cost.
+  //   MAX_FANOUT_TITLES 15 — below ~1.7 slots/title an "equal split" of 25 is
+  //     arithmetically meaningless, and it caps the loop at 3 waves.
+  //   FANOUT_CONCURRENCY 5 — matches peopleMatchAllLeads' CONCURRENCY, the only
+  //     other place in this file that parallelises Apollo calls and a value
+  //     already proven in production not to trip the rate limiter.
+  //   FANOUT_BUDGET_MS 12000 — deliberately BELOW apolloPeopleSearch's 15 s
+  //     AbortSignal, so a fully stalled Apollo costs exactly one wave and then
+  //     we bail. Normal case (~1.5 s/wave) never trips it.
+  const MAX_FANOUT_TITLES  = 15;
+  const FANOUT_CONCURRENCY = 5;
+  const FANOUT_BUDGET_MS   = 12000;
   const APOLLO_KEY = process.env.APOLLO_API_KEY;
 
   if (!APOLLO_KEY) return { leads: [], totalAvailable: 0, finalPayload: sanitizedPayload, relaxationLog: [], wasRelaxed: false };
@@ -3059,17 +3291,96 @@ async function guaranteedLeadSearch(sanitizedPayload, confidenceMap, relaxationO
     if (nowUnique === lastUnique) break;             // degenerate: no new companies this page — stop
     lastUnique = nowUnique;
   }
-  const finalUniqueCos = uniqueCompanyCount(pooled);
-  if (page > 1 || finalUniqueCos < MIN_LEADS) {
-    log.push({ step: 'email_pagination', pagesFetched: page, pooled: pooled.length, uniqueCompanies: finalUniqueCos, emailedUnique: emailedUniqueCount(pooled) });
-    console.log(`[Apollo] Coverage pagination: ${page} pages, ${pooled.length} candidates, ${finalUniqueCos} unique companies (${emailedUniqueCount(pooled)} emailable)`);
+  const pagedUniqueCos = uniqueCompanyCount(pooled);
+  if (page > 1 || pagedUniqueCos < MIN_LEADS) {
+    log.push({ step: 'email_pagination', pagesFetched: page, pooled: pooled.length, uniqueCompanies: pagedUniqueCos, emailedUnique: emailedUniqueCount(pooled) });
+    console.log(`[Apollo] Coverage pagination: ${page} pages, ${pooled.length} candidates, ${pagedUniqueCos} unique companies (${emailedUniqueCount(pooled)} emailable)`);
   }
 
+  // ── STEP 5: Per-title balancing fan-out ────────────────────────────────────
+  // person_titles is an OR filter, and Apollo ranks the union by its own
+  // relevance — dominated by whichever title has the biggest population. With 10
+  // titles entered we saw a page-1 pool that was ~90% one title, and because the
+  // pagination loop above stops the moment 25 unique companies exist, that one
+  // page IS the pool. Re-ordering downstream cannot balance a pool that only
+  // contains one title, so we go and fetch the others: one page per title, using
+  // the settled payload with person_titles narrowed to that single title.
+  // Search costs 0 credits (same basis as the pagination above), so this buys
+  // diversity for latency only — the paid people/match budget in
+  // finalizeLeadList is untouched. Skipped when there's nothing to balance
+  // (0 or 1 title) or nothing to balance over (zero results).
+  // Kept in a separate array, never folded into `pooled`: the MAX_PAGES cap
+  // below applies to the PAGINATED pool only. Fan-out slices ARE the scarce,
+  // hard-to-reach candidates the whole balance depends on, so a cap that could
+  // ever trim them would silently undo this fix on a deep pool.
+  let fanout = [];
+  const fanoutTitles = Array.isArray(currentPayload.person_titles)
+    ? [...new Set(currentPayload.person_titles.map(t => String(t || '').trim()).filter(Boolean))].slice(0, MAX_FANOUT_TITLES)
+    : [];
+  // The OR-ed query is a superset of every single-title slice, so if the union
+  // is empty every slice is empty too — nothing to gain. Fan-out DOES still run
+  // after the nuclear fallback: same payload shape, same balance problem, and
+  // nuclear fires on exactly the thin markets where the pagination loop's early
+  // stop hides the most candidates.
+  if (fanoutTitles.length >= 2 && results.total_entries > 0) {
+    // A title needs ~ceil(25/T) surviving slots; at roughly 50% company-dedupe
+    // and 50% email attrition, 50 leaves ~4× headroom. apolloPeopleSearch floors
+    // per_page at MIN_LEADS and caps at 100 (200 returns 0), and applies it
+    // AFTER the spread, so this reliably wins over any translator-set value.
+    // 100 would just double response bytes for depth that can't be spent.
+    const perTitlePageSize = Math.min(100, Math.max(MIN_LEADS, Math.ceil(MIN_LEADS / fanoutTitles.length) * 5, 50));
+    const t0 = Date.now(), deadline = t0 + FANOUT_BUDGET_MS;
+    const perTitle = {};
+    if (progressCb) await progressCb({ progress: 63, message: `Balancing across ${fanoutTitles.length} job titles…` });
+
+    for (let i = 0; i < fanoutTitles.length; i += FANOUT_CONCURRENCY) {
+      // Checked between waves, not mid-wave: apolloPeopleSearch already carries
+      // its own 15 s AbortSignal, and a budget below that guarantees we never
+      // pay for more than ONE fully-stalled wave.
+      if (Date.now() > deadline) {
+        log.push({ step: 'title_fanout_timeout', completed: i, total: fanoutTitles.length });
+        console.warn(`[Apollo] Title fan-out hit the ${FANOUT_BUDGET_MS}ms budget after ${i}/${fanoutTitles.length} titles — using what came back`);
+        break;
+      }
+      // apolloPeopleSearch swallows its own errors and returns an empty result,
+      // so a dead slice contributes nothing and can never fail the search. Worst
+      // case for the whole step is the pool we already had — i.e. today's
+      // behaviour. Deliberately no retry: unlike people/match, a lost search
+      // costs nothing but a lost slice, and retrying would double worst-case latency.
+      const batch = fanoutTitles.slice(i, i + FANOUT_CONCURRENCY);
+      const settled = await Promise.all(batch.map(async title => {
+        // Everything from the settled payload except person_titles, so each slice
+        // keeps geo / size / industry / include_similar_titles and differs in
+        // exactly one dimension. Page 1 only — we want depth per title, not the
+        // tail of one title.
+        const r = await apolloPeopleSearch({ ...currentPayload, person_titles: [title], per_page: perTitlePageSize }, 1);
+        // Tag the title Apollo matched this person against. That tag is ground
+        // truth — with include_similar_titles set, a ["Piercer"] slice can
+        // legitimately return "Body Modification Specialist", which no string
+        // rule downstream would ever bucket — so finalizeLeadList trusts it over
+        // its own inference and unions it through person dedupe.
+        for (const p of r.people) p._matched_title = title;
+        return { title, people: r.people };
+      }));
+      for (const s of settled) { perTitle[s.title] = s.people.length; fanout = fanout.concat(s.people); }
+    }
+    const fanoutMs = Date.now() - t0;
+    log.push({ step: 'title_fanout', titles: fanoutTitles.length, added: fanout.length, ms: fanoutMs, perTitle });
+    console.log(`[Apollo] Title fan-out: ${fanoutTitles.length} titles → +${fanout.length} candidates in ${fanoutMs}ms`, perTitle);
+  }
+
+  // Recomputed across both pools: the fan-out reaches companies the rank-ordered
+  // pagination never got to, and uniqueCompanies feeds buildLeadWarning's
+  // degenerate-query detector plus the rep-facing count. The pre-fan-out figure
+  // stays in the email_pagination log entry above.
+  const finalUniqueCos = uniqueCompanyCount(pooled.concat(fanout));
+
   return {
-    // Hand the full accumulated pool to finalizeLeadList — it dedups by company
-    // and selects up to 25 leads (emailed revealed, rest backfilled). Pool cap
-    // matches MAX_PAGES × 100 so a deep sparse-market pool isn't truncated.
-    leads: pooled.slice(0, MAX_PAGES * 100) || [],
+    // Hand the full accumulated pool to finalizeLeadList — it dedups by person,
+    // spreads across titles, dedups by company, and selects up to 25 leads
+    // (emailed revealed, rest backfilled). The cap applies to the paginated pool
+    // only; see the note on `fanout` above.
+    leads: [...pooled.slice(0, MAX_PAGES * 100), ...fanout],
     uniqueCompanies: finalUniqueCos,
     totalAvailable: results.total_entries,
     finalPayload: currentPayload,
@@ -3803,7 +4114,12 @@ async function fetchLeadsFromApollo(icp, progressCb) {
   // enriches the corpus with actual rep-relevant titles and keeps the typeahead
   // working if Apollo's undocumented endpoint ever changes. Fire-and-forget —
   // best-effort, never blocks the lead result.
-  harvestLeadTitlesToCorpus(result.leads);
+  // Capped at 300: this helper fans an UNBOUNDED Promise.all of fetchTitleTags
+  // over every unique atomic title part it's handed. The per-title balancing
+  // fan-out roughly triples the pool, which would otherwise turn into a few
+  // hundred concurrent GETs at Apollo's tags endpoint. 300 leads is already far
+  // more corpus material than a single run needs.
+  harvestLeadTitlesToCorpus(result.leads.slice(0, 300));
 
   // Expose wasRelaxed and relaxationLog at top level for handleLeadList.
   // wasRelaxed must also be inside `diagnostics` because that's what the
@@ -4919,7 +5235,15 @@ async function handleLeadList(task, job) {
   // every lead with an apollo_id at this step, so reps see real names + emails
   // immediately instead of obfuscated stubs (~25 enrichment credits per job,
   // minus any cache hits from previous jobs for the same prospect).
-  const { leads, sizeFallback } = await finalizeLeadList(rawLeads, icp, enrichmentCache);
+  // finalPayload.person_titles is what Apollo actually searched — relaxation can
+  // rewrite the title list, and a translator-built apollo_payload replaces
+  // icp.apollo_titles entirely — so it, not the ICP field, drives the even split.
+  // The ternary is load-bearing: `undefined` means "caller doesn't know, use
+  // icp.apollo_titles", `[]` means "the search genuinely ran without titles —
+  // do not balance by titles Apollo never queried."
+  const { leads, sizeFallback, titleMix } = await finalizeLeadList(
+    rawLeads, icp, enrichmentCache, null,
+    result?.finalPayload ? (result.finalPayload.person_titles || []) : undefined);
   console.log(`[lead_list] Dedup: ${rawLeads.length} → ${leads.length} unique-company leads (size fallback: ${sizeFallback || 'none'})`);
 
   // fetchLeadsFromApollo returns { total }; legacy callers used { totalAvailable }
@@ -4948,6 +5272,7 @@ async function handleLeadList(task, job) {
     recommendedOutreach,
     uniqueCompanies,
     lead_warning: leadWarning,
+    title_mix: titleMix,                               // achieved split across the rep's titles
     tamSource: 'apollo_api_live',
     apollo_diagnostics: {
       wasRelaxed: result?.wasRelaxed || false,
@@ -4955,6 +5280,7 @@ async function handleLeadList(task, job) {
       finalPayload: result?.finalPayload || {},
       uniqueCompanies,
       lead_warning: leadWarning,
+      title_mix: titleMix,
       adjacent_total: result?.adjacent_total ?? null
     }
   };
@@ -7750,8 +8076,9 @@ const server = http.createServer(async (req, res) => {
             if (enrichmentCache.size) {
               console.log(`[rerun-apollo] Apollo enrichment cache: ${enrichmentCache.size} leads from prior jobs for ${job.prospect_email}`);
             }
-            const { leads: finalizedLeads } = await finalizeLeadList(result.leads, icp, enrichmentCache,
-              snapshot => writeProgress({ status: 'running', ...snapshot }));
+            const { leads: finalizedLeads, titleMix } = await finalizeLeadList(result.leads, icp, enrichmentCache,
+              snapshot => writeProgress({ status: 'running', ...snapshot }),
+              result.finalPayload ? (result.finalPayload.person_titles || []) : undefined);
             console.log(`[rerun-apollo] Dedup: ${result.leads.length} → ${finalizedLeads.length} unique-company leads`);
             // Same thin/degenerate explanation as the initial run (rerun is the
             // exact path that produced the silent "1 lead" after a filter edit).
@@ -7785,8 +8112,9 @@ const server = http.createServer(async (req, res) => {
                 recommendedOutreach:  recommendedOutreach,
                 uniqueCompanies:      result.uniqueCompanies ?? null,
                 lead_warning:         rerunWarning,
+                title_mix:            titleMix,
                 leadsTaskStatus:     'completed',
-                apollo_diagnostics:   result.diagnostics,
+                apollo_diagnostics:   { ...(result.diagnostics || {}), title_mix: titleMix },
                 apollo_rerun:         {
                   status:     'completed',
                   progress:   100,

@@ -976,6 +976,11 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
 
     </div>
 
+    <!-- Rep-only: how the 25 split across the titles the rep entered. Apollo ORs
+         person_titles and ranks by its own relevance, so an unbalanced list used
+         to be invisible until someone counted the rows by hand. -->
+    <div id="lead-title-mix" class="rep-only" style="display:none;margin:0 0 10px;font-size:11.5px;color:#52525b;line-height:1.7;"></div>
+
     <!-- Lead Table -->
     <table class="lead-table">
       <thead><tr><th>#</th><th>Name</th><th>Title</th><th>Company</th><th>Size</th><th>Website</th><th>LinkedIn</th></tr></thead>
@@ -4606,7 +4611,38 @@ function runPersonalization(session) {
               + '<td>' + liCell + '</td>'
               + '</tr>';
           };
-          tbody.innerHTML = gen.leads.slice(0, 25).map(window._renderLeadRow).join('');
+          var shownLeads = gen.leads.slice(0, 25);
+          tbody.innerHTML = shownLeads.map(window._renderLeadRow).join('');
+
+          // Title-mix row. Derived from the _title_bucket the backend's
+          // round-robin stamped on each lead, and counted over the rows actually
+          // rendered — so it can never disagree with the table beneath it.
+          // Hidden unless at least two titles are represented (a single-title
+          // ICP has nothing to balance and the row would just be noise).
+          try {
+            var mixEl = document.getElementById('lead-title-mix');
+            if (mixEl) {
+              var mixCounts = {};
+              shownLeads.forEach(function(l) {
+                var b = l && l._title_bucket;
+                if (b) mixCounts[b] = (mixCounts[b] || 0) + 1;
+              });
+              var mixPairs = Object.keys(mixCounts)
+                .map(function(t) { return { title: t, count: mixCounts[t] }; })
+                .sort(function(a, b) { return b.count - a.count; });
+              if (mixPairs.length >= 2) {
+                var shownMix = mixPairs.slice(0, 6).map(function(m) {
+                  return '<span style="color:#71717a;">' + m.title + '</span> '
+                       + '<span style="color:#86efac;font-weight:600;">' + m.count + '</span>';
+                }).join('<span style="color:#3f3f46;"> · </span>');
+                if (mixPairs.length > 6) shownMix += '<span style="color:#3f3f46;"> · +' + (mixPairs.length - 6) + ' more</span>';
+                mixEl.innerHTML = '<span style="color:#3f3f46;">Title mix &nbsp;</span>' + shownMix;
+                mixEl.style.display = '';
+              } else {
+                mixEl.style.display = 'none';
+              }
+            }
+          } catch (e) { console.warn('[Deal Forge] title mix render failed', e); }
 
           // Wire reveal click handler — delegated via tbody
           tbody.addEventListener('click', async function(e) {
