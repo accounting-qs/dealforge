@@ -123,6 +123,31 @@ h1{font-size:28px;font-weight:700;letter-spacing:-0.025em;color:#fff;margin:0 0 
 /* Inline edit input */
 .cb-edit-input{flex:1;background:rgba(0,0,0,0.4);border:1px solid rgba(245,158,11,0.4);border-radius:8px;padding:8px 12px;font-size:13px;color:#fff;outline:none;font-family:inherit}
 
+/* ── Sales Reps ────────────────────────────────────────────────────────── */
+.rep-row{display:flex;align-items:center;gap:14px;padding:12px 14px;background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.06);border-radius:10px;margin-bottom:8px;transition:border-color 150ms}
+.rep-row:hover{border-color:rgba(255,255,255,0.12)}
+.rep-row.inactive{opacity:0.5}
+.rep-id{flex:1;min-width:0}
+.rep-name{font-size:13px;font-weight:600;color:#e4e4e7;display:flex;align-items:center;gap:8px}
+.rep-mail{font-size:11px;color:#71717a;font-family:'Fira Code','SF Mono',monospace;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rep-slug{font-size:10px;font-weight:600;color:#c4b5fd;background:rgba(139,92,246,0.14);border:1px solid rgba(139,92,246,0.3);padding:1px 7px;border-radius:4px;font-family:'Fira Code','SF Mono',monospace}
+.rep-jobs{flex-shrink:0;font-size:11px;color:#71717a;text-align:right;min-width:64px}
+.rep-jobs strong{display:block;font-size:15px;font-weight:700;color:#a1a1aa}
+
+/* Suggested (unmapped GHL owner) card */
+.rep-suggest{display:flex;align-items:center;gap:14px;padding:12px 14px;background:rgba(245,158,11,0.06);border:1px solid rgba(245,158,11,0.28);border-radius:10px;margin-bottom:8px}
+.rep-suggest .rep-name{color:#fbbf24}
+.rep-why{font-size:11px;color:#a1a1aa;margin-top:3px}
+
+/* GHL picker */
+.rep-picker{background:rgba(0,0,0,0.28);border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:14px;margin-bottom:16px}
+.rep-results{max-height:300px;overflow-y:auto;margin-top:10px}
+.rep-result{display:flex;align-items:center;gap:12px;padding:9px 12px;border-radius:8px;cursor:pointer;transition:background 100ms}
+.rep-result:hover{background:rgba(255,255,255,0.045)}
+.rep-result.is-mapped{opacity:0.4;cursor:not-allowed}
+.rep-result.is-mapped:hover{background:none}
+.rep-empty{padding:18px;text-align:center;color:#52525b;font-size:12px}
+
 /* Examples list rows + editor */
 .cb-ex-row{background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.06);border-radius:10px;margin-bottom:10px;overflow:hidden}
 .cb-ex-row:hover{border-color:rgba(255,255,255,0.12)}
@@ -200,6 +225,7 @@ h1{font-size:28px;font-weight:700;letter-spacing:-0.025em;color:#fff;margin:0 0 
     <button class="section-tab active" data-section="prompts" onclick="switchSection('prompts', event)">Prompts</button>
     <button class="section-tab" data-section="copy-brain" onclick="switchSection('copy-brain', event)">Copy Brain</button>
     <button class="section-tab" data-section="apollo-corpus" onclick="switchSection('apollo-corpus', event)">Apollo Corpus</button>
+    <button class="section-tab" data-section="sales-reps" onclick="switchSection('sales-reps', event)">Sales Reps</button>
     <button class="section-tab" data-section="integrations" onclick="switchSection('integrations', event)">Integrations</button>
     <button class="section-tab" data-section="sop" onclick="switchSection('sop', event)">SOP</button>
   </div>
@@ -301,6 +327,57 @@ h1{font-size:28px;font-weight:700;letter-spacing:-0.025em;color:#fff;margin:0 0 
           <button class="cb-add-btn" id="apollo-sync-btn" onclick="apolloSyncRun()">🔄 Run sync now</button>
           <span id="apollo-sync-status" style="font-size:11px;color:#71717a;"></span>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Sales Reps section ─────────────────────────────────────────────── -->
+  <div class="section" id="section-sales-reps">
+
+    <!-- Reps GHL already assigns work to, but Deal Forge can't name yet. -->
+    <div class="cb-card" id="rep-suggest-card" style="display:none;">
+      <div class="cb-head">
+        <div class="cb-head-title">
+          <strong>⚡ Needs setup</strong>
+          <span>GHL users who own opportunities but aren't reps here yet</span>
+        </div>
+      </div>
+      <div class="cb-body">
+        <p style="font-size:12px;color:#71717a;line-height:1.6;margin:0 0 14px;">
+          Jobs owned by these people land <strong style="color:#a1a1aa;">unassigned</strong> — they don't appear in any rep dropdown or filter. Add them to fix that going forward.
+        </p>
+        <div id="rep-suggest-list"></div>
+      </div>
+    </div>
+
+    <div class="cb-card">
+      <div class="cb-head">
+        <div class="cb-head-title">
+          <strong>Sales Reps</strong>
+          <span>Maps a GoHighLevel user to the rep Deal Forge assigns jobs to</span>
+        </div>
+        <div id="rep-status-chip" style="font-size:11px;font-weight:600;color:#71717a;">—</div>
+      </div>
+      <div class="cb-body">
+        <p style="font-size:12px;color:#71717a;line-height:1.6;margin:0 0 14px;">
+          When a job is created, Deal Forge looks up the prospect in GHL and reads the <strong style="color:#a1a1aa;">opportunity owner</strong> (falling back to the contact owner). That owner is a GHL user ID — this table is what turns it into a named rep. A rep who isn't listed here gets no assignment at all.
+          <br><br>
+          Adding a rep also stores their email, which is what labels them as <code>[REP]</code> rather than <code>[PROSPECT]</code> in call transcripts.
+        </p>
+
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;">
+          <button class="cb-add-btn" id="rep-add-btn" onclick="repTogglePicker()">+ Add rep from GoHighLevel</button>
+          <button class="cb-add-btn" onclick="repSyncEmails()" id="rep-sync-btn" style="background:rgba(255,255,255,0.06);border-color:rgba(255,255,255,0.12);color:#a1a1aa;">🔄 Sync names &amp; emails</button>
+          <span id="rep-status" style="font-size:11px;color:#71717a;"></span>
+        </div>
+
+        <!-- GHL user picker — searches the whole location roster by name or email -->
+        <div class="rep-picker" id="rep-picker" style="display:none;">
+          <input type="text" class="cb-add-input" id="rep-search" placeholder="Search GoHighLevel users by name or email…" autocomplete="off" oninput="repRenderResults()" style="width:100%;">
+          <div class="rep-results" id="rep-results"><div class="rep-empty">Loading GoHighLevel users…</div></div>
+        </div>
+
+        <div id="rep-list"><div class="loading">Loading reps…</div></div>
       </div>
     </div>
   </div>
@@ -420,6 +497,9 @@ function switchSection(name, event) {
   }
   if (name === 'apollo-corpus') {
     apolloLoadStats();
+  }
+  if (name === 'sales-reps') {
+    repLoadAll();
   }
   if (name === 'integrations') {
     zoomLoadConfig();
@@ -551,6 +631,213 @@ function zoomRenderTest(d) {
     html += '<br><span style="color:#fbbf24;">Recording lookup: ' + esc(JSON.stringify(d.recordings_error)) + '</span>';
   }
   return html;
+}
+
+// ── Sales Reps admin panel ──────────────────────────────────────────────────
+// Three lists on one tab: reps that exist, GHL owners that should be reps but
+// aren't (the "needs setup" card), and the full GHL roster behind the picker.
+var REP_GHL_USERS = [];   // whole GHL location roster, for the picker search
+var REP_ROWS      = [];   // current sales_reps rows
+
+async function repLoadAll() {
+  await Promise.all([repLoadList(), repLoadGhlUsers()]);
+  repLoadUnmapped();   // slowest of the three (walks GHL per unassigned job) — don't block on it
+}
+
+async function repLoadList() {
+  var el = document.getElementById('rep-list');
+  try {
+    var r = await fetch('/api/sales-reps?all=1', { cache: 'no-store' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    var d = await r.json();
+    REP_ROWS = d.reps || [];
+    var active = REP_ROWS.filter(function(x){ return x.active; }).length;
+    var chip = document.getElementById('rep-status-chip');
+    chip.textContent = active + ' active';
+    chip.style.color = active ? '#34b433' : '#fbbf24';
+
+    if (!REP_ROWS.length) {
+      el.innerHTML = '<div class="rep-empty">No reps mapped yet. Add one from GoHighLevel above.</div>';
+      return;
+    }
+    el.innerHTML = REP_ROWS.map(repRowHTML).join('')
+      + (d.unassigned_jobs
+          ? '<div style="font-size:11px;color:#71717a;margin-top:12px;">'
+            + d.unassigned_jobs + ' job(s) currently have no rep assigned — set them from the dashboard dropdown, '
+            + 'or add the missing rep above and re-run.</div>'
+          : '');
+  } catch (e) {
+    el.innerHTML = '<div style="color:#fca5a5;font-size:12px;padding:12px;">Failed to load reps: ' + esc(e.message) + '</div>';
+  }
+}
+
+function repRowHTML(r) {
+  return '<div class="rep-row' + (r.active ? '' : ' inactive') + '">'
+    + '<div class="rep-id">'
+    +   '<div class="rep-name">' + esc(r.display_name)
+    +     '<span class="rep-slug">' + esc(r.slug) + '</span>'
+    +     (r.active ? '' : '<span style="font-size:10px;color:#71717a;">inactive</span>')
+    +   '</div>'
+    +   '<div class="rep-mail">' + esc(r.email || 'no email in GHL') + '</div>'
+    + '</div>'
+    + '<div class="rep-jobs"><strong>' + (r.jobs || 0) + '</strong>jobs</div>'
+    + '<div class="cb-actions">'
+    +   '<button class="cb-link' + (r.active ? ' danger' : '') + '" onclick="repToggleActive(\'' + esc(r.slug) + '\',' + (r.active ? 'false' : 'true') + ')">'
+    +     (r.active ? 'Deactivate' : 'Reactivate')
+    +   '</button>'
+    + '</div>'
+    + '</div>';
+}
+
+// Deactivating is the only removal on offer: jobs.rep_name stores the slug, so
+// deleting a rep would orphan every job they ever ran.
+async function repToggleActive(slug, active) {
+  if (active === false && !confirm('Deactivate ' + slug + '?\n\nThey stop appearing in rep dropdowns and filters. Their existing jobs keep the assignment.')) return;
+  try {
+    var r = await fetch('/api/sales-reps/' + encodeURIComponent(slug), {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ active: active })
+    });
+    var d = await r.json().catch(function(){ return {}; });
+    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+    showToast(slug + (active ? ' reactivated' : ' deactivated'));
+    await repLoadList();
+    await repLoadGhlUsers();
+  } catch (e) {
+    showToast('Failed: ' + e.message);
+  }
+}
+
+async function repLoadGhlUsers() {
+  try {
+    var r = await fetch('/api/sales-reps/ghl-users', { cache: 'no-store' });
+    var d = await r.json();
+    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+    REP_GHL_USERS = d.users || [];
+  } catch (e) {
+    REP_GHL_USERS = [];
+    console.warn('[rep-picker]', e.message);
+  }
+  if (document.getElementById('rep-picker').style.display === 'block') repRenderResults();
+}
+
+function repTogglePicker() {
+  var p = document.getElementById('rep-picker');
+  var open = p.style.display !== 'block';
+  p.style.display = open ? 'block' : 'none';
+  document.getElementById('rep-add-btn').textContent = open ? '✕ Cancel' : '+ Add rep from GoHighLevel';
+  if (open) {
+    document.getElementById('rep-search').value = '';
+    repRenderResults();
+    document.getElementById('rep-search').focus();
+  }
+}
+
+// Matches name OR email so an admin can find someone either way — which is the
+// whole point of listing the roster instead of asking them to paste a user ID.
+function repRenderResults() {
+  var q  = (document.getElementById('rep-search').value || '').trim().toLowerCase();
+  var el = document.getElementById('rep-results');
+  if (!REP_GHL_USERS.length) {
+    el.innerHTML = '<div class="rep-empty">Couldn\'t reach GoHighLevel. Check GHL_API_KEY / GHL_LOCATION_ID.</div>';
+    return;
+  }
+  var hits = REP_GHL_USERS.filter(function(u) {
+    if (!q) return !u.mapped;   // no query → show who's addable
+    return String(u.name || '').toLowerCase().indexOf(q) !== -1
+        || String(u.email || '').toLowerCase().indexOf(q) !== -1;
+  }).slice(0, 60);
+
+  if (!hits.length) {
+    el.innerHTML = '<div class="rep-empty">No GoHighLevel user matches "' + esc(q) + '".</div>';
+    return;
+  }
+  el.innerHTML = hits.map(function(u) {
+    return '<div class="rep-result' + (u.mapped ? ' is-mapped' : '') + '"'
+      + (u.mapped ? '' : ' onclick="repAdd(\'' + esc(u.id) + '\')"') + '>'
+      + '<div class="rep-id">'
+      +   '<div class="rep-name">' + esc(u.name || '(no name)')
+      +     (u.mapped ? '<span class="rep-slug">already ' + esc(u.mapped_slug) + '</span>' : '')
+      +   '</div>'
+      +   '<div class="rep-mail">' + esc(u.email || 'no email') + '</div>'
+      + '</div>'
+      + (u.mapped ? '' : '<span style="font-size:11px;color:#c4b5fd;flex-shrink:0;">Add →</span>')
+      + '</div>';
+  }).join('');
+}
+
+async function repAdd(ghlUserId) {
+  var u = REP_GHL_USERS.find(function(x){ return x.id === ghlUserId; }) || {};
+  var status = document.getElementById('rep-status');
+  status.textContent = 'Adding ' + (u.name || ghlUserId) + '…';
+  try {
+    var r = await fetch('/api/sales-reps', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ghl_user_id: ghlUserId })
+    });
+    var d = await r.json().catch(function(){ return {}; });
+    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+    status.textContent = '';
+    showToast('Added ' + d.rep.display_name + ' as "' + d.rep.slug + '"');
+    document.getElementById('rep-search').value = '';
+    await repLoadList();
+    await repLoadGhlUsers();
+    repLoadUnmapped();
+  } catch (e) {
+    status.textContent = '';
+    showToast('Add failed: ' + e.message);
+  }
+}
+
+// The "needs setup" card. Server merges owners seen live at prefetch time with
+// a re-scan of unassigned jobs, so this survives a restart.
+async function repLoadUnmapped() {
+  var card = document.getElementById('rep-suggest-card');
+  var list = document.getElementById('rep-suggest-list');
+  try {
+    var r = await fetch('/api/sales-reps/unmapped', { cache: 'no-store' });
+    var d = await r.json();
+    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+    var owners = (d.owners || []).filter(function(o){ return o.in_ghl; });
+    if (!owners.length) { card.style.display = 'none'; return; }
+    card.style.display = 'block';
+    list.innerHTML = owners.map(function(o) {
+      var why = o.hits + ' job' + (o.hits === 1 ? '' : 's')
+              + (o.prospects && o.prospects.length ? ' · ' + esc(o.prospects.slice(0, 2).join(', ')) : '');
+      return '<div class="rep-suggest">'
+        + '<div class="rep-id">'
+        +   '<div class="rep-name">' + esc(o.name || o.ghl_user_id) + '</div>'
+        +   '<div class="rep-mail">' + esc(o.email || 'no email') + '</div>'
+        +   '<div class="rep-why">' + why + '</div>'
+        + '</div>'
+        + '<button class="cb-add-btn" style="flex-shrink:0;" onclick="repAdd(\'' + esc(o.ghl_user_id) + '\')">Add as rep</button>'
+        + '</div>';
+    }).join('');
+  } catch (e) {
+    card.style.display = 'none';
+    console.warn('[rep-unmapped]', e.message);
+  }
+}
+
+// Re-pull display_name + email from GHL for every mapped rep. Worth running
+// after someone's name or email changes on the GHL side.
+async function repSyncEmails() {
+  var btn = document.getElementById('rep-sync-btn');
+  var status = document.getElementById('rep-status');
+  btn.disabled = true; status.textContent = 'Syncing from GoHighLevel…';
+  try {
+    var r = await fetch('/api/admin/sync-rep-emails', { method: 'POST' });
+    var d = await r.json().catch(function(){ return {}; });
+    if (!r.ok || d.ok === false) throw new Error(d.error || ('HTTP ' + r.status));
+    showToast('Synced · ' + (d.synced || 0) + ' updated' + (d.missing ? ' · ' + d.missing + ' still missing an email' : ''));
+    status.textContent = '';
+    await repLoadList();
+  } catch (e) {
+    status.textContent = '';
+    showToast('Sync failed: ' + e.message);
+  } finally { btn.disabled = false; }
 }
 
 // ── Apollo Corpus admin panel ───────────────────────────────────────────────

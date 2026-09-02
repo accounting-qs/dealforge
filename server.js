@@ -901,6 +901,95 @@ async function getRepBySlug(slug) {
   return rows.find(r => r.active && r.slug === slug) || null;
 }
 
+// ── GHL user directory (id → name / email) ───────────────────────────────────
+// One GET against GHL's /users/ endpoint per location, cached for 5 minutes.
+// Three callers share it: syncRepEmailsFromGHL(), GET /api/diag/ghl-users, and
+// the Settings → Sales Reps picker, which needs the whole roster so an admin
+// can search a new rep by name or email. Never throws — an unreachable GHL
+// returns { ok:false, users:[] } and each caller decides whether that's fatal.
+let _ghlUserCache = { rows: null, fetchedAt: 0 };
+const GHL_USER_CACHE_TTL = 5 * 60 * 1000;
+
+async function fetchGHLUsers({ force = false } = {}) {
+  if (!GHL_API_KEY || !GHL_LOCATION_ID) {
+    return { ok: false, error: 'GHL_API_KEY / GHL_LOCATION_ID not set', users: [] };
+  }
+  const fresh = _ghlUserCache.rows && (Date.now() - _ghlUserCache.fetchedAt < GHL_USER_CACHE_TTL);
+  if (fresh && !force) return { ok: true, users: _ghlUserCache.rows, cached: true };
+  try {
+    const r = await fetch(`https://services.leadconnectorhq.com/users/?locationId=${GHL_LOCATION_ID}`, {
+      headers: { 'Authorization': `Bearer ${GHL_API_KEY}`, 'Version': '2021-07-28' },
+      signal: AbortSignal.timeout(8000)
+    });
+    if (!r.ok) return { ok: false, error: `GHL /users returned ${r.status}`, users: [] };
+    const data = await r.json();
+    // Collapse runs of whitespace: GHL stores trailing spaces in firstName for
+    // some users, which is where the stored "Melissa  Fredericks" came from.
+    const users = (data.users || []).map(u => ({
+      id:    u.id,
+      name:  [u.firstName, u.lastName].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim() || u.name || null,
+      email: String(u.email || '').trim().toLowerCase() || null
+    }));
+    _ghlUserCache = { rows: users, fetchedAt: Date.now() };
+    return { ok: true, users };
+  } catch (e) {
+    return { ok: false, error: 'GHL /users fetch failed: ' + e.message, users: [] };
+  }
+}
+
+// Derive a rep slug from a display name, dodging the slugs already in use.
+// "Jason Long" → jason; if `jason` is taken (Jason Bern got there first) →
+// jasonl, jasonlo, … then jason2, jason3. Slug is the join key on
+// jobs.rep_name, so it has to be stable and collision-free before insert.
+function deriveRepSlug(displayName, taken) {
+  const clean = String(displayName || '').toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  const parts = clean.split(/[^a-z0-9]+/).filter(Boolean);
+  const first = parts[0] || 'rep';
+  const last  = parts[1] || '';
+  const used  = new Set(taken || []);
+  if (!used.has(first)) return first;
+  for (let i = 1; i <= last.length; i++) {
+    const cand = first + last.slice(0, i);
+    if (!used.has(cand)) return cand;
+  }
+  for (let n = 2; n < 100; n++) {
+    if (!used.has(first + n)) return first + n;
+  }
+  return first + Date.now().toString(36).slice(-4);
+}
+
+// ── Unmapped GHL owners ──────────────────────────────────────────────────────
+// When prefetch resolves an opportunity/contact owner that has no sales_reps
+// row, the job lands with rep_name = NULL and that rep is invisible in every
+// dropdown and filter pill. Auto-creating a rep row for each unknown owner is
+// not an option — the GHL location holds 70+ users, most of them coaches, ops
+// staff and external agencies. So we just remember the ID, and Settings →
+// Sales Reps turns it into a one-click "add this person".
+//
+// In-memory, so a Render restart loses it; GET /api/sales-reps/unmapped also
+// re-derives the same list from jobs with rep_name IS NULL, which doesn't.
+const _unmappedOwners = new Map();
+const UNMAPPED_OWNER_MAX = 50;
+
+function recordUnmappedOwner(ghlUserId, prospectEmail, source) {
+  if (!ghlUserId) return;
+  const row = _unmappedOwners.get(ghlUserId)
+    || { ghl_user_id: ghlUserId, hits: 0, prospects: [], source: source || null };
+  row.hits     += 1;
+  row.source    = source || row.source;
+  row.last_seen = new Date().toISOString();
+  if (prospectEmail && !row.prospects.includes(prospectEmail)) row.prospects.unshift(prospectEmail);
+  row.prospects = row.prospects.slice(0, 5);
+  _unmappedOwners.set(ghlUserId, row);
+  // Bound the map — this process runs for days at a time.
+  if (_unmappedOwners.size > UNMAPPED_OWNER_MAX) {
+    const oldest = [..._unmappedOwners.entries()]
+      .sort((a, b) => String(a[1].last_seen).localeCompare(String(b[1].last_seen)))[0];
+    if (oldest) _unmappedOwners.delete(oldest[0]);
+  }
+}
+
 // ── Sync sales_reps.email from GHL ────────────────────────────────────────────
 // Source of truth for QS rep emails is GHL — each rep already has a
 // ghl_user_id in sales_reps. This pulls the corresponding email (and refreshes
@@ -916,21 +1005,11 @@ async function syncRepEmailsFromGHL() {
   if (!GHL_API_KEY || !GHL_LOCATION_ID) {
     return { ok: false, error: 'GHL_API_KEY / GHL_LOCATION_ID not set', synced: 0, missing: 0 };
   }
-  // 1. Fetch all GHL users in this location.
-  let ghlUsers = [];
-  try {
-    const r = await fetch(`https://services.leadconnectorhq.com/users/?locationId=${GHL_LOCATION_ID}`, {
-      headers: { 'Authorization': `Bearer ${GHL_API_KEY}`, 'Version': '2021-07-28' },
-      signal: AbortSignal.timeout(8000)
-    });
-    if (!r.ok) {
-      return { ok: false, error: `GHL /users returned ${r.status}`, synced: 0, missing: 0 };
-    }
-    const data = await r.json();
-    ghlUsers = data.users || [];
-  } catch (e) {
-    return { ok: false, error: 'GHL /users fetch failed: ' + e.message, synced: 0, missing: 0 };
-  }
+  // 1. Fetch all GHL users in this location. force:true — a sync run is exactly
+  // when someone wants GHL's *current* values, not a 5-minute-old snapshot.
+  const dir = await fetchGHLUsers({ force: true });
+  if (!dir.ok) return { ok: false, error: dir.error, synced: 0, missing: 0 };
+  const ghlUsers = dir.users;
   const byId = new Map(ghlUsers.map(u => [u.id, u]));
 
   // 2. Load every sales_rep row (active and inactive — we want to keep
@@ -954,13 +1033,12 @@ async function syncRepEmailsFromGHL() {
       if (!rep.email) { missing++; stillMissing.push({ slug: rep.slug, ghl_user_id: rep.ghl_user_id, reason: 'ghl_user_not_found' }); }
       continue;
     }
-    const ghlEmail = String(ghlUser.email || '').trim().toLowerCase();
+    const ghlEmail = ghlUser.email || '';
     if (!ghlEmail) {
       if (!rep.email) { missing++; stillMissing.push({ slug: rep.slug, ghl_user_id: rep.ghl_user_id, reason: 'ghl_user_has_no_email' }); }
       continue;
     }
-    const ghlName = [ghlUser.firstName, ghlUser.lastName].filter(Boolean).join(' ').trim()
-                    || ghlUser.name || rep.display_name || null;
+    const ghlName = ghlUser.name || rep.display_name || null;
     const currentEmail = String(rep.email || '').trim().toLowerCase();
     const patch = {};
     if (currentEmail !== ghlEmail) patch.email = ghlEmail;
@@ -6692,6 +6770,14 @@ const server = http.createServer(async (req, res) => {
             repSource = 'ghl_contact';
           }
           const repRow = await getRepByGhlUserId(repUserId);
+          // GHL knows who owns the deal but Deal Forge has no rep row for them
+          // — a rep who joined after the last sales_reps seed. Remember the ID
+          // so Settings → Sales Reps can surface them as a one-click add
+          // instead of making an admin search the full 70+ user GHL roster.
+          if (repUserId && !repRow) {
+            recordUnmappedOwner(repUserId, email, repSource);
+            console.warn(`[prefetch ${id.slice(0,8)}] GHL owner ${repUserId} (${repSource}) has no sales_reps row — job lands unassigned`);
+          }
           const rep = repRow
             ? { slug: repRow.slug, display_name: repRow.display_name, source: repSource, opportunity: repOppMeta }
             : null;
@@ -7833,17 +7919,274 @@ const server = http.createServer(async (req, res) => {
   }
 
   // ── GET /api/sales-reps — list active reps (drives dashboard + portal UIs) ─
+  // ?all=1 returns every row (inactive included) with ghl_user_id, email and a
+  // job count — the shape Settings → Sales Reps needs. The default shape is
+  // unchanged: the dashboard and portal dropdowns only ever want active reps.
   if (req.method === 'GET' && urlPath === '/api/sales-reps') {
     setCors(res);
     try {
+      const qs  = new URLSearchParams(req.url.split('?')[1] || '');
+      const all = qs.get('all') === '1';
+      if (!all) {
+        // Cached read. The dashboard and portal hit this on every page load,
+        // and busting the cache here would also cost the prefetch flow a
+        // Supabase round-trip per job — which is what the TTL exists to avoid.
+        const rows = await loadActiveReps();
+        const reps = rows
+          .filter(r => r.active)
+          .map(r => ({ slug: r.slug, display_name: r.display_name }));
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ reps }));
+        return;
+      }
+      // Admin view: read through, so a rep added seconds ago shows up.
+      invalidateRepCache();
       const rows = await loadActiveReps();
+      // Job counts: one narrow select over jobs.rep_name, tallied here. Cheaper
+      // than a count query per rep and small enough at this table's size.
+      const counts = {};
+      let unassigned = 0;
+      const jr = await supabaseRequest('GET', '/rest/v1/jobs?select=rep_name');
+      if (jr.status === 200 && Array.isArray(jr.body)) {
+        jr.body.forEach(j => {
+          if (j.rep_name) counts[j.rep_name] = (counts[j.rep_name] || 0) + 1;
+          else unassigned++;
+        });
+      }
       const reps = rows
-        .filter(r => r.active)
-        .map(r => ({ slug: r.slug, display_name: r.display_name }));
+        .slice()
+        .sort((a, b) => (b.active - a.active) || String(a.display_name).localeCompare(String(b.display_name)))
+        .map(r => ({
+          slug: r.slug, display_name: r.display_name, email: r.email || null,
+          ghl_user_id: r.ghl_user_id, active: !!r.active, jobs: counts[r.slug] || 0
+        }));
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ reps }));
+      res.end(JSON.stringify({ reps, unassigned_jobs: unassigned }));
     } catch(e) {
       console.error('[GET /api/sales-reps]', e.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  // ── GET /api/sales-reps/ghl-users — the Add-rep picker's search source ────
+  // Whole GHL roster, each entry flagged with whether it's already mapped, so
+  // the picker can grey out existing reps instead of letting an admin create a
+  // duplicate. `mapped_slug` tells the UI which rep it collides with.
+  if (req.method === 'GET' && urlPath === '/api/sales-reps/ghl-users') {
+    setCors(res);
+    try {
+      const dir = await fetchGHLUsers();
+      if (!dir.ok) {
+        res.writeHead(502, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: dir.error, users: [] })); return;
+      }
+      const reps     = await loadActiveReps();
+      const bySlugId = new Map(reps.map(r => [r.ghl_user_id, r]));
+      const users = dir.users
+        .map(u => {
+          const hit = bySlugId.get(u.id);
+          return { ...u, mapped: !!hit, mapped_slug: hit ? hit.slug : null };
+        })
+        // Unmapped first, then alphabetical — an admin is here to add someone.
+        .sort((a, b) => (a.mapped - b.mapped) || String(a.name).localeCompare(String(b.name)));
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ count: users.length, users }));
+    } catch(e) {
+      console.error('[GET /api/sales-reps/ghl-users]', e.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  // ── GET /api/sales-reps/unmapped — GHL owners with no rep row ─────────────
+  // Two sources, merged and de-duped:
+  //   1. recordUnmappedOwner() hits from prefetch — instant, lost on restart.
+  //   2. A scan of jobs with rep_name IS NULL, re-resolved through GHL —
+  //      survives restarts and catches owners this process never saw.
+  // The scan costs up to 2 GHL calls per job, so it's bounded and only runs
+  // when the Sales Reps tab is open. ?scan=0 skips it for a fast poll.
+  if (req.method === 'GET' && urlPath === '/api/sales-reps/unmapped') {
+    setCors(res);
+    try {
+      const qs   = new URLSearchParams(req.url.split('?')[1] || '');
+      const scan = qs.get('scan') !== '0';
+      const dir  = await fetchGHLUsers();
+      const byId = new Map(dir.users.map(u => [u.id, u]));
+      invalidateRepCache();
+      const reps       = await loadActiveReps();
+      const mappedIds  = new Set(reps.map(r => r.ghl_user_id));
+
+      // Start from what prefetch already saw this process lifetime.
+      const merged = new Map();
+      for (const [id, row] of _unmappedOwners) {
+        if (!mappedIds.has(id)) merged.set(id, { ...row, prospects: row.prospects.slice() });
+      }
+
+      let scanned = 0;
+      if (scan) {
+        const jr = await supabaseRequest('GET',
+          '/rest/v1/jobs?select=id,prospect_email&rep_name=is.null&order=created_at.desc&limit=25');
+        const jobs = (jr.status === 200 && Array.isArray(jr.body)) ? jr.body : [];
+        scanned = jobs.length;
+        // Small concurrency — GHL rate-limits, and this is an interactive load.
+        const queue = jobs.slice();
+        const worker = async () => {
+          while (queue.length) {
+            const job = queue.shift();
+            if (!job || !job.prospect_email) continue;
+            try {
+              const c = await lookupGHLContact(job.prospect_email);
+              if (!c) continue;
+              const opp   = c.id ? await lookupGHLOpportunityOwner(c.id) : null;
+              const owner = opp?.ghl_user_id || c.ghl_user_id || null;
+              if (!owner || mappedIds.has(owner)) continue;
+              const row = merged.get(owner)
+                || { ghl_user_id: owner, hits: 0, prospects: [], source: opp ? 'ghl_opportunity' : 'ghl_contact' };
+              row.hits += 1;
+              if (!row.prospects.includes(job.prospect_email)) row.prospects.push(job.prospect_email);
+              row.prospects = row.prospects.slice(0, 5);
+              merged.set(owner, row);
+            } catch (_) { /* one bad prospect shouldn't sink the list */ }
+          }
+        };
+        await Promise.all([worker(), worker(), worker()]);
+      }
+
+      const owners = [...merged.values()]
+        .map(row => {
+          const u = byId.get(row.ghl_user_id);
+          return {
+            ...row,
+            name:  u ? u.name  : null,
+            email: u ? u.email : null,
+            // An owner GHL no longer lists (deactivated seat) can't be added —
+            // the picker has nothing to show and the POST would reject it.
+            in_ghl: !!u
+          };
+        })
+        .sort((a, b) => b.hits - a.hits);
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ owners, scanned_jobs: scanned, ghl_directory_ok: dir.ok }));
+    } catch(e) {
+      console.error('[GET /api/sales-reps/unmapped]', e.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  // ── POST /api/sales-reps — map a GHL user to a Deal Forge rep ─────────────
+  // Body: { ghl_user_id, slug?, display_name?, email? }
+  // ghl_user_id is the contract: it's what GHL's opportunity `assignedTo`
+  // hands back, and what getRepByGhlUserId() joins on. Name and email are
+  // pulled from the GHL directory so the row matches GHL exactly; the caller
+  // may override them. slug is derived when omitted.
+  if (req.method === 'POST' && urlPath === '/api/sales-reps') {
+    setCors(res);
+    try {
+      const body      = await parseBody(req);
+      const ghlUserId = String(body.ghl_user_id || '').trim();
+      if (!ghlUserId) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'ghl_user_id is required' })); return;
+      }
+
+      // Validate against the live GHL roster when we can reach it. If GHL is
+      // down we still allow the insert rather than blocking an admin — but
+      // then display_name has to come from the request.
+      const dir     = await fetchGHLUsers();
+      const ghlUser = dir.ok ? dir.users.find(u => u.id === ghlUserId) : null;
+      if (dir.ok && !ghlUser) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: `GHL user ${ghlUserId} not found in location ${GHL_LOCATION_ID}` })); return;
+      }
+
+      const displayName = String(body.display_name || ghlUser?.name || '').trim();
+      if (!displayName) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'display_name is required (GHL user has no name)' })); return;
+      }
+      const email = String(body.email || ghlUser?.email || '').trim().toLowerCase() || null;
+
+      invalidateRepCache();
+      const existing = await loadActiveReps();
+      const dupe     = existing.find(r => r.ghl_user_id === ghlUserId);
+      if (dupe) {
+        res.writeHead(409, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: `Already mapped to rep "${dupe.slug}"`, slug: dupe.slug })); return;
+      }
+
+      const taken = existing.map(r => r.slug);
+      let slug = String(body.slug || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '');
+      if (!slug) slug = deriveRepSlug(displayName, taken);
+      if (taken.includes(slug)) {
+        res.writeHead(409, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: `Slug "${slug}" is already in use` })); return;
+      }
+
+      const ins = await supabaseRequest('POST', '/rest/v1/sales_reps',
+        { ghl_user_id: ghlUserId, slug, display_name: displayName, email, active: true },
+        { 'Prefer': 'return=representation' });
+      if (ins.status >= 400) {
+        const bodyStr = (typeof ins.body === 'string') ? ins.body : JSON.stringify(ins.body);
+        throw new Error(`Supabase insert ${ins.status}: ${bodyStr.slice(0, 300)}`);
+      }
+      // Drop the ID from the pending list — it's a rep now, not a suggestion.
+      _unmappedOwners.delete(ghlUserId);
+      invalidateRepCache();
+      console.log(`[POST /api/sales-reps] mapped GHL ${ghlUserId} → ${slug} (${displayName})`);
+      res.writeHead(201, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, rep: { slug, display_name: displayName, email, ghl_user_id: ghlUserId, active: true, jobs: 0 } }));
+    } catch(e) {
+      console.error('[POST /api/sales-reps]', e.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  // ── PATCH /api/sales-reps/:slug — deactivate / reactivate / rename ────────
+  // Body: { active?, display_name? }
+  // Deliberately no slug rename: jobs.rep_name stores the slug, so changing it
+  // would orphan every job that rep has ever run. Deactivating hides them from
+  // the dropdowns while their history stays intact and attributed.
+  if (req.method === 'PATCH' && urlPath.match(/^\/api\/sales-reps\/[^/]+$/)) {
+    setCors(res);
+    const slug = decodeURIComponent(urlPath.split('/')[3] || '').toLowerCase();
+    try {
+      const body  = await parseBody(req);
+      const patch = {};
+      if (body.active !== undefined)       patch.active       = !!body.active;
+      if (body.display_name !== undefined) patch.display_name = String(body.display_name).trim();
+      if (patch.display_name === '') {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'display_name cannot be blank' })); return;
+      }
+      if (!Object.keys(patch).length) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'nothing to update (pass active and/or display_name)' })); return;
+      }
+      patch.updated_at = new Date().toISOString();
+      const r = await supabaseRequest('PATCH', `/rest/v1/sales_reps?slug=eq.${encodeURIComponent(slug)}`,
+        patch, { 'Prefer': 'return=representation' });
+      if (r.status >= 400) {
+        const bodyStr = (typeof r.body === 'string') ? r.body : JSON.stringify(r.body);
+        throw new Error(`Supabase PATCH ${r.status}: ${bodyStr.slice(0, 300)}`);
+      }
+      if (!Array.isArray(r.body) || !r.body.length) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: `No rep with slug "${slug}"` })); return;
+      }
+      invalidateRepCache();
+      console.log(`[PATCH /api/sales-reps/${slug}]`, JSON.stringify(patch));
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, rep: r.body[0] }));
+    } catch(e) {
+      console.error('[PATCH /api/sales-reps/:slug]', e.message);
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: e.message }));
     }
@@ -7855,28 +8198,14 @@ const server = http.createServer(async (req, res) => {
   // setup; output is name + id + email pairs we can paste into UPDATEs.
   if (req.method === 'GET' && urlPath === '/api/diag/ghl-users') {
     setCors(res);
-    if (!GHL_API_KEY || !GHL_LOCATION_ID) {
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'GHL_API_KEY / GHL_LOCATION_ID not set' })); return;
-    }
     try {
-      const url = `https://services.leadconnectorhq.com/users/?locationId=${GHL_LOCATION_ID}`;
-      const r = await fetch(url, {
-        headers: { 'Authorization': `Bearer ${GHL_API_KEY}`, 'Version': '2021-07-28' },
-        signal: AbortSignal.timeout(5000)
-      });
-      if (!r.ok) {
-        res.writeHead(r.status, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: `GHL /users returned ${r.status}`, body: await r.text() })); return;
+      const dir = await fetchGHLUsers({ force: true });
+      if (!dir.ok) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: dir.error })); return;
       }
-      const data = await r.json();
-      const users = (data.users || []).map(u => ({
-        id:    u.id,
-        name:  [u.firstName, u.lastName].filter(Boolean).join(' ').trim() || u.name || null,
-        email: u.email || null
-      }));
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ count: users.length, users }));
+      res.end(JSON.stringify({ count: dir.users.length, users: dir.users }));
     } catch(e) {
       console.error('[GET /api/diag/ghl-users]', e.message);
       res.writeHead(500, { 'Content-Type': 'application/json' });
