@@ -231,6 +231,52 @@ async function supabaseRequest(method, urlPath, body, extraHeaders = {}) {
   });
 }
 
+// ── MCP connector config (Settings → Connectors) ─────────────────────────────
+// Singleton row in sales_assets.mcp_config, same shape as zoom_config/sop_config.
+// Only a sha256 of the bearer token is stored — every /api/* route here is
+// unauthenticated, so a plaintext column would be world-readable and would make
+// the bearer check on /mcp pointless. The token is shown once, at generation.
+
+async function getMcpConfigRow() {
+  const r = await supabaseRequest('GET', '/rest/v1/mcp_config?order=id.asc&limit=1');
+  return (Array.isArray(r.body) ? r.body[0] : null) || null;
+}
+
+async function saveMcpConfigPatch(patch) {
+  const row = await getMcpConfigRow();
+  const body = { ...patch, updated_at: new Date().toISOString() };
+  if (row) {
+    await supabaseRequest('PATCH', `/rest/v1/mcp_config?id=eq.${row.id}`, body, { 'Prefer': 'return=minimal' });
+  } else {
+    await supabaseRequest('POST', '/rest/v1/mcp_config', body, { 'Prefer': 'return=minimal' });
+  }
+  mcp.invalidateConfigCache();   // a toggle must take effect now, not in 30s
+  return await getMcpConfigRow();
+}
+
+// Let the MCP module read its token without importing anything from this file.
+mcp.configure({
+  loadConfig: getMcpConfigRow,
+  touchLastUsed: async () => {
+    const row = await getMcpConfigRow();
+    if (!row) return;
+    await supabaseRequest('PATCH', `/rest/v1/mcp_config?id=eq.${row.id}`,
+      { last_used_at: new Date().toISOString() }, { 'Prefer': 'return=minimal' });
+  }
+});
+
+/** Public origin of this deployment, derived from the request behind Render's proxy. */
+function publicOrigin(req) {
+  const host = String(req.headers['x-forwarded-host'] || req.headers.host || '').split(',')[0].trim();
+  if (!host) return process.env.PUBLIC_BASE_URL || '';
+  // Render terminates TLS and sets x-forwarded-proto. Without it, assume https
+  // unless this is obviously a local dev instance.
+  const fwd   = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim();
+  const local = /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i.test(host);
+  const proto = fwd || (local ? 'http' : 'https');
+  return `${proto}://${host}`;
+}
+
 // ── Copy Brain — DB-backed copywriting principles + business context + format rules ──
 // Consumed by generateWebinarTitles to fill the {{business_context_block}},
 // {{format_rules_block}}, {{principles_block}} placeholders in the system prompt.
@@ -6390,6 +6436,157 @@ const server = http.createServer(async (req, res) => {
       console.error('[PUT /api/admin/zoom-config]', e.message);
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  // ── GET /api/admin/mcp-config — connector status. NEVER returns the token ──
+  if (req.method === 'GET' && urlPath === '/api/admin/mcp-config') {
+    setCors(res);
+    try {
+      const row = (await getMcpConfigRow()) || {};
+      const envToken = String(process.env.DEALFORGE_MCP_TOKEN || '').length >= 32;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        endpoint_url: `${publicOrigin(req)}/mcp`,
+        configured:   envToken || !!row.token_hash,
+        enabled:      envToken || !!row.enabled,
+        allow_delete: !!row.allow_delete,
+        label:        row.label || '',
+        token_prefix: row.token_prefix || '',
+        last_used_at: row.last_used_at || null,
+        rotated_at:   row.rotated_at || null,
+        // An env token wins over the UI, so say so rather than letting the
+        // screen imply it is in charge when it isn't.
+        source:       envToken ? 'env' : (row.token_hash ? 'settings' : 'none'),
+        tool_count:   Array.isArray(mcp.TOOLS) ? mcp.TOOLS.length : 0,
+        tools:        Array.isArray(mcp.TOOLS)
+          ? mcp.TOOLS.map(t => ({
+              name: t.name,
+              title: t.title,
+              gated: (t.inputSchema && t.inputSchema.required || []).includes('confirm')
+            }))
+          : []
+      }));
+    } catch (e) {
+      console.error('[GET /api/admin/mcp-config]', e.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  // ── PUT /api/admin/mcp-config — toggle the connector / delete permission ───
+  if (req.method === 'PUT' && urlPath === '/api/admin/mcp-config') {
+    setCors(res);
+    try {
+      const body  = await parseBody(req);
+      const patch = {};
+      if (typeof body.enabled      === 'boolean') patch.enabled      = body.enabled;
+      if (typeof body.allow_delete === 'boolean') patch.allow_delete = body.allow_delete;
+      if (typeof body.label        === 'string')  patch.label        = body.label.trim().slice(0, 80);
+      if (!Object.keys(patch).length) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Nothing to update. Send enabled, allow_delete or label.' }));
+        return;
+      }
+      const row = await saveMcpConfigPatch(patch);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        saved: true,
+        enabled: !!(row && row.enabled),
+        allow_delete: !!(row && row.allow_delete),
+        label: (row && row.label) || ''
+      }));
+    } catch (e) {
+      console.error('[PUT /api/admin/mcp-config]', e.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  // ── POST /api/admin/mcp-config/rotate — mint a token, shown exactly once ───
+  // Any previously issued token stops working immediately.
+  if (req.method === 'POST' && urlPath === '/api/admin/mcp-config/rotate') {
+    setCors(res);
+    try {
+      const body  = await parseBody(req);
+      // df_mcp_ prefix makes the token recognisable in logs and to secret
+      // scanners; 24 random bytes is 192 bits of entropy.
+      const token = 'df_mcp_' + crypto.randomBytes(24).toString('hex');
+      const patch = {
+        token_hash:   crypto.createHash('sha256').update(token, 'utf8').digest('hex'),
+        token_prefix: token.slice(0, 14),
+        rotated_at:   new Date().toISOString(),
+        enabled:      true            // generating a token means you want it live
+      };
+      if (typeof body.label === 'string') patch.label = body.label.trim().slice(0, 80);
+      const row = await saveMcpConfigPatch(patch);
+      console.log(`[mcp] connector token rotated (prefix ${patch.token_prefix}…)`);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        // The ONLY time the full token is ever returned.
+        token,
+        token_prefix: patch.token_prefix,
+        endpoint_url: `${publicOrigin(req)}/mcp`,
+        enabled:      true,
+        allow_delete: !!(row && row.allow_delete),
+        label:        (row && row.label) || '',
+        warning:      'Copy this now — it is stored hashed and cannot be shown again.'
+      }));
+    } catch (e) {
+      console.error('[POST /api/admin/mcp-config/rotate]', e.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  // ── POST /api/admin/mcp-config/revoke — kill the token and disable ─────────
+  if (req.method === 'POST' && urlPath === '/api/admin/mcp-config/revoke') {
+    setCors(res);
+    try {
+      await saveMcpConfigPatch({ token_hash: '', token_prefix: '', enabled: false });
+      console.log('[mcp] connector token revoked');
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ revoked: true }));
+    } catch (e) {
+      console.error('[POST /api/admin/mcp-config/revoke]', e.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  // ── GET /api/admin/mcp-config/test — is /mcp live and refusing anonymous? ──
+  // Deliberately calls WITHOUT a token: a 401 proves the endpoint is both
+  // reachable and gated. We only hold the hash, so we cannot authenticate here.
+  if (req.method === 'GET' && urlPath === '/api/admin/mcp-config/test') {
+    setCors(res);
+    try {
+      const probe = await fetch(`http://127.0.0.1:${PORT}/mcp`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping' }),
+        signal: AbortSignal.timeout(10000)
+      });
+      const ok      = probe.status === 401;
+      const offline = probe.status === 503;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        reachable: true,
+        status: probe.status,
+        ready: ok,
+        message: ok
+          ? 'Endpoint is live and rejecting unauthenticated calls, which is correct.'
+          : offline
+            ? 'Endpoint is live but the connector is off or has no token. Generate a token below.'
+            : `Unexpected status ${probe.status} from /mcp.`
+      }));
+    } catch (e) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ reachable: false, ready: false, message: `Could not reach /mcp: ${e.message}` }));
     }
     return;
   }

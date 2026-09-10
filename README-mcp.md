@@ -14,32 +14,40 @@ https://deal-forge-angel.onrender.com/mcp
 
 - **Transport:** Streamable HTTP (stateless — no session id is ever issued)
 - **Method:** `POST` only. `GET`/`DELETE` return `405`; there is no SSE stream to open.
-- **Auth:** `Authorization: Bearer <DEALFORGE_MCP_TOKEN>`
+- **Auth:** `Authorization: Bearer <token>` — generated in Settings → Connectors
 - **Accept:** anything. `application/json`, `text/event-stream`, both, `*/*`, or omitted — the server negotiates and replies in kind.
 
-### Setup
+### Setup — from the UI
 
-1. Generate a token:
-   ```bash
-   openssl rand -hex 32
-   ```
-2. In the **Render dashboard** (not a committed file — repo files are served publicly), set:
+Everything is managed in **Deal Forge → Settings → Connectors**. No environment variables, no redeploy.
 
-   | Variable | Required | Purpose |
-   |---|---|---|
-   | `DEALFORGE_MCP_TOKEN` | **yes** | Bearer token. Must be ≥32 chars or `/mcp` refuses all traffic with `503`. |
-   | `DEALFORGE_MCP_ALLOW_DELETE` | no | Set to `1` to enable `delete_job`. Off by default. |
-   | `PUBLIC_BASE_URL` | no | Base for generated portal links. Defaults to `https://deal-forge-angel.onrender.com`. |
+1. Open [/settings](https://deal-forge-angel.onrender.com/settings) → **Connectors**.
+2. Click **Generate token**. The token is shown **once** — copy it there and then.
+3. Paste it into your Grok bot along with the Server URL shown on the same screen.
+4. Click **Test connection**. "Endpoint is live and rejecting unauthenticated calls" is the healthy result.
 
-3. Redeploy. Verify:
-   ```bash
-   curl -s -X POST https://deal-forge-angel.onrender.com/mcp \
-     -H "Authorization: Bearer $DEALFORGE_MCP_TOKEN" \
-     -H 'Content-Type: application/json' \
-     -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
-   ```
+The screen also carries:
 
-**Fail-closed:** if `DEALFORGE_MCP_TOKEN` is unset or too short, `/mcp` returns `503` to *everyone* and logs a warning at boot. A missing env var never means an open endpoint.
+| Control | Effect |
+|---|---|
+| **Connector enabled** | Master switch. Off ⇒ the endpoint refuses every call. Nothing else in Deal Forge changes. |
+| **Allow deleting jobs** | Second gate on `delete_job`, on top of its per-call `confirm`. Off by default. |
+| **Regenerate token** | Mints a new token and invalidates the old one immediately. |
+| **Revoke** | Clears the token and disables the connector. |
+| **Last used** | When the connector last authenticated successfully — the quickest way to tell whether the bot is actually talking to it. |
+
+Toggles take effect immediately; the config is cached for 30 seconds and the cache is invalidated on every write.
+
+**Why the token can't be shown twice.** Only `sha256(token)` is stored. Every `/api/*` route in this app is
+unauthenticated, so a column holding the token in plaintext would be readable by anyone who can reach
+`GET /api/admin/mcp-config` — which would make the bearer check pointless. Lose it, regenerate.
+
+**Fail-closed:** with no token generated, or the connector switched off, `/mcp` returns `503` to everyone and
+points at the settings screen.
+
+**Break-glass:** `DEALFORGE_MCP_TOKEN` (≥32 chars) as a Render environment variable still works and **overrides**
+the UI, for when the database is unreachable. The settings screen says so when it is in effect. `DEALFORGE_MCP_ALLOW_DELETE=1`
+is the matching env override for deletion.
 
 ### Connecting Grok
 
@@ -48,7 +56,7 @@ https://deal-forge-angel.onrender.com/mcp
   "type": "mcp",
   "server_url": "https://deal-forge-angel.onrender.com/mcp",
   "server_label": "dealforge",
-  "authorization": "<DEALFORGE_MCP_TOKEN>"
+  "authorization": "<token from Settings → Connectors>"
 }
 ```
 
@@ -95,7 +103,7 @@ All require `confirm: true`.
 | `reveal_lead` | **Exactly 1 Apollo credit.** Idempotent — an already-revealed lead costs nothing. |
 | `prefetch_prospect` | May spend an Apollo people/match credit. |
 | `extract_brief` | Claude tokens. |
-| `delete_job` | **Unrecoverable.** Also needs `DEALFORGE_MCP_ALLOW_DELETE=1`. |
+| `delete_job` | **Unrecoverable.** Also needs "Allow deleting jobs" on in Settings → Connectors. |
 
 ---
 
@@ -178,8 +186,20 @@ Tools call the app's own HTTP API over loopback rather than invoking internal fu
 
 | File | Role |
 |---|---|
-| `mcp-server.js` | The entire implementation. Exports `handle(req, res, urlPath)`. |
-| `server.js` | One `require` + one line in the router, above the blanket `OPTIONS` handler. |
+| `mcp-server.js` | The MCP implementation. Exports `handle(req, res, urlPath)` plus `configure()` / `invalidateConfigCache()`. |
+| `server.js` | One `require` + one line in the router, above the blanket `OPTIONS` handler; the connector config helpers; and the four `/api/admin/mcp-config*` routes. |
+| `settings.html` | The **Connectors** tab. |
+| `supabase/migrations/20260910_mcp_config.sql` | `sales_assets.mcp_config` singleton — token hash, toggles, `last_used_at`. |
+
+Admin endpoints behind the Connectors tab:
+
+| Route | Purpose |
+|---|---|
+| `GET /api/admin/mcp-config` | Status, toggles, token prefix, tool list. **Never returns the token.** |
+| `PUT /api/admin/mcp-config` | Set `enabled` / `allow_delete` / `label`. |
+| `POST /api/admin/mcp-config/rotate` | Mint a token. The only response that ever contains it. |
+| `POST /api/admin/mcp-config/revoke` | Clear the token and disable. |
+| `GET /api/admin/mcp-config/test` | Probes `/mcp` anonymously; a `401` means live and gated. |
 
 ### Why hand-rolled JSON-RPC
 
@@ -204,7 +224,7 @@ No `Mcp-Session-Id` is issued. Render overlaps instances during a deploy, so a s
 DISABLE_WORKER=1 PORT=3111 DEALFORGE_MCP_TOKEN=testtoken_0123456789abcdef0123456789abcdef node server.js
 ```
 
-`DISABLE_WORKER=1` matters: `.env` points at the **shared production Supabase**, so without it a local instance competes with the real worker for tasks.
+`DISABLE_WORKER=1` matters: `.env` points at the **shared production Supabase**, so without it a local instance competes with the real worker for tasks. Setting `DEALFORGE_MCP_TOKEN` locally uses the break-glass path, which avoids minting a real token into the shared database while you test.
 
 ```bash
 T=testtoken_0123456789abcdef0123456789abcdef

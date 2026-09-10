@@ -20,9 +20,16 @@
  *   A client only ever needs five methods here: initialize, notifications/*,
  *   ping, tools/list, tools/call. We own those and content-negotiate instead.
  *
- *   Escape hatch: the only export is handle(req, res, urlPath). Swap the
- *   internals for the SDK later and server.js does not change. Do that if you
- *   ever need server-initiated messages (sampling, elicitation) or real OAuth.
+ *   Escape hatch: the request surface is one function, handle(req, res, urlPath).
+ *   Swap the internals for the SDK later and server.js barely changes. Do that
+ *   if you ever need server-initiated messages (sampling, elicitation) or OAuth.
+ *
+ * TOKEN LIVES IN THE DATABASE, MANAGED FROM SETTINGS → CONNECTORS.
+ *   server.js injects a loader via configure({ loadConfig, touchLastUsed }) so
+ *   this module still imports nothing from it. Only a sha256 of the token is
+ *   stored — every /api/* route is unauthenticated, so a plaintext column would
+ *   be world-readable and make the bearer check pointless. DEALFORGE_MCP_TOKEN
+ *   still works and wins when set, as a break-glass path.
  *
  * TOOLS CALL THE APP OVER LOOPBACK HTTP.
  *   Route logic lives inline inside the if-chain in server.js and is not
@@ -59,12 +66,15 @@ const API_BASE = `http://127.0.0.1:${PORT}`;
 const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || 'https://deal-forge-angel.onrender.com')
   .replace(/\/+$/, '');
 
-const MCP_TOKEN = String(process.env.DEALFORGE_MCP_TOKEN || '');
-const TOKEN_OK  = MCP_TOKEN.length >= 32;
+// Env token is the break-glass path: it wins when set, so the connector still
+// works if the database is unreachable. The normal path is Settings →
+// Connectors, which stores a hash in sales_assets.mcp_config.
+const ENV_TOKEN     = String(process.env.DEALFORGE_MCP_TOKEN || '');
+const ENV_TOKEN_OK  = ENV_TOKEN.length >= 32;
 
 // Hard delete cascades to tasks and is unrecoverable, so it needs a second,
 // deliberate switch on top of the per-call confirm flag.
-const ALLOW_DELETE = String(process.env.DEALFORGE_MCP_ALLOW_DELETE || '') === '1';
+const ENV_ALLOW_DELETE = String(process.env.DEALFORGE_MCP_ALLOW_DELETE || '') === '1';
 
 const PROTOCOL_VERSIONS = ['2025-06-18', '2025-03-26', '2024-11-05'];
 const LATEST_PROTOCOL   = PROTOCOL_VERSIONS[0];
@@ -72,11 +82,74 @@ const LATEST_PROTOCOL   = PROTOCOL_VERSIONS[0];
 const MAX_BODY_BYTES    = 1024 * 1024;   // 1 MB
 const MAX_RESULT_BYTES  = 90 * 1024;     // keep a single tool result out of context-blowout territory
 
-if (!TOKEN_OK) {
-  console.error(
-    '[mcp] DEALFORGE_MCP_TOKEN is unset or shorter than 32 chars — %s will refuse all traffic with 503. ' +
-    'Generate one with: openssl rand -hex 32', MCP_PATH
-  );
+if (ENV_TOKEN_OK) {
+  console.log('[mcp] using DEALFORGE_MCP_TOKEN from the environment (overrides Settings → Connectors)');
+} else {
+  console.log(`[mcp] no env token — ${MCP_PATH} reads its token from Settings → Connectors`);
+}
+
+// ── Config resolution ────────────────────────────────────────────────────────
+// server.js injects a loader so this module stays dependency-free and imports
+// nothing from server.js. Cached briefly: /mcp is polled by agents, and this
+// would otherwise be a Supabase round-trip on every single JSON-RPC message.
+
+let _loadConfig    = null;   // async () => row | null
+let _touchLastUsed = null;   // async () => void
+
+function configure(opts) {
+  if (opts && typeof opts.loadConfig === 'function')    _loadConfig    = opts.loadConfig;
+  if (opts && typeof opts.touchLastUsed === 'function') _touchLastUsed = opts.touchLastUsed;
+}
+
+const CONFIG_TTL_MS = 30 * 1000;
+let _cfgCache = null;
+let _cfgCacheAt = 0;
+
+/** Call after any write to mcp_config so a change takes effect immediately. */
+function invalidateConfigCache() { _cfgCache = null; _cfgCacheAt = 0; }
+
+function sha256(s) { return crypto.createHash('sha256').update(String(s), 'utf8').digest(); }
+
+async function resolveConfig() {
+  if (_cfgCache && Date.now() - _cfgCacheAt < CONFIG_TTL_MS) return _cfgCache;
+
+  let cfg = { tokenHash: null, enabled: false, allowDelete: false, source: 'none' };
+
+  if (ENV_TOKEN_OK) {
+    cfg = { tokenHash: sha256(ENV_TOKEN), enabled: true, allowDelete: ENV_ALLOW_DELETE, source: 'env' };
+  } else if (_loadConfig) {
+    try {
+      const row = await _loadConfig();
+      if (row && row.token_hash) {
+        cfg = {
+          tokenHash:   Buffer.from(String(row.token_hash), 'hex'),
+          enabled:     !!row.enabled,
+          allowDelete: !!row.allow_delete,
+          source:      'settings'
+        };
+        // A malformed hash must not be treated as a match for everything.
+        if (cfg.tokenHash.length !== 32) cfg = { tokenHash: null, enabled: false, allowDelete: false, source: 'none' };
+      }
+    } catch (e) {
+      // Fail closed on a database error rather than falling back to open.
+      console.error('[mcp] could not load connector config:', e.message);
+    }
+  }
+
+  _cfgCache = cfg;
+  _cfgCacheAt = Date.now();
+  return cfg;
+}
+
+// Stamp last_used_at at most once a minute — it is a "is this thing live?"
+// indicator for the settings screen, not an audit trail.
+let _lastTouchAt = 0;
+function touchLastUsed() {
+  if (!_touchLastUsed) return;
+  const now = Date.now();
+  if (now - _lastTouchAt < 60 * 1000) return;
+  _lastTouchAt = now;
+  Promise.resolve(_touchLastUsed()).catch(() => {});
 }
 
 // ── HTTP plumbing ────────────────────────────────────────────────────────────
@@ -95,33 +168,42 @@ function mcpCors(res, origin) {
 }
 
 // timingSafeEqual throws on length mismatch, which would leak the token length.
-// Hashing both sides to a fixed 32 bytes first is the standard constant-time
-// string compare.
-function safeEqual(a, b) {
-  const ha = crypto.createHash('sha256').update(String(a), 'utf8').digest();
-  const hb = crypto.createHash('sha256').update(String(b), 'utf8').digest();
-  return crypto.timingSafeEqual(ha, hb);
+// Comparing fixed-width sha256 digests is the standard constant-time compare.
+function tokenMatches(presented, expectedHash) {
+  if (!expectedHash) return false;
+  return crypto.timingSafeEqual(sha256(presented), expectedHash);
 }
 
-/** Writes its own 401/503 and returns false when the caller is not authorised. */
-function requireBearer(req, res) {
+/**
+ * Resolves the connector config and checks the bearer token.
+ * Writes its own 401/503 and returns null when the caller is not authorised;
+ * otherwise returns the config for this request.
+ */
+async function requireBearer(req, res) {
   mcpCors(res, req.headers.origin);
 
+  const cfg = await resolveConfig();
+
   // Fail closed. Every other route in this app is open; if /mcp degraded to
-  // "open" on a missing env var, one forgotten Render setting would expose job
-  // creation and prospect PII. 503 rather than 401 so the operator looks at
+  // "open" when unconfigured, one missed setup step would expose job creation
+  // and prospect PII. 503 rather than 401 so the operator looks at
   // configuration instead of hunting for a wrong token.
-  if (!TOKEN_OK) {
+  if (!cfg.tokenHash || !cfg.enabled) {
     res.writeHead(503, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
       jsonrpc: '2.0', id: null,
-      error: { code: -32002, message: 'MCP not configured: DEALFORGE_MCP_TOKEN is unset or too short.' }
+      error: {
+        code: -32002,
+        message: cfg.tokenHash
+          ? 'MCP connector is turned off. Enable it in Deal Forge → Settings → Connectors.'
+          : 'MCP connector is not set up. Generate a token in Deal Forge → Settings → Connectors.'
+      }
     }));
-    return false;
+    return null;
   }
 
   const m = /^Bearer\s+(.+)$/i.exec(String(req.headers.authorization || '').trim());
-  if (!m || !safeEqual(m[1].trim(), MCP_TOKEN)) {
+  if (!m || !tokenMatches(m[1].trim(), cfg.tokenHash)) {
     const ip = req.socket && req.socket.remoteAddress;
     console.warn(`[mcp] auth failed from ${ip || 'unknown'} (${m ? 'bad token' : 'no bearer header'})`);
     // No `resource_metadata` — this is a static token, not OAuth. Advertising a
@@ -133,9 +215,11 @@ function requireBearer(req, res) {
     });
     // Identical body whether the header was missing or wrong.
     res.end(JSON.stringify({ jsonrpc: '2.0', id: null, error: { code: -32001, message: 'Unauthorized' } }));
-    return false;
+    return null;
   }
-  return true;
+
+  touchLastUsed();
+  return cfg;
 }
 
 /**
@@ -1026,14 +1110,14 @@ const TOOLS = [
     description:
       'Permanently delete a job and all its tasks. There is no soft delete and no undo. ' +
       'Generated assets remain in storage but become unreachable through the portal. ' +
-      'Requires confirm:true AND the server env var DEALFORGE_MCP_ALLOW_DELETE=1.',
+      'Requires confirm:true AND "Allow deleting jobs" enabled in Settings → Connectors.',
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
     inputSchema: { type: 'object', required: ['job_id', 'confirm'], properties: { job_id: S.jobId, confirm: S.confirm } },
-    async run(args) {
+    async run(args, cfg) {
       const id = jobId(args);
-      if (!ALLOW_DELETE) {
+      if (!cfg || !cfg.allowDelete) {
         throw new ToolError('DELETE_DISABLED',
-          'Deletion is disabled on this server. Set DEALFORGE_MCP_ALLOW_DELETE=1 in the Render environment to enable it.');
+          'Deletion is disabled for this connector. Turn on "Allow deleting jobs" in Deal Forge → Settings → Connectors.');
       }
       needConfirm(args, 'This permanently deletes the job and all its tasks. There is no undo.');
       return fromApi(await callApi('DELETE', `/api/jobs/${id}`));
@@ -1080,7 +1164,7 @@ function validateArgs(tool, args) {
 const rpcOk    = (id, result) => ({ jsonrpc: '2.0', id, result });
 const rpcError = (id, code, message) => ({ jsonrpc: '2.0', id, error: { code, message } });
 
-async function callTool(name, rawArgs) {
+async function callTool(name, rawArgs, cfg) {
   const tool = TOOLS_BY_NAME.get(name);
   if (!tool) {
     return { rpcError: [-32602, `Unknown tool: ${name}. Call tools/list for the available tools.`] };
@@ -1089,7 +1173,7 @@ async function callTool(name, rawArgs) {
   const started = Date.now();
   try {
     validateArgs(tool, args);
-    const result = await tool.run(args);
+    const result = await tool.run(args, cfg);
     audit(name, args, { ok: !result.isError }, Date.now() - started);
     return { result };
   } catch (e) {
@@ -1100,7 +1184,7 @@ async function callTool(name, rawArgs) {
   }
 }
 
-async function dispatch(msg) {
+async function dispatch(msg, cfg) {
   if (!msg || typeof msg !== 'object' || msg.jsonrpc !== '2.0' || typeof msg.method !== 'string') {
     return rpcError(msg && msg.id !== undefined ? msg.id : null, -32600, 'Invalid Request');
   }
@@ -1143,7 +1227,7 @@ async function dispatch(msg) {
       });
     case 'tools/call': {
       const params = msg.params || {};
-      const outcome = await callTool(params.name, params.arguments);
+      const outcome = await callTool(params.name, params.arguments, cfg);
       if (outcome.rpcError) return rpcError(id, outcome.rpcError[0], outcome.rpcError[1]);
       return rpcOk(id, outcome.result);
     }
@@ -1176,7 +1260,8 @@ async function handle(req, res, urlPath) {
   }
 
   // Auth before the body is read, so a rejected request never buffers a payload.
-  if (!requireBearer(req, res)) return true;
+  const cfg = await requireBearer(req, res);
+  if (!cfg) return true;
 
   if (req.method !== 'POST') {
     // Spec-legal: the server MAY answer 405 to indicate it offers no SSE stream
@@ -1199,7 +1284,7 @@ async function handle(req, res, urlPath) {
     const batch   = Array.isArray(msg) ? msg : [msg];
     const results = [];
     for (const m of batch) {
-      const out = await dispatch(m);
+      const out = await dispatch(m, cfg);
       if (out) results.push(out);
     }
     // All-notification batch: nothing to send back.
@@ -1212,4 +1297,4 @@ async function handle(req, res, urlPath) {
   return true;
 }
 
-module.exports = { handle, MCP_PATH, TOOLS };
+module.exports = { handle, configure, invalidateConfigCache, MCP_PATH, TOOLS };
