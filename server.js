@@ -6930,6 +6930,12 @@ const server = http.createServer(async (req, res) => {
         configured:   airtable.isConfigured(),
         token_env:    airtable.tokenEnvName(),
         looked_for:   airtable.TOKEN_ENV_NAMES,
+        // Diagnostic: which AIRTABLE-ish variables the process can actually see.
+        // NAMES ONLY, never values — this is enough to tell a typo apart from a
+        // variable that never reached the service, without leaking the token.
+        airtable_env_seen: Object.keys(process.env)
+          .filter(k => /AIRTABLE/i.test(k))
+          .map(k => `${k} (${String(process.env[k] || '').length} chars)`),
         base_id:      airtable.AIRTABLE_BASE,
         clients:      rows.length,
         with_tam:     rows.filter(r => Number.isFinite(r.tam) && r.tam > 0).length,
