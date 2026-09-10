@@ -40,7 +40,19 @@ function configure({ supabaseRequest, storageUpload }) {
   _storageUpload   = storageUpload;
 }
 
-const token = () => String(process.env.AIRTABLE_API_KEY || '').trim();
+// Accept the obvious spellings. The underscore in API_KEY is easy to drop when
+// typing it into a hosting dashboard, and a silent "not configured" is a
+// miserable thing to debug from the outside.
+const TOKEN_ENV_NAMES = ['AIRTABLE_API_KEY', 'AIRTABLE_APIKEY', 'AIRTABLE_TOKEN', 'AIRTABLE_PAT'];
+const token = () => {
+  for (const name of TOKEN_ENV_NAMES) {
+    const v = String(process.env[name] || '').trim();
+    if (v) return v;
+  }
+  return '';
+};
+// Which name actually supplied it — surfaced in Settings so a typo is visible.
+const tokenEnvName = () => TOKEN_ENV_NAMES.find(n => String(process.env[n] || '').trim()) || null;
 const isConfigured = () => token().length > 0;
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -48,7 +60,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 // ── Airtable REST ────────────────────────────────────────────────────────────
 
 async function airtableList(table) {
-  if (!isConfigured()) throw new Error('AIRTABLE_API_KEY is not set');
+  if (!isConfigured()) throw new Error('No Airtable token set (looked for: ' + TOKEN_ENV_NAMES.join(', ') + ')');
   const out = [];
   let offset = null;
   do {
@@ -293,7 +305,7 @@ async function getSyncState() {
  * database is coherent even if a later table fails.
  */
 async function syncCaseStudies({ rehostImages = true } = {}) {
-  if (!isConfigured()) throw new Error('AIRTABLE_API_KEY is not set — add it in the Render environment.');
+  if (!isConfigured()) throw new Error('No Airtable token set. Add one of ' + TOKEN_ENV_NAMES.join(' / ') + ' in the Render environment.');
   const started = Date.now();
   const counters = { images: 0 };
 
@@ -339,4 +351,4 @@ async function syncCaseStudies({ rehostImages = true } = {}) {
   return summary;
 }
 
-module.exports = { configure, syncCaseStudies, getSyncState, isConfigured, setSyncState, AIRTABLE_BASE };
+module.exports = { configure, syncCaseStudies, getSyncState, isConfigured, setSyncState, tokenEnvName, TOKEN_ENV_NAMES, AIRTABLE_BASE };

@@ -6928,6 +6928,8 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
         configured:   airtable.isConfigured(),
+        token_env:    airtable.tokenEnvName(),
+        looked_for:   airtable.TOKEN_ENV_NAMES,
         base_id:      airtable.AIRTABLE_BASE,
         clients:      rows.length,
         with_tam:     rows.filter(r => Number.isFinite(r.tam) && r.tam > 0).length,
@@ -6951,7 +6953,7 @@ const server = http.createServer(async (req, res) => {
     try {
       if (!airtable.isConfigured()) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'AIRTABLE_API_KEY is not set. Add it in the Render environment, then sync again.' }));
+        res.end(JSON.stringify({ error: 'No Airtable token found. Set one of ' + airtable.TOKEN_ENV_NAMES.join(' / ') + ' in the Render environment, then sync again.' }));
         return;
       }
       const body = await parseBody(req);
