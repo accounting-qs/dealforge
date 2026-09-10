@@ -24,12 +24,14 @@
  *   Swap the internals for the SDK later and server.js barely changes. Do that
  *   if you ever need server-initiated messages (sampling, elicitation) or OAuth.
  *
- * TOKEN LIVES IN THE DATABASE, MANAGED FROM SETTINGS → CONNECTORS.
+ * TOKENS LIVE IN THE DATABASE, MANAGED FROM SETTINGS → INTEGRATIONS.
  *   server.js injects a loader via configure({ loadConfig, touchLastUsed }) so
- *   this module still imports nothing from it. Only a sha256 of the token is
+ *   this module still imports nothing from it. Each connector is a row in
+ *   sales_assets.mcp_connectors with its own name, token and permissions, so
+ *   revoking one bot leaves the others alone. Only a sha256 of each token is
  *   stored — every /api/* route is unauthenticated, so a plaintext column would
  *   be world-readable and make the bearer check pointless. DEALFORGE_MCP_TOKEN
- *   still works and wins when set, as a break-glass path.
+ *   still works as an extra always-on connector, for break-glass access.
  *
  * TOOLS CALL THE APP OVER LOOPBACK HTTP.
  *   Route logic lives inline inside the if-chain in server.js and is not
@@ -83,9 +85,9 @@ const MAX_BODY_BYTES    = 1024 * 1024;   // 1 MB
 const MAX_RESULT_BYTES  = 90 * 1024;     // keep a single tool result out of context-blowout territory
 
 if (ENV_TOKEN_OK) {
-  console.log('[mcp] using DEALFORGE_MCP_TOKEN from the environment (overrides Settings → Connectors)');
+  console.log('[mcp] DEALFORGE_MCP_TOKEN set — available as an extra always-on connector alongside Settings → Integrations');
 } else {
-  console.log(`[mcp] no env token — ${MCP_PATH} reads its token from Settings → Connectors`);
+  console.log(`[mcp] no env token — ${MCP_PATH} uses the connectors in Settings → Integrations`);
 }
 
 // ── Config resolution ────────────────────────────────────────────────────────
@@ -105,51 +107,65 @@ const CONFIG_TTL_MS = 30 * 1000;
 let _cfgCache = null;
 let _cfgCacheAt = 0;
 
-/** Call after any write to mcp_config so a change takes effect immediately. */
+/** Call after any write to mcp_connectors so a change takes effect immediately. */
 function invalidateConfigCache() { _cfgCache = null; _cfgCacheAt = 0; }
 
 function sha256(s) { return crypto.createHash('sha256').update(String(s), 'utf8').digest(); }
 
-async function resolveConfig() {
+/**
+ * Every connector that could authenticate a request, newest config wins.
+ * A DB failure is deliberately NOT cached — better to retry in a second than to
+ * hold a fail-closed answer for the full TTL because of one blip.
+ */
+async function resolveConnectors() {
   if (_cfgCache && Date.now() - _cfgCacheAt < CONFIG_TTL_MS) return _cfgCache;
 
-  let cfg = { tokenHash: null, enabled: false, allowDelete: false, source: 'none' };
+  const list = [];
+  let loadFailed = false;
 
+  // Break-glass: an env token behaves as an extra, always-enabled connector.
   if (ENV_TOKEN_OK) {
-    cfg = { tokenHash: sha256(ENV_TOKEN), enabled: true, allowDelete: ENV_ALLOW_DELETE, source: 'env' };
-  } else if (_loadConfig) {
+    list.push({
+      id: null, name: 'DEALFORGE_MCP_TOKEN (env)', tokenHash: sha256(ENV_TOKEN),
+      enabled: true, allowDelete: ENV_ALLOW_DELETE, source: 'env'
+    });
+  }
+
+  if (_loadConfig) {
     try {
-      const row = await _loadConfig();
-      if (row && row.token_hash) {
-        cfg = {
-          tokenHash:   Buffer.from(String(row.token_hash), 'hex'),
-          enabled:     !!row.enabled,
+      const rows = await _loadConfig();
+      for (const row of (Array.isArray(rows) ? rows : [])) {
+        if (!row || !row.token_hash) continue;
+        const buf = Buffer.from(String(row.token_hash), 'hex');
+        if (buf.length !== 32) continue;   // a malformed hash must never match anything
+        list.push({
+          id: row.id,
+          name: row.name || 'Unnamed connector',
+          tokenHash: buf,
+          enabled: !!row.enabled,
           allowDelete: !!row.allow_delete,
-          source:      'settings'
-        };
-        // A malformed hash must not be treated as a match for everything.
-        if (cfg.tokenHash.length !== 32) cfg = { tokenHash: null, enabled: false, allowDelete: false, source: 'none' };
+          source: 'settings'
+        });
       }
     } catch (e) {
-      // Fail closed on a database error rather than falling back to open.
-      console.error('[mcp] could not load connector config:', e.message);
+      loadFailed = true;
+      console.error('[mcp] could not load connectors:', e.message);
     }
   }
 
-  _cfgCache = cfg;
-  _cfgCacheAt = Date.now();
-  return cfg;
+  if (!loadFailed) { _cfgCache = list; _cfgCacheAt = Date.now(); }
+  return list;
 }
 
-// Stamp last_used_at at most once a minute — it is a "is this thing live?"
-// indicator for the settings screen, not an audit trail.
-let _lastTouchAt = 0;
-function touchLastUsed() {
-  if (!_touchLastUsed) return;
+// Stamp last_used_at at most once a minute per connector — it answers "is this
+// thing live?" on the settings screen, it is not an audit trail.
+const _lastTouch = new Map();
+function touchLastUsed(id) {
+  if (!_touchLastUsed || id == null) return;   // the env connector has no row
   const now = Date.now();
-  if (now - _lastTouchAt < 60 * 1000) return;
-  _lastTouchAt = now;
-  Promise.resolve(_touchLastUsed()).catch(() => {});
+  if (now - (_lastTouch.get(id) || 0) < 60 * 1000) return;
+  _lastTouch.set(id, now);
+  Promise.resolve(_touchLastUsed(id)).catch(() => {});
 }
 
 // ── HTTP plumbing ────────────────────────────────────────────────────────────
@@ -167,46 +183,49 @@ function mcpCors(res, origin) {
   res.setHeader('Access-Control-Max-Age', '86400');
 }
 
-// timingSafeEqual throws on length mismatch, which would leak the token length.
-// Comparing fixed-width sha256 digests is the standard constant-time compare.
-function tokenMatches(presented, expectedHash) {
-  if (!expectedHash) return false;
-  return crypto.timingSafeEqual(sha256(presented), expectedHash);
-}
-
 /**
- * Resolves the connector config and checks the bearer token.
+ * Finds the connector whose token was presented.
  * Writes its own 401/503 and returns null when the caller is not authorised;
- * otherwise returns the config for this request.
+ * otherwise returns the matching connector, whose permissions apply to the call.
  */
 async function requireBearer(req, res) {
   mcpCors(res, req.headers.origin);
 
-  const cfg = await resolveConfig();
+  const connectors = await resolveConnectors();
+  const usable = connectors.filter(c => c.enabled);
 
   // Fail closed. Every other route in this app is open; if /mcp degraded to
   // "open" when unconfigured, one missed setup step would expose job creation
   // and prospect PII. 503 rather than 401 so the operator looks at
   // configuration instead of hunting for a wrong token.
-  if (!cfg.tokenHash || !cfg.enabled) {
+  if (!usable.length) {
     res.writeHead(503, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
       jsonrpc: '2.0', id: null,
       error: {
         code: -32002,
-        message: cfg.tokenHash
-          ? 'MCP connector is turned off. Enable it in Deal Forge → Settings → Connectors.'
-          : 'MCP connector is not set up. Generate a token in Deal Forge → Settings → Connectors.'
+        message: connectors.length
+          ? 'Every MCP connector is switched off. Enable one in Deal Forge → Settings → Integrations.'
+          : 'No MCP connector is set up. Add one in Deal Forge → Settings → Integrations.'
       }
     }));
     return null;
   }
 
   const m = /^Bearer\s+(.+)$/i.exec(String(req.headers.authorization || '').trim());
-  if (!m || !tokenMatches(m[1].trim(), cfg.tokenHash)) {
+  let matched = null;
+  if (m) {
+    const presented = sha256(m[1].trim());
+    // No early break: keep the work uniform across the (small) connector list.
+    for (const c of usable) {
+      if (crypto.timingSafeEqual(presented, c.tokenHash)) matched = c;
+    }
+  }
+
+  if (!matched) {
     const ip = req.socket && req.socket.remoteAddress;
-    console.warn(`[mcp] auth failed from ${ip || 'unknown'} (${m ? 'bad token' : 'no bearer header'})`);
-    // No `resource_metadata` — this is a static token, not OAuth. Advertising a
+    console.warn(`[mcp] auth failed from ${ip || 'unknown'} (${m ? 'no connector matches that token' : 'no bearer header'})`);
+    // No `resource_metadata` — these are static tokens, not OAuth. Advertising a
     // metadata URL we don't serve sends OAuth-capable clients into a discovery
     // dance that dead-ends.
     res.writeHead(401, {
@@ -218,8 +237,8 @@ async function requireBearer(req, res) {
     return null;
   }
 
-  touchLastUsed();
-  return cfg;
+  touchLastUsed(matched.id);
+  return matched;
 }
 
 /**
@@ -420,11 +439,12 @@ function needConfirm(args, what) {
   }
 }
 
-function audit(tool, args, outcome, ms) {
+function audit(tool, args, outcome, ms, cfg) {
   // Argument *keys* only — values carry prospect PII.
   const keys = Object.keys(args || {}).filter(k => k !== 'confirm').join(',') || '-';
   console.log(
-    `[mcp] tool=${tool} job=${args && args.job_id ? args.job_id : '-'} ` +
+    `[mcp] connector=${(cfg && cfg.name) || '-'} tool=${tool} ` +
+    `job=${args && args.job_id ? args.job_id : '-'} ` +
     `args=${keys} confirm=${args && args.confirm === true} ok=${outcome.ok} ms=${ms}` +
     (outcome.code ? ` code=${outcome.code}` : '')
   );
@@ -1110,14 +1130,15 @@ const TOOLS = [
     description:
       'Permanently delete a job and all its tasks. There is no soft delete and no undo. ' +
       'Generated assets remain in storage but become unreachable through the portal. ' +
-      'Requires confirm:true AND "Allow deleting jobs" enabled in Settings → Connectors.',
+      'Requires confirm:true AND "Allow deleting jobs" enabled for this connector in Settings → Integrations.',
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
     inputSchema: { type: 'object', required: ['job_id', 'confirm'], properties: { job_id: S.jobId, confirm: S.confirm } },
     async run(args, cfg) {
       const id = jobId(args);
       if (!cfg || !cfg.allowDelete) {
         throw new ToolError('DELETE_DISABLED',
-          'Deletion is disabled for this connector. Turn on "Allow deleting jobs" in Deal Forge → Settings → Connectors.');
+          `Deletion is not allowed for the "${(cfg && cfg.name) || 'current'}" connector. ` +
+          'Turn on "Allow deleting jobs" for it in Deal Forge → Settings → Integrations.');
       }
       needConfirm(args, 'This permanently deletes the job and all its tasks. There is no undo.');
       return fromApi(await callApi('DELETE', `/api/jobs/${id}`));
@@ -1174,11 +1195,11 @@ async function callTool(name, rawArgs, cfg) {
   try {
     validateArgs(tool, args);
     const result = await tool.run(args, cfg);
-    audit(name, args, { ok: !result.isError }, Date.now() - started);
+    audit(name, args, { ok: !result.isError }, Date.now() - started, cfg);
     return { result };
   } catch (e) {
     const code = e instanceof ToolError ? e.code : 'INTERNAL_ERROR';
-    audit(name, args, { ok: false, code }, Date.now() - started);
+    audit(name, args, { ok: false, code }, Date.now() - started, cfg);
     if (!(e instanceof ToolError)) console.error(`[mcp] tool ${name} threw:`, e);
     return { result: failResult(code, e.message) };
   }

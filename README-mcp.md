@@ -14,53 +14,60 @@ https://deal-forge-angel.onrender.com/mcp
 
 - **Transport:** Streamable HTTP (stateless — no session id is ever issued)
 - **Method:** `POST` only. `GET`/`DELETE` return `405`; there is no SSE stream to open.
-- **Auth:** `Authorization: Bearer <token>` — generated in Settings → Connectors
+- **Auth:** `Authorization: Bearer <token>` — per connector, from Settings → Integrations
 - **Accept:** anything. `application/json`, `text/event-stream`, both, `*/*`, or omitted — the server negotiates and replies in kind.
 
 ### Setup — from the UI
 
-Everything is managed in **Deal Forge → Settings → Connectors**. No environment variables, no redeploy.
+Managed in **Deal Forge → Settings → Integrations → MCP Connectors**. No environment variables, no redeploy.
 
-1. Open [/settings](https://deal-forge-angel.onrender.com/settings) → **Connectors**.
-2. Click **Generate token**. The token is shown **once** — copy it there and then.
-3. Paste it into your Grok bot along with the Server URL shown on the same screen.
-4. Click **Test connection**. "Endpoint is live and rejecting unauthenticated calls" is the healthy result.
+Add one connector per agent. Each gets its **own token and its own permissions**, so you can switch a single bot
+off, re-issue its token, or grant it deletion rights without touching the others.
 
-The screen also carries:
+1. Open [/settings](https://deal-forge-angel.onrender.com/settings) → **Integrations**.
+2. Type a name — "Grok", "Claude Desktop" — and click **Add connector**.
+3. The token is shown **once**. Copy it, or use **Copy full config** for the whole block.
+4. Paste it into the agent alongside the Server URL, which is the same for every connector.
+5. Click **Test**. "Endpoint is live and rejecting unauthenticated calls" is the healthy result.
+
+Deal Forge cannot tell what is on the far end of a token, so **the name you type is what identifies it** later.
+`Last used` is the honest signal of whether an agent is actually talking to it.
+
+Per connector:
 
 | Control | Effect |
 |---|---|
-| **Connector enabled** | Master switch. Off ⇒ the endpoint refuses every call. Nothing else in Deal Forge changes. |
-| **Allow deleting jobs** | Second gate on `delete_job`, on top of its per-call `confirm`. Off by default. |
-| **Regenerate token** | Mints a new token and invalidates the old one immediately. |
-| **Revoke** | Clears the token and disables the connector. |
-| **Last used** | When the connector last authenticated successfully — the quickest way to tell whether the bot is actually talking to it. |
+| **Enabled** | Off ⇒ that token stops working. Other connectors are unaffected. |
+| **Can delete jobs** | Second gate on `delete_job`, on top of its per-call `confirm`. Off by default, per connector. |
+| **Rename** | Relabel it. |
+| **Regenerate token** | New token; the old one dies immediately. Only this connector is affected. |
+| **Remove** | Deletes the connector and its token for good. |
 
-Toggles take effect immediately; the config is cached for 30 seconds and the cache is invalidated on every write.
+Changes take effect immediately — the connector list is cached for 30 seconds and the cache is dropped on every write.
 
-**Why the token can't be shown twice.** Only `sha256(token)` is stored. Every `/api/*` route in this app is
-unauthenticated, so a column holding the token in plaintext would be readable by anyone who can reach
-`GET /api/admin/mcp-config` — which would make the bearer check pointless. Lose it, regenerate.
+**Why a token can't be shown twice.** Only `sha256(token)` is stored. Every `/api/*` route in this app is
+unauthenticated, so a plaintext column would be readable by anyone who can reach
+`GET /api/admin/mcp-connectors` — which would make the bearer check pointless. Lose it, regenerate.
 
-**Fail-closed:** with no token generated, or the connector switched off, `/mcp` returns `503` to everyone and
-points at the settings screen.
+**Fail-closed:** with no connectors, or all of them switched off, `/mcp` returns `503` to everyone and points at
+the settings screen.
 
-**Break-glass:** `DEALFORGE_MCP_TOKEN` (≥32 chars) as a Render environment variable still works and **overrides**
-the UI, for when the database is unreachable. The settings screen says so when it is in effect. `DEALFORGE_MCP_ALLOW_DELETE=1`
-is the matching env override for deletion.
+**Break-glass:** `DEALFORGE_MCP_TOKEN` (≥32 chars) as a Render environment variable acts as an extra,
+always-enabled connector for when the database is unreachable. The settings screen shows it when it is set.
+`DEALFORGE_MCP_ALLOW_DELETE=1` grants it deletion rights.
 
-### Connecting Grok
+### Connecting an agent
 
 ```json
 {
   "type": "mcp",
   "server_url": "https://deal-forge-angel.onrender.com/mcp",
   "server_label": "dealforge",
-  "authorization": "<token from Settings → Connectors>"
+  "authorization": "<token from Settings → Integrations>"
 }
 ```
 
-Add `"allowed_tools": ["list_jobs", "get_job", "create_job", …]` to narrow what a given bot can reach — that works without a redeploy.
+Add `"allowed_tools": ["list_jobs", "get_job", "create_job", …]` to narrow what a given bot can reach — that works without a redeploy. Because each agent has its own connector, you can also vary permissions server-side per bot.
 
 > xAI does **not** support MCP's `require_approval`, so there is no human-in-the-loop prompt. Every guardrail here is server-side (see *Confirm gate*).
 
@@ -103,7 +110,7 @@ All require `confirm: true`.
 | `reveal_lead` | **Exactly 1 Apollo credit.** Idempotent — an already-revealed lead costs nothing. |
 | `prefetch_prospect` | May spend an Apollo people/match credit. |
 | `extract_brief` | Claude tokens. |
-| `delete_job` | **Unrecoverable.** Also needs "Allow deleting jobs" on in Settings → Connectors. |
+| `delete_job` | **Unrecoverable.** Also needs "Can delete jobs" on for the calling connector. |
 
 ---
 
@@ -187,19 +194,20 @@ Tools call the app's own HTTP API over loopback rather than invoking internal fu
 | File | Role |
 |---|---|
 | `mcp-server.js` | The MCP implementation. Exports `handle(req, res, urlPath)` plus `configure()` / `invalidateConfigCache()`. |
-| `server.js` | One `require` + one line in the router, above the blanket `OPTIONS` handler; the connector config helpers; and the four `/api/admin/mcp-config*` routes. |
-| `settings.html` | The **Connectors** tab. |
-| `supabase/migrations/20260910_mcp_config.sql` | `sales_assets.mcp_config` singleton — token hash, toggles, `last_used_at`. |
+| `server.js` | One `require` + one line in the router, above the blanket `OPTIONS` handler; the connector helpers; and the `/api/admin/mcp-connectors*` routes. |
+| `settings.html` | The **MCP Connectors** card in the Integrations tab. |
+| `supabase/migrations/20260910_mcp_connectors.sql` | `sales_assets.mcp_connectors` — one row per agent: name, token hash, per-connector toggles, `last_used_at`. Supersedes the `mcp_config` singleton from the same day. |
 
 Admin endpoints behind the Connectors tab:
 
 | Route | Purpose |
 |---|---|
-| `GET /api/admin/mcp-config` | Status, toggles, token prefix, tool list. **Never returns the token.** |
-| `PUT /api/admin/mcp-config` | Set `enabled` / `allow_delete` / `label`. |
-| `POST /api/admin/mcp-config/rotate` | Mint a token. The only response that ever contains it. |
-| `POST /api/admin/mcp-config/revoke` | Clear the token and disable. |
-| `GET /api/admin/mcp-config/test` | Probes `/mcp` anonymously; a `401` means live and gated. |
+| `GET /api/admin/mcp-connectors` | List connectors + tool list. **Never returns a token.** |
+| `POST /api/admin/mcp-connectors` | Add one (`name`). The response is the only place its token ever appears. |
+| `PATCH /api/admin/mcp-connectors/:id` | `name` / `enabled` / `allow_delete`. |
+| `POST /api/admin/mcp-connectors/:id/rotate` | New token for that connector only. Shown once. |
+| `DELETE /api/admin/mcp-connectors/:id` | Remove it. |
+| `GET /api/admin/mcp-connectors/test` | Probes `/mcp` anonymously; a `401` means live and gated. |
 
 ### Why hand-rolled JSON-RPC
 
@@ -224,7 +232,7 @@ No `Mcp-Session-Id` is issued. Render overlaps instances during a deploy, so a s
 DISABLE_WORKER=1 PORT=3111 DEALFORGE_MCP_TOKEN=testtoken_0123456789abcdef0123456789abcdef node server.js
 ```
 
-`DISABLE_WORKER=1` matters: `.env` points at the **shared production Supabase**, so without it a local instance competes with the real worker for tasks. Setting `DEALFORGE_MCP_TOKEN` locally uses the break-glass path, which avoids minting a real token into the shared database while you test.
+`DISABLE_WORKER=1` matters: `.env` points at the **shared production Supabase**, so without it a local instance competes with the real worker for tasks. Setting `DEALFORGE_MCP_TOKEN` locally uses the break-glass path, which avoids minting a real connector row into the shared database while you test.
 
 ```bash
 T=testtoken_0123456789abcdef0123456789abcdef

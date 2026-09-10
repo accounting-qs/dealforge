@@ -227,7 +227,6 @@ h1{font-size:28px;font-weight:700;letter-spacing:-0.025em;color:#fff;margin:0 0 
     <button class="section-tab" data-section="apollo-corpus" onclick="switchSection('apollo-corpus', event)">Apollo Corpus</button>
     <button class="section-tab" data-section="sales-reps" onclick="switchSection('sales-reps', event)">Sales Reps</button>
     <button class="section-tab" data-section="integrations" onclick="switchSection('integrations', event)">Integrations</button>
-    <button class="section-tab" data-section="connectors" onclick="switchSection('connectors', event)">Connectors</button>
     <button class="section-tab" data-section="sop" onclick="switchSection('sop', event)">SOP</button>
   </div>
 
@@ -444,58 +443,42 @@ h1{font-size:28px;font-weight:700;letter-spacing:-0.025em;color:#fff;margin:0 0 
         <div id="zoom-test-result" style="margin-top:14px;font-size:12px;color:#a1a1aa;line-height:1.6;"></div>
       </div>
     </div>
-  </div>
 
-  <!-- ── Connectors section (MCP / Grok bot) ─────────────────────────────── -->
-  <div class="section" id="section-connectors">
-    <div class="cb-card">
+    <!-- ── MCP connectors ─────────────────────────────────────────────────── -->
+    <div class="cb-card" style="margin-top:18px;">
       <div class="cb-head">
         <div class="cb-head-title">
-          <strong>AI Agent Connector (MCP)</strong>
-          <span>Let Grok — or any MCP client — run Deal Forge like a rep would</span>
+          <strong>MCP Connectors</strong>
+          <span>AI agents that can run Deal Forge like a rep would</span>
         </div>
         <div id="mcp-status-chip" style="font-size:11px;font-weight:600;color:#71717a;">—</div>
       </div>
       <div class="cb-body">
         <p style="font-size:12px;color:#71717a;line-height:1.6;margin:0 0 16px;">
-          Generate a token here, paste it into your Grok bot, and it can create jobs, edit the brief and ICP,
-          change anything the portal's edit mode changes, re-run pipeline stages, and pull the prospect-facing link —
-          the same actions a rep has in the UI, going through the same validation.
+          Add a connector for each agent you want to give access — Grok, Claude, anything that speaks MCP.
+          Each one gets its own token, so you can turn a single bot off or re-issue its token without touching the others.
+          Connected agents can create jobs, edit the brief and ICP, change anything the portal's edit mode changes,
+          re-run pipeline stages, and pull the prospect-facing link.
         </p>
 
-        <!-- Endpoint -->
-        <div style="margin-bottom:14px;">
-          <label style="display:block;font-size:11px;font-weight:600;color:#a1a1aa;margin-bottom:5px;">Server URL</label>
+        <div style="margin-bottom:16px;">
+          <label style="display:block;font-size:11px;font-weight:600;color:#a1a1aa;margin-bottom:5px;">Server URL <span style="font-weight:400;color:#71717a;">— the same for every connector</span></label>
           <div style="display:flex;gap:8px;">
             <input type="text" id="mcp-endpoint" readonly value="—"
               style="flex:1;box-sizing:border-box;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.1);border-radius:8px;padding:9px 12px;color:#e4e4e7;font-size:13px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;">
             <button class="cb-add-btn" style="background:rgba(255,255,255,0.06);white-space:nowrap;"
               onclick="mcpCopy(document.getElementById('mcp-endpoint').value, 'Server URL copied')">Copy</button>
+            <button class="cb-add-btn" id="mcp-test-btn" onclick="mcpTest()" style="background:rgba(255,255,255,0.06);white-space:nowrap;">Test</button>
           </div>
-        </div>
-
-        <!-- Status grid -->
-        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:18px;">
-          <div style="background:rgba(255,255,255,0.025);border:1px solid rgba(255,255,255,0.07);border-radius:10px;padding:10px 12px;">
-            <div style="font-size:10px;font-weight:600;color:#71717a;text-transform:uppercase;letter-spacing:.04em;">Active token</div>
-            <div id="mcp-token-prefix" style="font-size:13px;color:#e4e4e7;margin-top:4px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;">none</div>
-          </div>
-          <div style="background:rgba(255,255,255,0.025);border:1px solid rgba(255,255,255,0.07);border-radius:10px;padding:10px 12px;">
-            <div style="font-size:10px;font-weight:600;color:#71717a;text-transform:uppercase;letter-spacing:.04em;">Last used</div>
-            <div id="mcp-last-used" style="font-size:13px;color:#e4e4e7;margin-top:4px;">never</div>
-          </div>
-          <div style="background:rgba(255,255,255,0.025);border:1px solid rgba(255,255,255,0.07);border-radius:10px;padding:10px 12px;">
-            <div style="font-size:10px;font-weight:600;color:#71717a;text-transform:uppercase;letter-spacing:.04em;">Tools exposed</div>
-            <div id="mcp-tool-count" style="font-size:13px;color:#e4e4e7;margin-top:4px;">—</div>
-          </div>
+          <div id="mcp-test-result" style="margin-top:8px;font-size:12px;color:#a1a1aa;line-height:1.6;"></div>
         </div>
 
         <!-- One-time token reveal -->
-        <div id="mcp-token-box" style="display:none;background:rgba(52,180,51,0.07);border:1px solid rgba(52,180,51,0.35);border-radius:10px;padding:14px 16px;margin-bottom:18px;">
-          <div style="font-size:12px;font-weight:700;color:#34b433;margin-bottom:6px;">Copy this token now</div>
+        <div id="mcp-token-box" style="display:none;background:rgba(52,180,51,0.07);border:1px solid rgba(52,180,51,0.35);border-radius:10px;padding:14px 16px;margin-bottom:16px;">
+          <div style="font-size:12px;font-weight:700;color:#34b433;margin-bottom:6px;">Token for <span id="mcp-token-for">—</span> — copy it now</div>
           <p style="font-size:12px;color:#a1a1aa;line-height:1.6;margin:0 0 10px;">
-            Deal Forge stores only a hash of it, so this is the one and only time it can be shown.
-            If you lose it, generate a new one — that instantly invalidates the old one.
+            Deal Forge stores only a hash, so this is the one and only time it can be shown.
+            Lost it? Regenerate on that connector — it issues a new token and retires the old one.
           </p>
           <div style="display:flex;gap:8px;">
             <input type="text" id="mcp-token-value" readonly
@@ -504,60 +487,47 @@ h1{font-size:28px;font-weight:700;letter-spacing:-0.025em;color:#fff;margin:0 0 
               onclick="mcpCopy(document.getElementById('mcp-token-value').value, 'Token copied')">Copy</button>
           </div>
           <div style="margin-top:10px;">
-            <button class="cb-add-btn" style="background:rgba(255,255,255,0.06);" onclick="mcpCopyGrokConfig()">Copy full Grok config</button>
+            <button class="cb-add-btn" style="background:rgba(255,255,255,0.06);" onclick="mcpCopyClientConfig()">Copy full config</button>
             <button class="cb-add-btn" style="background:rgba(255,255,255,0.06);" onclick="mcpHideToken()">Done, hide it</button>
           </div>
         </div>
 
-        <!-- Toggles -->
-        <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:18px;">
-          <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;">
-            <input type="checkbox" id="mcp-enabled" onchange="mcpSaveToggles()" style="margin-top:2px;width:15px;height:15px;accent-color:#34b433;cursor:pointer;">
-            <span>
-              <span style="font-size:13px;color:#e4e4e7;font-weight:600;">Connector enabled</span>
-              <span style="display:block;font-size:11px;color:#71717a;line-height:1.5;">When off, the endpoint refuses every call. Nothing else in Deal Forge is affected.</span>
-            </span>
-          </label>
-          <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;">
-            <input type="checkbox" id="mcp-allow-delete" onchange="mcpSaveToggles()" style="margin-top:2px;width:15px;height:15px;accent-color:#f87171;cursor:pointer;">
-            <span>
-              <span style="font-size:13px;color:#e4e4e7;font-weight:600;">Allow deleting jobs</span>
-              <span style="display:block;font-size:11px;color:#71717a;line-height:1.5;">Off by default. Job deletion is permanent and cascades to tasks — there is no undo.</span>
-            </span>
-          </label>
+        <!-- Connector list -->
+        <div id="mcp-list" style="display:flex;flex-direction:column;gap:8px;margin-bottom:14px;"></div>
+
+        <!-- Add -->
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;border-top:1px solid rgba(255,255,255,0.07);padding-top:14px;">
+          <input type="text" id="mcp-new-name" placeholder="Name it — e.g. Grok" maxlength="60"
+            onkeydown="if(event.key==='Enter')mcpAdd()"
+            style="flex:1;min-width:180px;box-sizing:border-box;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.1);border-radius:8px;padding:9px 12px;color:#e4e4e7;font-size:13px;font-family:inherit;">
+          <button class="cb-add-btn" id="mcp-add-btn" onclick="mcpAdd()">Add connector</button>
+        </div>
+        <div style="font-size:11px;color:#71717a;margin-top:6px;">
+          Deal Forge can't tell what's on the far end of a token, so the name you give it is what identifies it later.
         </div>
 
-        <!-- Actions -->
-        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
-          <button class="cb-add-btn" id="mcp-rotate-btn" onclick="mcpRotate()">Generate token</button>
-          <button class="cb-add-btn" id="mcp-test-btn" onclick="mcpTest()" style="background:rgba(255,255,255,0.06);">Test connection</button>
-          <button class="cb-add-btn" id="mcp-revoke-btn" onclick="mcpRevoke()" style="background:rgba(248,113,113,0.12);color:#f87171;">Revoke</button>
-          <span id="mcp-status" style="font-size:11px;color:#71717a;"></span>
-        </div>
-        <div id="mcp-test-result" style="margin-top:14px;font-size:12px;color:#a1a1aa;line-height:1.6;"></div>
-
-        <!-- Grok setup guide -->
-        <div style="margin-top:20px;border-top:1px solid rgba(255,255,255,0.07);padding-top:16px;">
-          <a href="#" onclick="var g=document.getElementById('mcp-guide');g.style.display=(g.style.display==='block'?'none':'block');return false;" style="color:#34b433;font-size:12px;">How to connect your Grok bot ▾</a>
+        <!-- Setup guide -->
+        <div style="margin-top:18px;border-top:1px solid rgba(255,255,255,0.07);padding-top:14px;">
+          <a href="#" onclick="var g=document.getElementById('mcp-guide');g.style.display=(g.style.display==='block'?'none':'block');return false;" style="color:#34b433;font-size:12px;">How to connect an agent ▾</a>
           <div id="mcp-guide" style="display:none;background:rgba(255,255,255,0.025);border:1px solid rgba(255,255,255,0.07);border-radius:10px;padding:14px 16px;margin-top:12px;font-size:12px;color:#a1a1aa;line-height:1.7;">
             <ol style="margin:0 0 10px;padding-left:18px;">
-              <li><strong style="color:#e4e4e7;">Generate token</strong> above and copy it.</li>
-              <li>In your Grok bot, add a remote MCP server (xAI calls these <em>Remote MCP Tools</em>) with the Server URL and token below.</li>
-              <li>Ask the bot to run <code>list_jobs</code>. If it comes back with jobs, you're connected.</li>
+              <li>Name the connector after the agent and click <strong style="color:#e4e4e7;">Add connector</strong>.</li>
+              <li>Copy the token — or <strong style="color:#e4e4e7;">Copy full config</strong> for the whole block.</li>
+              <li>In the agent, add a remote MCP server (xAI calls these <em>Remote MCP Tools</em>) with the Server URL and token.</li>
+              <li>Ask it to run <code>list_jobs</code>. If jobs come back, you're connected — and <strong style="color:#e4e4e7;">Last used</strong> here will start showing a time.</li>
             </ol>
             <div style="font-size:11px;font-weight:600;color:#a1a1aa;margin:10px 0 5px;">Config to paste</div>
-            <pre id="mcp-grok-json" style="background:rgba(0,0,0,0.3);border:1px solid rgba(255,255,255,0.07);border-radius:8px;padding:12px;overflow-x:auto;font-size:11px;color:#e4e4e7;margin:0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;">—</pre>
+            <pre id="mcp-client-json" style="background:rgba(0,0,0,0.3);border:1px solid rgba(255,255,255,0.07);border-radius:8px;padding:12px;overflow-x:auto;font-size:11px;color:#e4e4e7;margin:0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;">—</pre>
             <p style="margin:12px 0 0;">
-              Anything that spends Apollo credits or Claude tokens, or throws away existing output, makes the bot
+              Anything that spends Apollo credits or Claude tokens, or throws away existing output, makes the agent
               pass <code>confirm: true</code> first — xAI has no approval prompt of its own, so that check lives here.
-              You can also restrict a bot to specific tools with <code>allowed_tools</code>.
+              You can also restrict an agent to specific tools with <code>allowed_tools</code>.
             </p>
           </div>
         </div>
 
-        <!-- Tool list -->
-        <div style="margin-top:14px;">
-          <a href="#" onclick="var g=document.getElementById('mcp-tools');g.style.display=(g.style.display==='block'?'none':'block');return false;" style="color:#34b433;font-size:12px;">What the bot can do ▾</a>
+        <div style="margin-top:12px;">
+          <a href="#" onclick="var g=document.getElementById('mcp-tools');g.style.display=(g.style.display==='block'?'none':'block');return false;" style="color:#34b433;font-size:12px;">What a connected agent can do <span id="mcp-tool-count"></span> ▾</a>
           <div id="mcp-tools" style="display:none;margin-top:12px;"></div>
         </div>
       </div>
@@ -622,8 +592,6 @@ function switchSection(name, event) {
   }
   if (name === 'integrations') {
     zoomLoadConfig();
-  }
-  if (name === 'connectors') {
     mcpLoadConfig();
   }
   if (name === 'sop') {
@@ -1628,17 +1596,17 @@ function cbSaveConfig(field) {
     });
 }
 
-// ── Connectors: MCP / Grok bot ──────────────────────────────────────────────
-// The token is only ever visible in the response to a rotate call — the server
-// stores a hash. _mcpToken holds it in memory for as long as the reveal box is
-// open so Copy / Copy full Grok config can use it, and is dropped after that.
-var _mcpState = { endpoint: '', enabled: false };
+// ── MCP connectors (Settings → Integrations) ────────────────────────────────
+// A token is only ever visible in the response that creates or rotates it — the
+// server stores a hash. _mcpToken holds it in memory while the reveal box is
+// open so Copy / Copy full config can use it, and is dropped after that.
+var _mcpEndpoint = '';
 var _mcpToken = null;
 
-function mcpGrokConfigText() {
+function mcpClientConfigText() {
   return JSON.stringify({
     type: 'mcp',
-    server_url: _mcpState.endpoint || '',
+    server_url: _mcpEndpoint || '',
     server_label: 'dealforge',
     authorization: _mcpToken || '<paste your token>'
   }, null, 2);
@@ -1647,7 +1615,7 @@ function mcpGrokConfigText() {
 function mcpCopy(text, msg) {
   if (!text || text === '—') { showToast('Nothing to copy yet'); return; }
   function fallback() {
-    // clipboard API needs a secure context; keep a path for plain http dev.
+    // the clipboard API needs a secure context; keep a path for plain http dev.
     var ta = document.createElement('textarea');
     ta.value = text;
     ta.style.position = 'fixed'; ta.style.opacity = '0';
@@ -1661,126 +1629,187 @@ function mcpCopy(text, msg) {
   } else { fallback(); }
 }
 
-function mcpCopyGrokConfig() { mcpCopy(mcpGrokConfigText(), 'Grok config copied'); }
+function mcpCopyClientConfig() { mcpCopy(mcpClientConfigText(), 'Config copied'); }
 
 function mcpHideToken() {
   _mcpToken = null;
   document.getElementById('mcp-token-box').style.display = 'none';
   document.getElementById('mcp-token-value').value = '';
-  document.getElementById('mcp-grok-json').textContent = mcpGrokConfigText();
+  document.getElementById('mcp-client-json').textContent = mcpClientConfigText();
 }
 
-function mcpRender(c) {
-  _mcpState.endpoint = c.endpoint_url || '';
-  _mcpState.enabled  = !!c.enabled;
+function mcpShowToken(name, token) {
+  _mcpToken = token;
+  document.getElementById('mcp-token-for').textContent = name;
+  document.getElementById('mcp-token-value').value = token;
+  document.getElementById('mcp-token-box').style.display = 'block';
+  document.getElementById('mcp-client-json').textContent = mcpClientConfigText();
+}
 
-  document.getElementById('mcp-endpoint').value    = c.endpoint_url || '—';
-  document.getElementById('mcp-token-prefix').textContent = c.token_prefix ? (c.token_prefix + '…') : 'none';
-  document.getElementById('mcp-tool-count').textContent   = (c.tool_count || 0) + ' tools';
-  document.getElementById('mcp-last-used').textContent =
-    c.last_used_at ? new Date(c.last_used_at).toLocaleString() : 'never';
+function mcpRenderList(connectors, envOverride) {
+  var box = document.getElementById('mcp-list');
+  var rows = [];
 
-  document.getElementById('mcp-enabled').checked      = !!c.enabled;
-  document.getElementById('mcp-allow-delete').checked = !!c.allow_delete;
-  document.getElementById('mcp-rotate-btn').textContent = c.configured ? 'Regenerate token' : 'Generate token';
-  document.getElementById('mcp-revoke-btn').style.display = c.configured ? '' : 'none';
+  if (envOverride) {
+    rows.push(
+      '<div style="background:rgba(251,191,36,0.07);border:1px solid rgba(251,191,36,0.3);border-radius:10px;padding:10px 12px;">' +
+        '<div style="font-size:13px;color:#fbbf24;font-weight:600;">DEALFORGE_MCP_TOKEN (environment)</div>' +
+        '<div style="font-size:11px;color:#a1a1aa;margin-top:3px;">An env-var token is set on the server and also works. Remove it from Render to manage access entirely from here.</div>' +
+      '</div>'
+    );
+  }
 
-  var chip = document.getElementById('mcp-status-chip');
-  if (!c.configured)   { chip.textContent = '○ Not set up';  chip.style.color = '#71717a'; }
-  else if (!c.enabled) { chip.textContent = '● Disabled';    chip.style.color = '#fbbf24'; }
-  else                 { chip.textContent = '● Connected';   chip.style.color = '#34b433'; }
+  if (!connectors.length && !envOverride) {
+    box.innerHTML = '<div style="background:rgba(255,255,255,0.02);border:1px dashed rgba(255,255,255,0.12);border-radius:10px;padding:16px;text-align:center;font-size:12px;color:#71717a;">' +
+      'No connectors yet. Name one below and click Add — nothing can reach the MCP endpoint until you do.</div>';
+    return;
+  }
 
-  // An env var beats anything set here, so don't let the screen pretend otherwise.
-  var status = document.getElementById('mcp-status');
-  status.textContent = c.source === 'env'
-    ? 'Overridden by the DEALFORGE_MCP_TOKEN environment variable — changes here have no effect until it is removed.'
-    : '';
-  status.style.color = c.source === 'env' ? '#fbbf24' : '#71717a';
-
-  document.getElementById('mcp-grok-json').textContent = mcpGrokConfigText();
-
-  var tools = c.tools || [];
-  document.getElementById('mcp-tools').innerHTML = tools.length
-    ? '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:6px;">' +
-      tools.map(function(t){
-        return '<div style="background:rgba(255,255,255,0.025);border:1px solid rgba(255,255,255,0.07);border-radius:8px;padding:8px 10px;">' +
-          '<code style="font-size:11px;color:#e4e4e7;">' + esc(t.name) + '</code>' +
-          (t.gated ? '<span style="font-size:9px;font-weight:700;color:#fbbf24;margin-left:6px;">NEEDS CONFIRM</span>' : '') +
-          '<div style="font-size:11px;color:#71717a;margin-top:2px;">' + esc(t.title || '') + '</div>' +
-        '</div>';
-      }).join('') + '</div>'
-    : '<span style="color:#71717a;font-size:12px;">No tools reported.</span>';
+  connectors.forEach(function(c) {
+    var used = c.last_used_at ? new Date(c.last_used_at).toLocaleString() : 'never';
+    rows.push(
+      '<div style="background:rgba(255,255,255,0.025);border:1px solid rgba(255,255,255,0.07);border-radius:10px;padding:12px 14px;">' +
+        '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">' +
+          '<span style="font-size:14px;font-weight:600;color:#e4e4e7;">' + esc(c.name) + '</span>' +
+          '<span style="font-size:10px;font-weight:700;color:' + (c.enabled ? '#34b433' : '#71717a') + ';">' +
+            (c.enabled ? '● ACTIVE' : '○ OFF') + '</span>' +
+          '<code style="font-size:11px;color:#71717a;">' + esc(c.token_prefix || '') + '…</code>' +
+          '<span style="flex:1;"></span>' +
+          '<span style="font-size:11px;color:#71717a;">Last used: ' + esc(used) + '</span>' +
+        '</div>' +
+        '<div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:10px;">' +
+          '<label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;color:#a1a1aa;">' +
+            '<input type="checkbox" ' + (c.enabled ? 'checked' : '') +
+              ' onchange="mcpToggle(' + c.id + ', \'enabled\', this.checked)"' +
+              ' style="width:14px;height:14px;accent-color:#34b433;cursor:pointer;"> Enabled</label>' +
+          '<label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;color:#a1a1aa;">' +
+            '<input type="checkbox" ' + (c.allow_delete ? 'checked' : '') +
+              ' onchange="mcpToggle(' + c.id + ', \'allow_delete\', this.checked)"' +
+              ' style="width:14px;height:14px;accent-color:#f87171;cursor:pointer;"> Can delete jobs</label>' +
+          '<span style="flex:1;"></span>' +
+          '<button class="cb-add-btn" style="background:rgba(255,255,255,0.06);font-size:11px;padding:5px 10px;" onclick="mcpRename(' + c.id + ', \'' + esc(c.name).replace(/'/g, "\\'") + '\')">Rename</button>' +
+          '<button class="cb-add-btn" style="background:rgba(255,255,255,0.06);font-size:11px;padding:5px 10px;" onclick="mcpRotate(' + c.id + ', \'' + esc(c.name).replace(/'/g, "\\'") + '\')">Regenerate token</button>' +
+          '<button class="cb-add-btn" style="background:rgba(248,113,113,0.12);color:#f87171;font-size:11px;padding:5px 10px;" onclick="mcpRemove(' + c.id + ', \'' + esc(c.name).replace(/'/g, "\\'") + '\')">Remove</button>' +
+        '</div>' +
+      '</div>'
+    );
+  });
+  box.innerHTML = rows.join('');
 }
 
 async function mcpLoadConfig() {
   try {
-    var r = await fetch('/api/admin/mcp-config');
+    var r = await fetch('/api/admin/mcp-connectors');
     if (!r.ok) throw new Error('HTTP ' + r.status);
-    mcpRender(await r.json());
+    var d = await r.json();
+
+    _mcpEndpoint = d.endpoint_url || '';
+    document.getElementById('mcp-endpoint').value = _mcpEndpoint || '—';
+    document.getElementById('mcp-client-json').textContent = mcpClientConfigText();
+
+    var live = (d.connectors || []).filter(function(c){ return c.enabled; }).length + (d.env_override ? 1 : 0);
+    var chip = document.getElementById('mcp-status-chip');
+    chip.textContent = live ? ('● ' + live + ' active') : '○ None';
+    chip.style.color = live ? '#34b433' : '#71717a';
+
+    document.getElementById('mcp-tool-count').textContent = '(' + (d.tool_count || 0) + ' tools)';
+    mcpRenderList(d.connectors || [], !!d.env_override);
+
+    var tools = d.tools || [];
+    document.getElementById('mcp-tools').innerHTML = tools.length
+      ? '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:6px;">' +
+        tools.map(function(t){
+          return '<div style="background:rgba(255,255,255,0.025);border:1px solid rgba(255,255,255,0.07);border-radius:8px;padding:8px 10px;">' +
+            '<code style="font-size:11px;color:#e4e4e7;">' + esc(t.name) + '</code>' +
+            (t.gated ? '<span style="font-size:9px;font-weight:700;color:#fbbf24;margin-left:6px;">NEEDS CONFIRM</span>' : '') +
+            '<div style="font-size:11px;color:#71717a;margin-top:2px;">' + esc(t.title || '') + '</div>' +
+          '</div>';
+        }).join('') + '</div>'
+      : '<span style="color:#71717a;font-size:12px;">No tools reported.</span>';
   } catch (e) {
-    document.getElementById('mcp-status').textContent = 'Failed to load: ' + e.message;
-    document.getElementById('mcp-status').style.color = '#f87171';
+    document.getElementById('mcp-list').innerHTML =
+      '<span style="color:#f87171;font-size:12px;">Failed to load connectors: ' + esc(e.message) + '</span>';
   }
 }
 
-async function mcpRotate() {
-  var configured = document.getElementById('mcp-revoke-btn').style.display !== 'none';
-  if (configured && !confirm('Generate a new token?\n\nThe current one stops working immediately, and any bot using it will need the new token pasted in.')) return;
-  var btn = document.getElementById('mcp-rotate-btn');
+async function mcpAdd() {
+  var input = document.getElementById('mcp-new-name');
+  var name = input.value.trim();
+  if (!name) { showToast('Give the connector a name first'); input.focus(); return; }
+  var btn = document.getElementById('mcp-add-btn');
   btn.disabled = true;
   try {
-    var r = await fetch('/api/admin/mcp-config/rotate', {
+    var r = await fetch('/api/admin/mcp-connectors', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ label: 'Grok bot' })
+      body: JSON.stringify({ name: name })
     });
     var d = await r.json();
     if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
-    _mcpToken = d.token;
-    _mcpState.endpoint = d.endpoint_url || _mcpState.endpoint;
-    document.getElementById('mcp-token-value').value = d.token;
-    document.getElementById('mcp-token-box').style.display = 'block';
-    showToast('Token generated — copy it now');
+    input.value = '';
+    _mcpEndpoint = d.endpoint_url || _mcpEndpoint;
+    mcpShowToken(d.connector ? d.connector.name : name, d.token);
+    showToast('Connector added — copy the token now');
     await mcpLoadConfig();
-    document.getElementById('mcp-grok-json').textContent = mcpGrokConfigText();
   } catch (e) {
-    showToast('Could not generate token: ' + e.message);
+    showToast('Could not add connector: ' + e.message);
   } finally { btn.disabled = false; }
 }
 
-async function mcpRevoke() {
-  if (!confirm('Revoke the connector token?\n\nThe endpoint will refuse every call until you generate a new one. Any connected bot stops working immediately.')) return;
-  var btn = document.getElementById('mcp-revoke-btn');
-  btn.disabled = true;
+async function mcpRotate(id, name) {
+  if (!confirm('Regenerate the token for "' + name + '"?\n\nIts current token stops working immediately, and that agent will need the new one pasted in. Other connectors are unaffected.')) return;
   try {
-    var r = await fetch('/api/admin/mcp-config/revoke', { method: 'POST' });
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    mcpHideToken();
-    showToast('Token revoked');
+    var r = await fetch('/api/admin/mcp-connectors/' + id + '/rotate', { method: 'POST' });
+    var d = await r.json();
+    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+    mcpShowToken(name, d.token);
+    showToast('New token issued — copy it now');
     await mcpLoadConfig();
   } catch (e) {
-    showToast('Revoke failed: ' + e.message);
-  } finally { btn.disabled = false; }
+    showToast('Regenerate failed: ' + e.message);
+  }
 }
 
-async function mcpSaveToggles() {
-  var payload = {
-    enabled:      document.getElementById('mcp-enabled').checked,
-    allow_delete: document.getElementById('mcp-allow-delete').checked
-  };
+async function mcpRename(id, current) {
+  var name = prompt('Rename this connector:', current);
+  if (name === null) return;
+  name = name.trim();
+  if (!name) { showToast('Name cannot be blank'); return; }
+  await mcpPatch(id, { name: name }, 'Renamed');
+}
+
+async function mcpToggle(id, field, value) {
+  var patch = {};
+  patch[field] = value;
+  await mcpPatch(id, patch, 'Connector updated');
+}
+
+async function mcpPatch(id, patch, okMsg) {
   try {
-    var r = await fetch('/api/admin/mcp-config', {
-      method: 'PUT',
+    var r = await fetch('/api/admin/mcp-connectors/' + id, {
+      method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
+      body: JSON.stringify(patch)
     });
     var d = await r.json();
     if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
-    showToast('Connector settings saved');
-    await mcpLoadConfig();
+    showToast(okMsg || 'Saved');
   } catch (e) {
     showToast('Save failed: ' + e.message);
-    await mcpLoadConfig();   // put the checkboxes back to the stored truth
+  }
+  await mcpLoadConfig();   // always resync to the stored truth
+}
+
+async function mcpRemove(id, name) {
+  if (!confirm('Remove the connector "' + name + '"?\n\nIts token stops working immediately and cannot be recovered. Other connectors are unaffected.')) return;
+  try {
+    var r = await fetch('/api/admin/mcp-connectors/' + id, { method: 'DELETE' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    mcpHideToken();
+    showToast('Connector removed');
+    await mcpLoadConfig();
+  } catch (e) {
+    showToast('Remove failed: ' + e.message);
   }
 }
 
@@ -1789,7 +1818,7 @@ async function mcpTest() {
   var out = document.getElementById('mcp-test-result');
   btn.disabled = true; out.innerHTML = '<span style="color:#71717a;">Testing…</span>';
   try {
-    var r = await fetch('/api/admin/mcp-config/test');
+    var r = await fetch('/api/admin/mcp-connectors/test');
     var d = await r.json();
     var colour = d.ready ? '#34b433' : (d.reachable ? '#fbbf24' : '#f87171');
     out.innerHTML = '<span style="color:' + colour + ';">' + (d.ready ? '✓ ' : '• ') + esc(d.message || '') + '</span>';
