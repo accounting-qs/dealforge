@@ -10,6 +10,11 @@ const crypto  = require('crypto');
 const Anthropic = require('@anthropic-ai/sdk');
 const sharp = require('sharp');
 const { Readable } = require('stream');
+// Remote MCP server (Streamable HTTP) — lets an external agent do what a rep can
+// do in the UI. Self-contained: no dependencies, imports nothing from this file,
+// and reaches the API over loopback. Must load after dotenv.config() above,
+// since it reads DEALFORGE_MCP_TOKEN at require time.
+const mcp = require('./mcp-server');
 
 // ── Anthropic transport shim ─────────────────────────────────────────────────
 // Node 26's built-in fetch (undici) drops the connection to api.anthropic.com
@@ -6223,6 +6228,16 @@ if (USE_SUPABASE && process.env.DISABLE_WORKER !== '1') {
 // ── HTTP Server ───────────────────────────────────────────────────────────────
 const server = http.createServer(async (req, res) => {
   let urlPath = req.url.split('?')[0];
+
+  // ── MCP (Streamable HTTP) ──────────────────────────────────────────────────
+  // Must sit ABOVE the blanket OPTIONS handler below: that handler answers 204
+  // for every path using setCors(), whose Allow-Headers list is Content-Type
+  // only. An MCP client preflighting Authorization / Mcp-Session-Id would be
+  // rejected by the browser before the real request was ever sent.
+  // Also the only place urlPath is guaranteed to be the raw request path — it
+  // gets reassigned further down for the portal template routes.
+  // Returns true iff it owned the request.
+  if (await mcp.handle(req, res, urlPath)) return;
 
   if (req.method === 'OPTIONS') {
     setCors(res); res.writeHead(204); res.end(); return;
