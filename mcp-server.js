@@ -734,8 +734,11 @@ const TOOLS = [
     name: 'create_job',
     title: 'Create job',
     description:
-      'Create a job and start the pipeline. Only "email" is required — the extract task finds the Call 1 transcript ' +
-      'by email on its own (Fireflies/Zoom) and runs Claude extraction, so a bare email produces a fully populated job. ' +
+      'Create a job and start the pipeline. FOR PRODUCTION CREATES, call prefetch_prospect first and pass the ' +
+      'transcript_id you picked plus the rep_name it resolved from GoHighLevel — auto-matching by email alone picks ' +
+      'the wrong call often enough to matter (a later meeting instead of the Business Evaluation / Call 1). ' +
+      'Creating with a bare email is the quick path for testing, not the recommended one: extract will search ' +
+      'Fireflies/Zoom itself and take its best guess. ' +
       'Anything you pass in "brief" is treated as rep-confirmed and WINS over what extraction finds; blank fields get ' +
       'filled in. Returns immediately — poll with get_job_status. Spends Claude tokens and Apollo search on the pipeline.',
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
@@ -1047,8 +1050,11 @@ const TOOLS = [
       'Fireflies and Zoom for their Call 1 transcript. Returns contact details, the resolved rep and ranked ' +
       'transcript candidates. Pass prefetch_id to keep polling one already started. ' +
       'May spend an Apollo people/match credit when GoHighLevel data is sparse. ' +
-      'NOTE: progress lives in memory on a single instance — it is lost on redeploy and expires after ~10 minutes. ' +
-      'You usually do not need this: create_job finds the transcript by email on its own.',
+      'THIS IS THE RECOMMENDED FIRST STEP for a real create. Pick the Business Evaluation / Call 1 transcript from ' +
+      'the candidates and pass its id, plus the resolved rep slug, into create_job — that is what stops the pipeline ' +
+      'binding to the wrong meeting. ' +
+      'NOTE: progress lives in memory on a single instance — it is lost on redeploy and expires after ~10 minutes, ' +
+      'so do not leave a long gap between prefetch_prospect and create_job.',
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     inputSchema: {
       type: 'object',
@@ -1226,8 +1232,10 @@ async function dispatch(msg, cfg) {
           version: process.env.RENDER_GIT_COMMIT ? String(process.env.RENDER_GIT_COMMIT).slice(0, 7) : 'dev'
         },
         instructions:
-          'Deal Forge sales-asset pipeline. Start with list_jobs or get_job. To create a job you usually only need ' +
-          'create_job with an email — the pipeline finds the Call 1 transcript and extracts the brief itself. ' +
+          'Deal Forge sales-asset pipeline. Start with list_jobs or get_job. To create a job properly: ' +
+          'prefetch_prospect (pick the Business Evaluation / Call 1 transcript and note the GHL-resolved rep) → ' +
+          'create_job with that transcript_id and rep_name → update_icp with Apollo-valid tokens → rerun_apollo. ' +
+          'create_job with a bare email works but lets extract guess the call, which is a common source of bad jobs. ' +
           'Use get_portal_links to get the prospect-facing link to share with a customer (prospect_url) versus the ' +
           'rep editor link (editor_url). Tools that spend Apollo credits or Claude tokens, or that discard existing ' +
           'output, require confirm:true.'

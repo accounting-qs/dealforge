@@ -460,6 +460,20 @@
         </div>
       </div>
 
+      <!-- Portal flow — V2 is the in-progress redesign (case-study swaps, the
+           9-slide webinar deck, Calendar Invite sub-tabs). Pinned per job so
+           reps keep V1 while V2 is being proved out. -->
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin:4px 0 14px;flex-wrap:wrap;">
+        <div>
+          <div class="nj-label" style="margin-bottom:2px;">Portal Flow</div>
+          <div id="nj-portal-version-hint" style="font-size:11px;color:#71717a;max-width:340px;line-height:1.4;">The current flow every rep uses. Nothing changes.</div>
+        </div>
+        <div class="nj-seg" role="group" aria-label="Portal flow">
+          <button type="button" id="nj-pv-v1" class="nj-seg-btn active" onclick="njSetPortalVersion('v1')">V1 · Current</button>
+          <button type="button" id="nj-pv-v2" class="nj-seg-btn" onclick="njSetPortalVersion('v2')">V2 · Preview</button>
+        </div>
+      </div>
+
       <div style="margin-top:8px;">
         <button id="nj-gen-btn" class="nj-generate-btn" onclick="njGenerate()">
           Generate Lead List
@@ -1654,6 +1668,33 @@ function njBack() {
 
 // TAM method for the next job: 'apollo' (exact Apollo count, DEFAULT), 'llm'
 // (AI-broadened Apollo, grounded), or 'llm_pure' (AI-only estimate, no Apollo).
+// Portal flow for the job being created. Defaults to v1 on every open so a V2
+// test never leaks into a rep's job by being left switched on.
+// Marks a job created under the V2 portal flow. V1 renders nothing, so the
+// normal rep view is unchanged.
+function pvBadge(job) {
+  if (!job || job.portal_version !== 'v2') return '';
+  return ' <span title="Created with the V2 portal flow" style="font-size:9px;font-weight:700;letter-spacing:.04em;color:#fbbf24;border:1px solid rgba(251,191,36,0.4);border-radius:4px;padding:1px 4px;margin-left:6px;vertical-align:middle;">V2</span>';
+}
+
+var _njPortalVersion = 'v1';
+var _NJ_PV_HINTS = {
+  v1: 'The current flow every rep uses. Nothing changes.',
+  v2: 'In-progress redesign: case studies on Lead List / Calendar Invite / ROI, the 9-slide webinar deck, and the Calendar Invite sub-tabs. For testing — do not hand a V2 portal to a prospect yet.'
+};
+function njSetPortalVersion(v) {
+  _njPortalVersion = (v === 'v2') ? 'v2' : 'v1';
+  ['v1','v2'].forEach(function(key){
+    var btn = document.getElementById('nj-pv-' + key);
+    if (btn) btn.classList.toggle('active', _njPortalVersion === key);
+  });
+  var hint = document.getElementById('nj-portal-version-hint');
+  if (hint) {
+    hint.textContent = _NJ_PV_HINTS[_njPortalVersion];
+    hint.style.color = _njPortalVersion === 'v2' ? '#fbbf24' : '#71717a';
+  }
+}
+
 var _njTamMethod = 'apollo';
 var _NJ_TAM_METHODS = ['llm', 'llm_pure', 'apollo'];
 var _NJ_TAM_HINTS = {
@@ -1774,6 +1815,7 @@ function njGenerate() {
       websiteUrl: websiteUrl || undefined,
       brief: brief,
       tam_method: _njTamMethod,
+      portal_version: _njPortalVersion,
       repName: rep || undefined,
       transcript_id: _njSelectedTranscriptId || undefined,
       transcript_source: _njSelectedTranscriptSource || 'fireflies',
@@ -1899,7 +1941,7 @@ function _renderJobRow(job) {
       }).join('');
   return '<div class="row-item job-row" data-job-id="' + jobId + '" data-rep="' + repSlug + '" data-name="' + name.toLowerCase() + '" data-company="' + company.toLowerCase() + '" onclick="window.open(\'' + editPortalUrl + '\',\'_blank\')" style="display:flex;align-items:center;">'
     + '<div style="flex:1;">'
-    +   '<div style="font-size:13px;font-weight:500;color:#ffffff;">' + company + '</div>'
+    +   '<div style="font-size:13px;font-weight:500;color:#ffffff;">' + company + pvBadge(job) + '</div>'
     +   '<div style="font-size:12px;color:#71717a;margin-top:1px;">' + (job.prospect_email || name) + '</div>'
     + '</div>'
     + '<div style="width:110px;">'

@@ -15,6 +15,9 @@ const { Readable } = require('stream');
 // and reaches the API over loopback. Must load after dotenv.config() above,
 // since it reads DEALFORGE_MCP_TOKEN at require time.
 const mcp = require('./mcp-server');
+// Airtable → Supabase mirror of the case-study library. Self-contained; gets its
+// database + storage access injected below, once those helpers are defined.
+const airtable = require('./airtable-sync');
 
 // ── Anthropic transport shim ─────────────────────────────────────────────────
 // Node 26's built-in fetch (undici) drops the connection to api.anthropic.com
@@ -509,8 +512,71 @@ async function storageUpload(storagePath, content, contentType = 'text/html') {
   });
 }
 
+airtable.configure({ supabaseRequest, storageUpload });
+
+// ── Case-study library reads ─────────────────────────────────────────────────
+// The library is a local mirror (see airtable-sync.js). These helpers are the
+// only place the tab-gating rule lives, so it cannot drift between surfaces.
+
+const CASE_STUDY_COLS = [
+  'id','airtable_record_id','client_name','company','website','headshot_url','logo_url','logo_type',
+  'problem_they_solve','how_they_help','best_used_for','who_they_are','key_quote',
+  'industries','titles','geography','company_size','tam','tam_confidence',
+  'webinar_title','event_description','webinar_date','recording_url','registration_url',
+  'use_on_tabs','invites_sent','registrations','attendees','booked_calls',
+  'webinars_run','total_invites','total_registrations','total_attendees','total_booked_calls',
+  'stats_source','stats_basis'
+].join(',');
+
+// Funnel percentages are derived, never stored — the two source numbers are the
+// truth and a stored percentage would go stale the moment either is corrected.
+function withFunnel(row) {
+  const pct = (a, b) => (Number.isFinite(a) && Number.isFinite(b) && b > 0) ? Math.round((a / b) * 1000) / 10 : null;
+  return {
+    ...row,
+    invite_to_reg_pct:  pct(row.registrations, row.invites_sent),
+    reg_to_attend_pct:  pct(row.attendees, row.registrations),
+    attend_to_booked_pct: pct(row.total_booked_calls, row.total_attendees)
+  };
+}
+
+async function listCaseStudies({ tab = null, limit = 100 } = {}) {
+  let path = `/rest/v1/case_study_clients?select=${CASE_STUDY_COLS}&order=client_name.asc&limit=${Math.min(Number(limit) || 100, 500)}`;
+  // cs.{...} is PostgREST's array-contains operator — the tab gate is a hard
+  // filter, not a ranking hint: a client with weak invite-to-registration is
+  // never shown on Calendar Invite even when they are strong proof elsewhere.
+  if (tab) path += `&use_on_tabs=cs.${encodeURIComponent(JSON.stringify([tab]))}`;
+  const r = await supabaseRequest('GET', path);
+  return (Array.isArray(r.body) ? r.body : []).map(withFunnel);
+}
+
+// Alex's rule (2026-09-04 training): lead with the client whose market is
+// closest to the prospect's, regardless of what they sell. Offering is the
+// second axis. Business model is the third and has no data yet, so it is not
+// faked — the slot is simply absent until the library carries it.
+function matchCaseStudies(all, prospect) {
+  const tam = Number(prospect && prospect.tam) || null;
+  const words = String((prospect && prospect.industry) || '').toLowerCase().split(/[^a-z0-9]+/).filter(w => w.length > 3);
+  const out = [];
+  const used = new Set();
+
+  const withTam = all.filter(c => Number.isFinite(c.tam) && c.tam > 0);
+  if (tam && withTam.length) {
+    const best = withTam.slice().sort((a, b) => Math.abs(a.tam - tam) - Math.abs(b.tam - tam))[0];
+    if (best) { out.push({ axis: 'tam', axis_label: 'Similar market size', ...best }); used.add(best.id); }
+  }
+  if (words.length) {
+    const scored = all.filter(c => !used.has(c.id)).map(c => {
+      const hay = `${c.industries || ''} ${c.titles || ''} ${c.how_they_help || ''}`.toLowerCase();
+      return { c, score: words.reduce((n, w) => n + (hay.includes(w) ? 1 : 0), 0) };
+    }).filter(x => x.score > 0).sort((a, b) => b.score - a.score);
+    if (scored.length) { out.push({ axis: 'offering', axis_label: 'Similar offering', ...scored[0].c }); used.add(scored[0].c.id); }
+  }
+  return out;
+}
+
 // ── DB helpers — jobs & tasks ─────────────────────────────────────────────────
-async function createJob(email, websiteUrl, brief, repName = null, linkedinUrl = null) {
+async function createJob(email, websiteUrl, brief, repName = null, linkedinUrl = null, portalVersion = 'v1') {
   // Website precedence: rep-entered → email domain (only if not free-mail).
   // Free-mail domains (gmail.com, yahoo.com, etc.) are explicitly excluded because
   // they tell us nothing about the prospect's company website.
@@ -526,6 +592,9 @@ async function createJob(email, websiteUrl, brief, repName = null, linkedinUrl =
     prospect_name:         prospectName,
     prospect_linkedin_url: linkedinUrl || null,
     rep_name:              repName || null,      // B5 fix: persist rep at job creation
+    // Pinned per job: reps stay on v1 while v2 is proved out, and an old job
+    // keeps rendering the way it was generated.
+    portal_version:        portalVersion === 'v2' ? 'v2' : 'v1',
     extracted_data:        brief || null,
     status:                'processing'
   }, { 'Prefer': 'return=representation' });
@@ -2155,7 +2224,7 @@ Return this exact JSON (null for anything not found):
     "industry":      "string | null — same as apollo_keyword — kept as a separate field for display compatibility",
     "company_size":  "string | null — human-readable size of their TARGET clients, for display only (e.g. '50-200 employees', 'mid-market', 'enterprise'). Concise — not a full sentence.",
     "apollo_employee_ranges": "array of strings | null — Apollo API employee range codes for their TARGET clients. Choose ONLY from these exact strings: '1,10', '11,50', '51,200', '201,500', '501,1000', '1001,10000', '10001,50000', '50001+'. Match to the described size: '50+ employees, ideally 100+' → ['51,200','201,500']. 'Enterprise/large organizations' → ['501,1000','1001,10000','10001,50000']. CRITICAL RULE: if transcript mentions 'enterprise', 'large organizations', 'government agencies', 'Fortune 500', 'enterprise clients', or any equivalent → you MUST include '1001,10000' in the ranges. Government agencies and large enterprises are typically 1000+ employees. 'Small businesses under 10' → ['1,10']. Select 1-4 contiguous ranges that bracket the target. Null if no size mentioned.",
-    "geography":     "string | null — target geography narrative, only if explicitly mentioned",
+    "geography":     "string | null — LEAVE NULL. This is a display mirror of apollo_geography and is derived server-side. Never write a narrative here (e.g. 'Global, with near-term focus on civilian markets') — it becomes the Company Location filter in the UI and blocks real targeting. Put geography narrative in context.goals instead.",
     "apollo_geography": "array of strings | null — clean country/region names for Apollo API. ONLY extract geography that is EXPLICITLY MENTIONED IN THIS TRANSCRIPT — do NOT echo example country names from these instructions. Valid entries: country names, continent names ('Europe', 'Asia', 'North America'), US/Canadian/Australian states or provinces, major cities. STRICT RULES: (1) NEVER include language names (e.g. a language name is not a location — extract the country instead). (2) NEVER write 'European Union' — expand to the specific member countries the transcript actually names. If the transcript says 'EU' with no specifics, use ['Europe']. (3) NEVER include narrative phrases. (4) Extract ONLY location nouns the transcript states. (5) If the transcript mentions a region grouping (e.g. 'Baltic states', 'DACH', 'Nordics', 'MENA'), expand it to the standard member countries — but only when the transcript explicitly used that grouping. (6) DO NOT default to any specific country list when the transcript is silent about geography — return null. Null if no geography is mentioned at all.",
     "person_seniorities": "ALWAYS return null. The Apollo search uses only titles + size + location + industry keyword. Adding a seniorities filter on top of specific titles like 'Chief Marketing Officer' double-narrows the TAM because Apollo's seniority tagging is heuristic and misses many legitimate CEOs. Do not extract seniorities from the transcript.",
     "company_revenue": "string | null — revenue range of their TARGET clients if mentioned or clearly implied (e.g. '$1M-$5M', '$500K+', '$2M ARR'). Verbatim if stated, short inference if strongly implied. Null if not determinable.",
@@ -3912,6 +3981,68 @@ async function fetchAdjacentIndustries(seed, limit = 5) {
 // industry candidates (plain strings) pass num_people:Infinity so the floor is
 // a no-op for them. Returns the canonical name string, or null if nothing fits
 // (caller keeps the original value and badges it as unverified).
+// Apollo keyword arrives as a string (legacy extract) or an array (the ICP
+// editor and MCP update_icp both send arrays). Normalise once, centrally —
+// calling .trim() on the raw value is what 500'd rerun_tam.
+function icpIndustryTerms(icp) {
+  const raw = (icp && (icp.apollo_keyword != null ? icp.apollo_keyword : icp.industry));
+  const arr = Array.isArray(raw) ? raw : (raw == null ? [] : [raw]);
+  return arr.map(v => String(v == null ? '' : v).trim()).filter(Boolean);
+}
+// Single display/prompt string. A one-element array collapses to exactly the
+// string the legacy path produced, so nothing changes for old jobs.
+function icpIndustryLabel(icp) { return icpIndustryTerms(icp).join(', ') || null; }
+// The seed used for the Apollo adjacency lookup — one term only.
+function icpIndustrySeed(icp)  { return icpIndustryTerms(icp)[0] || null; }
+
+// Company Location is a DISPLAY mirror of apollo_geography — never free prose.
+function geoDisplayFromIcp(icp) {
+  const g = Array.isArray(icp && icp.apollo_geography)
+    ? icp.apollo_geography.map(v => String(v == null ? '' : v).trim()).filter(Boolean) : [];
+  return g.join(', ');
+}
+// Does this read as location tokens ("Europe, United States") rather than a
+// sentence ("Global, with near-term focus on civilian markets; US entry discussed")?
+function looksLikeGeoTokens(v) {
+  const str = String(v == null ? '' : v).trim();
+  if (!str || str.length > 60) return false;
+  if (/[;:.]/.test(str)) return false;
+  if (/\b(with|focus|discussed|near-term|entry|mainly|primarily|expanding|potential|initially)\b/i.test(str)) return false;
+  return str.split(',').every(part => { const t = part.trim(); return t.length > 0 && t.length <= 30; });
+}
+
+// ── Call 1 preference ────────────────────────────────────────────────────────
+// The prefetch picker wants the FIRST call (the Business Evaluation), but the
+// old tiebreak was plain recency, so a later, longer meeting won just for being
+// newer. Seen on Andy Viikmaa / TrackDeep: a 51-min "3rd Meeting" was suggested
+// over the 39-min "Business Evaluation Call". These signals decide instead.
+const CALL1_TITLE_RE   = /\b(business\s+evaluation|business\s+audit|call\s*1\b|call\s+one|discovery)\b|\bBE\b/i;
+const LATER_MEETING_RE = /\b(2nd|3rd|4th|5th|second|third|fourth|fifth|follow[\s-]?up|check[\s-]?in|onboarding|kick[\s-]?off|debrief)\b|#\s*[2-9]\b/i;
+
+function call1Score(c, prospectEmail) {
+  const title = String((c && c.title) || '');
+  const mins  = Number((c && c.duration) || 0);
+  let score = 0;
+
+  if (CALL1_TITLE_RE.test(title))   score += 60;
+  if (LATER_MEETING_RE.test(title)) score -= 45;
+
+  // A real Business Evaluation runs roughly 40-60 min. Reward that band and
+  // demote stubs — a 6-minute "BE" is a no-show, not a call worth extracting.
+  if (mins >= 35 && mins <= 90)      score += 20;
+  else if (mins >= 25)               score += 8;
+  else if (mins > 0 && mins < 15)    score -= 30;
+
+  // The prospect has to actually be on the call.
+  const target = String(prospectEmail || '').toLowerCase();
+  const dom    = target.split('@')[1] || '';
+  const emails = ((c && c.meeting_attendees) || []).map(a => String((a && a.email) || '').toLowerCase());
+  if (target && emails.includes(target))                       score += 25;
+  else if (dom && emails.some(e => e.split('@')[1] === dom))    score += 15;
+
+  return score;
+}
+
 function pickCanonical(original, candidates, floor = 0) {
   const normOrig = normalizeToken(original);
   if (!normOrig) return null;
@@ -4022,6 +4153,22 @@ async function validateExtractedFilters(icp) {
       }
     });
     if (out.length) icp.apollo_geography = out;
+  }
+
+  // Company Location is derived, never authored. Extract has been seen writing a
+  // narrative into icp.geography ("Global, with near-term focus on civilian
+  // markets; US market entry discussed") which then renders as Company Location
+  // in the portal while apollo_geography stays null — so the rep sees a location
+  // and Apollo gets no location filter at all. Derive from the Apollo tokens;
+  // park any prose on geography_note so it is not silently lost.
+  const _geoDisplay = geoDisplayFromIcp(icp);
+  const _priorGeo   = typeof icp.geography === 'string' ? icp.geography.trim() : '';
+  if (_geoDisplay) {
+    icp.geography = _geoDisplay;
+  } else if (_priorGeo && !looksLikeGeoTokens(_priorGeo)) {
+    icp.geography_note = _priorGeo;
+    icp.geography = null;
+    console.log(`[icp] moved narrative geography to geography_note: ${JSON.stringify(_priorGeo).slice(0, 120)}`);
   }
 
   // Industry — badge-only. Never rewrite the value; just flag if Apollo doesn't
@@ -4550,15 +4697,49 @@ async function generateWebinarTitles(extracted, companyName, job = null, customI
 
 // ── ROI model math ────────────────────────────────────────────────────────────
 function parseLtv(s) {
-  if (typeof s === 'number') return s;
-  if (!s) return null;
-  const clean = s.toString().replace(/[$,\s]/g, '').toUpperCase();
-  const match = clean.match(/^([\d.]+)([KM]?)$/);
-  if (!match) return null;
-  let val = parseFloat(match[1]);
-  if (match[2] === 'K') val *= 1000;
-  if (match[2] === 'M') val *= 1000000;
-  return isNaN(val) ? null : val;
+  if (typeof s === 'number') return Number.isFinite(s) ? s : null;
+  if (s == null || s === '') return null;
+  const raw = String(s);
+
+  const scale = (n, suffix) => {
+    const u = String(suffix || '').toUpperCase();
+    if (u === 'K') return n * 1000;
+    if (u === 'M') return n * 1000000;
+    return n;
+  };
+
+  // Strict path — unchanged for clean values ("50000", "$50K", "1.5M").
+  // Currency symbols beyond '$' are stripped here too; the old version only
+  // knew '$', so any euro figure fell straight through to null.
+  const clean = raw.replace(/[$€£¥,\s]/g, '').toUpperCase();
+  const exact = clean.match(/^([\d.]+)([KM]?)$/);
+  if (exact) {
+    const val = scale(parseFloat(exact[1]), exact[2]);
+    return Number.isFinite(val) ? val : null;
+  }
+
+  // Tolerant path — the value came back as prose. Real example from a smoke
+  // test: "€11,500 first year (€10,000 sensor + €1,500 subscription), then
+  // €1,500/year recurring". The first figure is the first-year value, which is
+  // what the ROI model wants; hard-failing the whole asset over formatting is
+  // worse than taking it.
+  const re = /(\d[\d,]*(?:\.\d+)?)\s*([KkMm])?/g;
+  const nums = [];
+  let m;
+  while ((m = re.exec(raw)) !== null) {
+    // A percentage is not money — "10% of revenue" must stay unparseable.
+    if (raw[re.lastIndex] === '%') continue;
+    const val = scale(parseFloat(m[1].replace(/,/g, '')), m[2]);
+    if (Number.isFinite(val) && val > 0) nums.push({ val, start: m.index, end: re.lastIndex });
+  }
+  if (!nums.length) return null;
+
+  // A two-number range ("10,000–15,000", "10k to 15k") → midpoint.
+  if (nums.length === 2) {
+    const between = raw.slice(nums[0].end, nums[1].start);
+    if (/^\s*(?:[-–—]|to|and)\s*$/i.test(between)) return (nums[0].val + nums[1].val) / 2;
+  }
+  return nums[0].val;
 }
 function parseRate(s, defaultVal) {
   if (!s) return defaultVal;
@@ -5507,7 +5688,7 @@ async function estimateTamPure(icp) {
       seniorities:  icp.person_seniorities || null,
       geography:    icp.apollo_geography || icp.geography || null,
       company_size: icp.company_size || icp.apollo_employee_ranges || null,
-      industry:     icp.apollo_keyword || icp.industry || null,
+      industry:     icpIndustryLabel(icp),
       revenue:      icp.company_revenue || icp.apollo_revenue_range || null
     }, null, 2)}`;
     const message = await claudeMessage(anthropic, {
@@ -5583,7 +5764,7 @@ async function handleTamEstimate(task, job) {
   // the neighbouring verticals. suggestIndustries() returns canonical Apollo
   // industry names that co-occur with the seed — free (no credits). The seed
   // itself always leads. Empty/failed → just the seed (or nothing if no seed).
-  const seedIndustry = (icp.apollo_keyword || icp.industry || '').trim() || null;
+  const seedIndustry = icpIndustrySeed(icp);
   let adjacentIndustries = [];
   if (seedIndustry) {
     let live = [];
@@ -5617,7 +5798,7 @@ async function handleTamEstimate(task, job) {
       person_seniorities:      icp.person_seniorities || null,
       apollo_geography:        icp.apollo_geography || null,
       apollo_employee_ranges:  icp.apollo_employee_ranges || null,
-      apollo_keyword:          icp.apollo_keyword || icp.industry || null,
+      apollo_keyword:          icpIndustryLabel(icp),
       apollo_revenue_range:    icp.apollo_revenue_range || null,
       role:                    icp.role || null,
       company_size:            icp.company_size || null
@@ -5752,8 +5933,14 @@ async function handleWebinarTitles(task, job) {
 
 async function handleRoiModel(task, job) {
   const extracted = job.extracted_data;
+  // Precedence matches resolveRoiSeed: a rep (or agent) override wins over what
+  // extract found. Without this the task stays parked in needs_input forever —
+  // setting roi_ltv fixed the portal display but a rerun still hard-failed here.
+  const overrideLtv = extracted?._overrides?.roi_ltv;
   // Brief schema stores under metrics; spec schema uses business — support both
-  const rawLtv = extracted?.metrics?.ltv || extracted?.business?.ltv;
+  const rawLtv = (overrideLtv !== undefined && overrideLtv !== null && overrideLtv !== '')
+    ? overrideLtv
+    : (extracted?.metrics?.ltv || extracted?.business?.ltv);
 
   if (!rawLtv) {
     await needsInputTask(task.id, 'Missing: LTV — rep must enter manually');
@@ -5891,6 +6078,11 @@ async function handleCalendarVisual(task, job) {
 }
 
 // ── Stage orchestration — spawn new tasks when dependencies are met ───────────
+// Apollo-exact TAM below this auto-escalates to the grounded LLM estimate.
+// Portal quality bar is a headline of 50-100k; below ~30k the number does more
+// harm than good. Tunable without a deploy via env.
+const TAM_ESCALATION_FLOOR = Number(process.env.TAM_ESCALATION_FLOOR || 30000);
+
 async function checkAndSpawnStageTasks(jobId) {
   const tasks = await getTasksByJobId(jobId);
   const byType = {};
@@ -5912,6 +6104,43 @@ async function checkAndSpawnStageTasks(jobId) {
     if (toCreate.length) {
       console.log(`[orchestrator] Spawning Stage 2 tasks: ${toCreate.join(', ')}`);
       await createTasks(jobId, toCreate);
+    }
+  }
+
+  // ── TAM auto-escalation ─────────────────────────────────────────────────────
+  // An Apollo-exact headline is honest but frequently uselessly small: a tightly
+  // drawn ICP can land at a few thousand, which reads to a prospect as "your
+  // market is too small to bother with" — a disqualification caused by how the
+  // filters were drawn, not by the market. Reps land in the 50-100k band by hand
+  // (Ryan's TrackDeep portal showed 55k against an Apollo-narrow 23k). So when
+  // the exact count comes in under the floor, run the grounded LLM TAM, which
+  // probes real Apollo slices, rather than leave the small number standing.
+  //
+  // Only for method 'apollo' — the AI methods already do this — and never when
+  // the rep has set tam_total by hand.
+  const leadListDone = byType['lead_list'] && byType['lead_list'].status === 'completed';
+  if (leadListDone && !byType['tam_estimate']) {
+    const jobRow2 = await getJob(jobId);
+    const ext2    = (jobRow2 && jobRow2.extracted_data) || {};
+    const method2 = ext2.tam_method || 'apollo';
+    const manualTam = ext2._overrides && ext2._overrides.tam_total;
+    if (method2 === 'apollo' && !manualTam) {
+      const total = Number(byType['lead_list'].output_data && byType['lead_list'].output_data.total);
+      if (Number.isFinite(total) && total > 0 && total < TAM_ESCALATION_FLOOR) {
+        console.log(`[orchestrator] Apollo TAM ${total} below floor ${TAM_ESCALATION_FLOOR} — escalating to grounded LLM TAM`);
+        await supabaseRequest('PATCH', `/rest/v1/jobs?id=eq.${jobId}`, {
+          extracted_data: {
+            ...ext2,
+            tam_method: 'llm',
+            // Recorded so the portal can badge it and nobody wonders why the
+            // method changed on its own.
+            _tam_auto_escalated: { from: 'apollo', apollo_total: total, floor: TAM_ESCALATION_FLOOR, at: new Date().toISOString() }
+          },
+          updated_at: new Date().toISOString()
+        });
+        await createTasks(jobId, ['tam_estimate']);
+        byType['tam_estimate'] = { task_type: 'tam_estimate', status: 'pending' };
+      }
     }
   }
 
@@ -6656,6 +6885,88 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // ── GET /api/case-studies — the library, optionally gated to one tab ───────
+  if (req.method === 'GET' && urlPath === '/api/case-studies') {
+    setCors(res);
+    try {
+      const qs   = new URLSearchParams(req.url.includes('?') ? req.url.split('?')[1] : '');
+      const tab  = qs.get('tab');
+      const match = qs.get('match');
+      const all  = await listCaseStudies({ tab, limit: qs.get('limit') || 100 });
+      if (match) {
+        const job = await getJob(match);
+        if (!job) { res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'No such job' })); return; }
+        const ext = job.extracted_data || {};
+        const gen = ext._generated || {};
+        const ov  = ext._overrides || {};
+        const prospect = {
+          company:  job.prospect_company,
+          tam:      ov.tam_total ?? gen.tam_total ?? null,
+          industry: icpIndustryLabel(ext.icp || {})
+        };
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ prospect, matches: matchCaseStudies(all, prospect) }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ count: all.length, case_studies: all }));
+    } catch (e) {
+      console.error('[GET /api/case-studies]', e.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  // ── GET /api/admin/case-studies/status — freshness for Settings ───────────
+  if (req.method === 'GET' && urlPath === '/api/admin/case-studies/status') {
+    setCors(res);
+    try {
+      const state = await airtable.getSyncState();
+      const counts = await supabaseRequest('GET', '/rest/v1/case_study_clients?select=id,use_on_tabs,webinar_title,tam');
+      const rows = Array.isArray(counts.body) ? counts.body : [];
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        configured:   airtable.isConfigured(),
+        base_id:      airtable.AIRTABLE_BASE,
+        clients:      rows.length,
+        with_tam:     rows.filter(r => Number.isFinite(r.tam) && r.tam > 0).length,
+        with_invite:  rows.filter(r => r.webinar_title).length,
+        cleared_for:  rows.reduce((acc, r) => { (r.use_on_tabs || []).forEach(t => { acc[t] = (acc[t] || 0) + 1; }); return acc; }, {}),
+        state:        state || null
+      }));
+    } catch (e) {
+      console.error('[GET /api/admin/case-studies/status]', e.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  // ── POST /api/admin/case-studies/sync — pull Airtable → Supabase ──────────
+  // Runs inline: 33 records plus image re-hosting is well inside a request, and
+  // the rep needs to see the result rather than poll for it.
+  if (req.method === 'POST' && urlPath === '/api/admin/case-studies/sync') {
+    setCors(res);
+    try {
+      if (!airtable.isConfigured()) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'AIRTABLE_API_KEY is not set. Add it in the Render environment, then sync again.' }));
+        return;
+      }
+      const body = await parseBody(req);
+      const summary = await airtable.syncCaseStudies({ rehostImages: body.rehost_images !== false });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, ...summary }));
+    } catch (e) {
+      console.error('[POST /api/admin/case-studies/sync]', e.message);
+      await airtable.setSyncState({ last_status: 'error', last_error: String(e.message).slice(0, 500) });
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
   // ── GET /api/admin/worker-status — detect stale/duplicate worker builds ────
   if (req.method === 'GET' && urlPath === '/api/admin/worker-status') {
     setCors(res);
@@ -7130,7 +7441,15 @@ const server = http.createServer(async (req, res) => {
             return mk === 'exact_email' ? 60 : mk === 'domain' ? 50 : mk === 'title' ? 40 : 20;
           };
           const dateMs = (c) => new Date(c.date || c.dateString || 0).getTime() || 0;
-          merged.sort((a, b) => rankOf(b) - rankOf(a) || dateMs(b) - dateMs(a) || (b.duration || 0) - (a.duration || 0));
+          // Scaling rankOf by 10 keeps its tiers dominant (100-point gaps) while
+          // letting call1Score (~±105) reorder within and across adjacent tiers —
+          // so a titled "Business Evaluation" beats a newer "3rd Meeting", but a
+          // Fireflies exact-email match still beats a loose Zoom one.
+          const score = (c) => rankOf(c) * 10 + call1Score(c, email);
+          merged.forEach(c => { c._call1_score = call1Score(c, email); });
+          merged.sort((a, b) => score(b) - score(a) || dateMs(b) - dateMs(a) || (b.duration || 0) - (a.duration || 0));
+          console.log(`[prefetch] ranked ${merged.length} candidate(s): ` +
+            merged.slice(0, 5).map(c => `"${c.title}" ${(c.duration||0).toFixed(0)}m [${c._match_kind}] score=${score(c)}`).join(' | '));
 
           // Mark (don't drop) a Zoom call that looks like the same meeting as a
           // Fireflies one — same day + duration within 3 min — so the UI can
@@ -7153,6 +7472,7 @@ const server = http.createServer(async (req, res) => {
             match_kind:       t._match_kind || 'loose',
             has_transcript:   t._source === 'zoom' ? !!(t._zoom && t._zoom.hasTranscript) : true,
             dup_of_fireflies: !!t._dup_of_fireflies,
+            call1_score:      t._call1_score || 0,
             url:              candidateSourceUrl(t)
           }));
           // Suggest the best usable candidate (Zoom rows with no transcript can't feed extract).
@@ -7569,7 +7889,9 @@ const server = http.createServer(async (req, res) => {
         };
       }
 
-      const job = await createJob(email, websiteUrl || null, brief, repName, linkedinUrl);
+      // v1 unless explicitly asked for — reps keep the current flow by default.
+      const portalVersion = body.portal_version === 'v2' ? 'v2' : 'v1';
+      const job = await createJob(email, websiteUrl || null, brief, repName, linkedinUrl, portalVersion);
       // Spawn the full pipeline immediately:
       // - extract + prospect_research run now (re-extract with fresh transcript + LinkedIn)
       // - lead_list runs now (uses brief ICP which is already confirmed by rep)
@@ -7578,7 +7900,7 @@ const server = http.createServer(async (req, res) => {
       await createTasks(job.id, ['extract', 'prospect_research', 'lead_list']);
 
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ job_id: job.id, portal_url: `/${job.id}/how-it-works` }));
+      res.end(JSON.stringify({ job_id: job.id, portal_version: job.portal_version || portalVersion, portal_url: `/${job.id}/how-it-works` }));
     } catch(e) {
       console.error('[POST /api/jobs]', e.message);
       res.writeHead(500, { 'Content-Type': 'application/json' });
@@ -7603,6 +7925,7 @@ const server = http.createServer(async (req, res) => {
         prospect_company: j.prospect_company,
         prospect_name:   j.prospect_name,
         assigned_rep:    j.rep_name || null,
+        portal_version:  j.portal_version || 'v1',
         portal_url:      `/${j.id}/how-it-works`,
         created_at:      j.created_at,
         updated_at:      j.updated_at
@@ -7635,6 +7958,7 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
         job_id:                job.id,
+        portal_version:        job.portal_version || 'v1',
         status:                job.status,
         prospect_email:        job.prospect_email,
         prospect_company:      job.prospect_company,
@@ -8159,6 +8483,12 @@ const server = http.createServer(async (req, res) => {
           mirrored = body.apollo_keyword.trim();
         }
         updatedIcp.industry = mirrored;
+      }
+      // Same mirror for locations. Without it a rep can set real Apollo chips and
+      // still see the old extracted narrative under Company Location.
+      if (body.apollo_geography !== undefined) {
+        updatedIcp.geography = geoDisplayFromIcp({ apollo_geography: body.apollo_geography }) || null;
+        if (updatedIcp.geography) delete updatedIcp.geography_note;
       }
       // Rep edits invalidate any pre-baked translator payload. Without this,
       // a stored apollo_payload (which fetchLeadsFromApollo prefers over the

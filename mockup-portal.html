@@ -776,6 +776,11 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
     var __pathMatch  = window.location.pathname.match(__uuidPathRe);
     var __qsJob      = new URLSearchParams(window.location.search).get('job');
     window.__JOB_ID  = (__pathMatch && __pathMatch[1]) || __qsJob || null;
+    // Which portal flow this job was generated under. Filled in from
+    // GET /api/jobs/:id once the job loads; V2 features gate on it so a rep's
+    // V1 job never picks up half-built V2 UI.
+    window.PORTAL_VERSION = 'v1';
+    window.IS_V2 = function () { return window.PORTAL_VERSION === 'v2'; };
     window.__TAB_SLUG_FROM_PATH = (__pathMatch && __pathMatch[2]) || null;
   })();
 </script>
@@ -3404,6 +3409,8 @@ if (document.readyState === 'loading') {
         return;
       }
       const job = await res.json();
+      // Pin the flow for the rest of the render. V2 features check IS_V2().
+      window.PORTAL_VERSION = (job && job.portal_version) === 'v2' ? 'v2' : 'v1';
       const tasks = job.tasks || {};
 
       // ── DIAGNOSTIC — remove after debugging ─────────────────────────────
