@@ -120,6 +120,13 @@ function getProgress(id) { return _progressJobs.get(id) || null; }
 
 const PROGRESS_WRITE_GAP_MS = 700;
 const _progressLastWrite = new Map();   // id → ms
+// Writes for one id are chained rather than fired in parallel. Each write sends
+// the WHOLE record, so two overlapping writes are last-one-lands rather than a
+// merge — and the terminal setProgress fires microseconds before the _extras
+// flush. Unchained, the earlier write (no extras yet) could land second and
+// erase the candidate cache. That is exactly what happened in production while
+// the local run got lucky on ordering.
+const _progressWriteChain = new Map();  // id → Promise
 
 // _extras carries a Map (candidatesById). JSON.stringify turns a Map into {},
 // which would silently drop every transcript candidate and leave extract-brief
@@ -137,7 +144,14 @@ function _reviveExtras(extras) {
   return out;
 }
 
-async function persistProgress(id, { force = false } = {}) {
+function persistProgress(id, opts) {
+  const prev = _progressWriteChain.get(id) || Promise.resolve();
+  const next = prev.then(() => _persistProgressNow(id, opts)).catch(() => {});
+  _progressWriteChain.set(id, next);
+  return next;
+}
+
+async function _persistProgressNow(id, { force = false } = {}) {
   if (!USE_SUPABASE) return;
   const j = _progressJobs.get(id);
   if (!j) return;
@@ -198,6 +212,7 @@ setInterval(() => {
     if (j.status !== 'running' && now - j.updated_at > PROGRESS_TTL_MS) {
       _progressJobs.delete(id);
       _progressLastWrite.delete(id);
+      _progressWriteChain.delete(id);
     }
   }
 }, 60 * 1000).unref();
