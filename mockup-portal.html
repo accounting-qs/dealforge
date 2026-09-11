@@ -982,6 +982,11 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
         <div class="tam-stat-group">
           <div>
             <div class="tam-stat-value" id="tam-total-val">—</div>
+            <!-- V2: Alex at 1:05:04 — "in lead list I just want the AI to give
+                 you names with a similar TAM and the results they had." A link,
+                 not a table: the tab itself does not move. -->
+            <a href="#" class="v2-only" id="tam-match-link" style="display:none;font-size:12px;color:#34b433;text-decoration:none;margin-top:6px;"
+               onclick="v2OpenMatches();return false;">› Clients with a market like yours</a>
             <div class="tam-stat-label">Total Addressable Market</div>
           </div>
           <div>
@@ -1066,7 +1071,13 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
   </div>
 
   <div class="subtab-panel active" data-subgroup="outreach" data-subidx="0">
-  <div class="cal-wrap">
+  <!-- V2: swap the prospect's invite for a real client's. Ryan's design, accepted
+       by Alex (2026-09-04, 1:06:27): same control, prospect's data or a client's.
+       Copy is VERBATIM from the client's own invite — never generated, never
+       blended with QS's offer, which is the bug Alex called out at 42:28. -->
+  <div class="v2-only" id="invite-swap-bar" style="display:none;margin-bottom:14px;"></div>
+  <div id="invite-client-view" style="display:none;"></div>
+  <div class="cal-wrap" id="invite-own-view">
     <div class="cal-bg">
       <div class="cal-grid-line" style="top:15%"><span class="cal-time-label">9 AM</span></div>
       <div class="cal-grid-line" style="top:30%"><span class="cal-time-label">10 AM</span></div>
@@ -1555,6 +1566,15 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
 <!-- TAB 4: ROI MODEL               -->
 <!-- ═══════════════════════════════ -->
 <div class="tab-content" id="tab-roi">
+  <!-- V2: the prospect's projection sits beside real client campaigns. Alex
+       wanted these side by side rather than swapped (2026-09-04, 1:04:07) —
+       on ROI the whole point is comparison. -->
+  <div class="subtab-nav v2-only" id="roi-subtab-nav" style="display:none;">
+    <button class="subtab-btn active" data-subgroup="roi" data-subidx="0" onclick="switchSubTab('roi',0)">Your model</button>
+    <button class="subtab-btn" data-subgroup="roi" data-subidx="1" onclick="switchSubTab('roi',1)">Real client results</button>
+  </div>
+
+  <div class="subtab-panel active" data-subgroup="roi" data-subidx="0">
   <div class="roi-wrap">
 
     <!-- Step indicator -->
@@ -1759,6 +1779,20 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
 
       </div><!-- /roi-slides-track -->
     </div><!-- /roi-slider -->
+  </div>
+  </div><!-- /roi panel 0 -->
+
+  <!-- ── Real client results ────────────────────────────────────────────────
+       Campaign TOTALS across every run a client did, not a projection. No
+       dollar figure is shown: no client has LTV or close rate on file, so a
+       revenue number would be invented. Funnel and booked calls only. -->
+  <div class="subtab-panel v2-only" data-subgroup="roi" data-subidx="1">
+    <div style="max-width:940px;margin:0 auto;padding:8px 0 40px;">
+      <h2 style="font-size:30px;font-weight:700;color:#fff;margin:24px 0 6px;">These are not projections.</h2>
+      <p id="roi-real-intro" style="color:#a1a1aa;font-size:15px;margin:0 0 26px;line-height:1.6;">Every number below is a real client's total across every webinar they have run.</p>
+      <div id="roi-real-list" style="display:flex;flex-direction:column;gap:12px;"></div>
+      <p id="roi-real-foot" style="color:#71717a;font-size:13px;margin:22px 0 0;border-top:1px solid rgba(255,255,255,0.07);padding-top:16px;"></p>
+    </div>
   </div>
 </div>
 
@@ -2058,6 +2092,19 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
   .pi-input:focus, .pi-textarea:focus { border-color:#3f3f46; }
   .pi-textarea { min-height:64px; resize:vertical; line-height:1.5; }
 </style>
+<!-- V2 case-study match modal (Lead List) -->
+<div id="v2-match-modal" style="display:none;position:fixed;inset:0;z-index:9000;background:rgba(0,0,0,0.72);align-items:center;justify-content:center;padding:24px;"
+     onclick="if(event.target===this)v2CloseMatches()">
+  <div style="background:#0f0f11;border:1px solid rgba(255,255,255,0.1);border-radius:14px;max-width:760px;width:100%;max-height:86vh;overflow:auto;padding:26px 28px;">
+    <div style="display:flex;align-items:flex-start;gap:12px;margin-bottom:6px;">
+      <h3 style="flex:1;font-size:20px;font-weight:700;color:#fff;margin:0;">Clients with a market like yours</h3>
+      <button onclick="v2CloseMatches()" style="background:none;border:none;color:#71717a;font-size:22px;cursor:pointer;line-height:1;">&times;</button>
+    </div>
+    <p id="v2-match-sub" style="color:#71717a;font-size:13px;margin:0 0 18px;"></p>
+    <div id="v2-match-body" style="display:flex;flex-direction:column;gap:12px;"></div>
+  </div>
+</div>
+
 <div class="tab-content" id="tab-prospect-info">
   <div class="pi-wrap">
     <div style="background:rgba(34,197,94,0.06);border:1px solid rgba(34,197,94,0.18);border-radius:10px;padding:18px 20px;margin-bottom:16px;">
@@ -2348,6 +2395,219 @@ function v2RenderDeck(job) {
   document.querySelectorAll('.v1-when-v2-hidden').forEach(el => { el.style.display = 'none'; });
 }
 
+
+// ── V2: ROI — real client results ───────────────────────────────────────────
+// Campaign totals across every run a client did. Deliberately no dollar figure:
+// no client has LTV or close rate on file, so a revenue number would be
+// invented. Funnel and booked calls only, ordered by how close their market is
+// to this prospect's (Alex's rule, 2026-09-04 at 1:07:33).
+function _v2Num(n) { return Number.isFinite(n) ? n.toLocaleString() : '—'; }
+
+// TAM can be a rep-typed string — the portal stores whatever
+// isNaN(Number(v)) ? v : Number(v) yields, so "1.1M" and "55k" reach us as
+// strings. Number() on those is NaN, which silently disabled the whole
+// closest-market ordering on this tab.
+function _v2ParseNum(v) {
+  if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+  if (v == null || v === '') return null;
+  const m = String(v).replace(/[,\s$€£]/g, '').match(/^([\d.]+)([kKmMbB]?)$/);
+  if (!m) return null;
+  const n = parseFloat(m[1]);
+  if (!Number.isFinite(n)) return null;
+  const u = m[2].toLowerCase();
+  return u === 'k' ? n * 1e3 : u === 'm' ? n * 1e6 : u === 'b' ? n * 1e9 : n;
+}
+
+async function v2RenderRoiReal() {
+  const list = document.getElementById('roi-real-list');
+  if (!list) return;
+  const job  = window.__V2_JOB || {};
+  const ext  = job.extracted_data || {};
+  const gen  = ext._generated || {};
+  const ov   = ext._overrides || {};
+  const tam  = _v2ParseNum(ov.tam_total != null ? ov.tam_total : gen.tam_total);
+
+  let rows = [];
+  try {
+    const r = await fetch('/api/case-studies?tab=' + encodeURIComponent('ROI Model'));
+    rows = ((await r.json()).case_studies) || [];
+  } catch (e) { console.warn('[v2] roi comparison unavailable:', e.message); }
+
+  if (!rows.length) {
+    list.innerHTML = '<div class="v2-card"><span>No client campaigns are cleared for this tab yet.</span></div>';
+    return;
+  }
+
+  // Closest market first when we know the prospect's TAM.
+  if (tam) rows.sort((a, b) => Math.abs((a.tam || 0) - tam) - Math.abs((b.tam || 0) - tam));
+
+  const intro = document.getElementById('roi-real-intro');
+  if (intro) {
+    intro.textContent = "Every number below is a real client's total across every webinar they have run."
+      + (tam ? ' Ordered by how close their market is to your ' + tam.toLocaleString() + '.' : '');
+  }
+
+  list.innerHTML = rows.map(function (c, i) {
+    const closest = (i === 0 && tam)
+      ? '<span style="font-size:9px;font-weight:700;letter-spacing:.05em;color:#34b433;border:1px solid rgba(52,180,51,0.45);border-radius:4px;padding:2px 6px;margin-bottom:8px;display:inline-block;">CLOSEST MARKET TO YOURS</span>' : '';
+    const basis = c.stats_basis
+      ? '<span style="font-size:9px;font-weight:700;letter-spacing:.04em;color:#71717a;border:1px solid rgba(255,255,255,0.12);border-radius:4px;padding:2px 6px;">' + v2Esc(c.stats_basis) + '</span>' : '';
+    const logo = c.logo_url ? '<img src="' + v2Esc(c.logo_url) + '" alt="" style="max-height:34px;max-width:130px;object-fit:contain;opacity:.9;">' : '';
+    const head = c.headshot_url
+      ? '<img src="' + v2Esc(c.headshot_url) + '" alt="" style="width:44px;height:44px;border-radius:50%;object-fit:cover;flex:none;">'
+      : '<div class="v2-proof-initials" style="width:44px;height:44px;">' + v2Esc(_v2Initials(c.client_name)) + '</div>';
+    const stat = (v, label, green) =>
+      '<div><div style="font-size:26px;font-weight:700;color:' + (green ? '#34b433' : '#fff') + ';line-height:1.1;">' + v + '</div>' +
+      '<div style="font-size:11px;color:#71717a;margin-top:3px;">' + label + '</div></div>';
+
+    return '<div class="v2-card" style="padding:18px 20px;' + (i === 0 && tam ? 'border-color:rgba(52,180,51,0.45);' : '') + '">' +
+      closest +
+      '<div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">' + head +
+        '<div style="flex:1;"><div style="font-size:15px;font-weight:600;color:#e4e4e7;">' + v2Esc(c.client_name) + '</div>' +
+        '<div style="font-size:12px;color:#71717a;">' + v2Esc(v2CompanyName(c.company)) + '</div></div>' + logo +
+      '</div>' +
+      '<div style="font-size:11px;font-weight:600;letter-spacing:.04em;color:#71717a;margin-bottom:10px;">' +
+        (c.tam ? _v2Num(c.tam) + ' MARKET' : 'MARKET NOT ON FILE') +
+        (c.webinars_run ? ' · ' + c.webinars_run + ' WEBINAR' + (c.webinars_run === 1 ? '' : 'S') : '') +
+      '</div>' +
+      '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:16px;">' +
+        stat(_v2Num(c.total_attendees), 'people in the room', false) +
+        stat(_v2Num(c.total_booked_calls), 'sales calls booked', true) +
+        stat(c.attend_to_booked_pct != null ? c.attend_to_booked_pct + '%' : '—', 'of attendees booked', false) +
+      '</div>' +
+      (basis ? '<div style="margin-top:12px;">' + basis + '</div>' : '') +
+    '</div>';
+  }).join('');
+
+  const foot = document.getElementById('roi-real-foot');
+  if (foot) {
+    const sum = k => rows.reduce((n, c) => n + (Number(c[k]) || 0), 0);
+    foot.textContent = 'Across ' + sum('webinars_run') + ' webinars these ' + rows.length +
+      ' clients put ' + sum('total_attendees').toLocaleString() + ' people in a room and booked ' +
+      sum('total_booked_calls').toLocaleString() + ' sales calls.';
+  }
+}
+
+
+// ── V2: invite swap ─────────────────────────────────────────────────────────
+// Copy is VERBATIM from the client's own invite. It is never generated and
+// never blended with QS's offer — that blending is the failure Alex called out
+// at 42:28 ("mixing our offer with his offer").
+var _v2Invites = [];
+
+// event_description is stored as plain text on purpose (it has to render into
+// the portal, emails, PDFs and slides). Structure is conveyed by ALL-CAPS lines
+// as headings, bullet glyphs as list items, blank lines as paragraph breaks.
+function v2FmtInvite(text) {
+  return String(text || '').split(/\n{2,}/).map(function (para) {
+    const lines = para.split('\n').map(l => l.trim()).filter(Boolean);
+    return lines.map(function (l) {
+      if (/^[A-Z0-9][A-Z0-9 '&/,.\-]{6,}$/.test(l) && l === l.toUpperCase()) {
+        return '<div style="font-size:11px;font-weight:700;letter-spacing:.05em;color:#71717a;margin:16px 0 6px;">' + v2Esc(l) + '</div>';
+      }
+      if (/^[•\-\*\u2022]/.test(l)) {
+        return '<div style="color:#a1a1aa;font-size:14px;line-height:1.65;padding-left:14px;text-indent:-14px;">' + v2Esc(l) + '</div>';
+      }
+      return '<p style="color:#a1a1aa;font-size:14px;line-height:1.7;margin:0 0 10px;">' + v2Esc(l) + '</p>';
+    }).join('');
+  }).join('');
+}
+
+function v2ShowInvite(idx) {
+  const own    = document.getElementById('invite-own-view');
+  const client = document.getElementById('invite-client-view');
+  document.querySelectorAll('#invite-swap-bar button').forEach(function (b, i) {
+    b.classList.toggle('active', i === idx + 1);
+    b.style.background = (i === idx + 1) ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.03)';
+    b.style.color = (i === idx + 1) ? '#fff' : '#a1a1aa';
+  });
+  if (idx < 0) { own.style.display = ''; client.style.display = 'none'; return; }
+
+  const c = _v2Invites[idx];
+  own.style.display = 'none';
+  client.style.display = '';
+  const f = c.invite_to_reg_pct != null
+    ? '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:14px;margin-top:18px;padding-top:16px;border-top:1px solid rgba(255,255,255,0.07);">' +
+        '<div><div style="font-size:22px;font-weight:700;color:#fff;">' + _v2Num(c.invites_sent) + '</div><div style="font-size:11px;color:#71717a;">invites sent</div></div>' +
+        '<div><div style="font-size:22px;font-weight:700;color:#fff;">' + _v2Num(c.registrations) + '</div><div style="font-size:11px;color:#71717a;">registered (' + c.invite_to_reg_pct + '%)</div></div>' +
+        '<div><div style="font-size:22px;font-weight:700;color:#34b433;">' + _v2Num(c.attendees) + '</div><div style="font-size:11px;color:#71717a;">showed up live</div></div>' +
+      '</div>'
+    : '';
+  client.innerHTML =
+    '<div style="background:#fff;border-radius:14px;padding:28px 30px;max-width:720px;margin:0 auto;">' +
+      '<div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;">' +
+        (c.headshot_url ? '<img src="' + v2Esc(c.headshot_url) + '" alt="" style="width:42px;height:42px;border-radius:50%;object-fit:cover;">' : '') +
+        '<div><div style="font-size:14px;font-weight:600;color:#18181b;">' + v2Esc(c.client_name) + '</div>' +
+        '<div style="font-size:12px;color:#71717a;">' + v2Esc(v2CompanyName(c.company)) + (c.webinar_date ? ' · ' + v2Esc(c.webinar_date) : '') + '</div></div>' +
+      '</div>' +
+      '<h3 style="font-size:21px;font-weight:700;color:#18181b;line-height:1.3;margin:0 0 16px;">' + v2Esc(c.webinar_title || '') + '</h3>' +
+      '<div style="color:#3f3f46;">' + v2FmtInvite(c.event_description).replace(/color:#a1a1aa/g, 'color:#3f3f46') + '</div>' +
+    '</div>' + f;
+}
+
+async function v2RenderInviteSwap() {
+  const bar = document.getElementById('invite-swap-bar');
+  if (!bar) return;
+  try {
+    const r = await fetch('/api/case-studies?tab=' + encodeURIComponent('Calendar Invite'));
+    _v2Invites = (((await r.json()).case_studies) || []).filter(c => c.webinar_title && c.event_description);
+  } catch (e) { _v2Invites = []; }
+  if (!_v2Invites.length) { bar.style.display = 'none'; return; }
+
+  const btn = (label, i) =>
+    '<button onclick="v2ShowInvite(' + i + ')" style="cursor:pointer;font-family:inherit;font-size:12px;padding:6px 13px;border-radius:999px;' +
+    'border:1px solid rgba(255,255,255,0.1);background:' + (i === -1 ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.03)') + ';' +
+    'color:' + (i === -1 ? '#fff' : '#a1a1aa') + ';">' + v2Esc(label) + '</button>';
+  bar.innerHTML = '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">' +
+    '<span style="font-size:12px;color:#71717a;margin-right:2px;">Show invite:</span>' +
+    btn('Yours', -1) + _v2Invites.map((c, i) => btn(c.client_name, i)).join('') +
+    '</div>';
+}
+
+// ── V2: Lead List case-study matches ────────────────────────────────────────
+function v2CloseMatches() { document.getElementById('v2-match-modal').style.display = 'none'; }
+
+async function v2OpenMatches() {
+  const modal = document.getElementById('v2-match-modal');
+  const body  = document.getElementById('v2-match-body');
+  const sub   = document.getElementById('v2-match-sub');
+  modal.style.display = 'flex';
+  body.innerHTML = '<div style="color:#71717a;font-size:13px;">Loading…</div>';
+  let d = {};
+  try {
+    const r = await fetch('/api/case-studies?match=' + encodeURIComponent(window.__JOB_ID));
+    d = await r.json();
+  } catch (e) {
+    body.innerHTML = '<div style="color:#f87171;font-size:13px;">Could not load matches.</div>';
+    return;
+  }
+  const m = d.matches || [];
+  sub.textContent = d.prospect && d.prospect.tam
+    ? 'Matched against your market of ' + Number(d.prospect.tam).toLocaleString() + '.'
+    : 'Matched on market and offering.';
+  if (!m.length) {
+    body.innerHTML = '<div style="color:#71717a;font-size:13px;">No cleared client is a close enough match yet.</div>';
+    return;
+  }
+  body.innerHTML = m.map(function (c) {
+    const head = c.headshot_url
+      ? '<img src="' + v2Esc(c.headshot_url) + '" alt="" style="width:44px;height:44px;border-radius:50%;object-fit:cover;flex:none;">'
+      : '<div class="v2-proof-initials" style="width:44px;height:44px;">' + v2Esc(_v2Initials(c.client_name)) + '</div>';
+    return '<div class="v2-card">' +
+      '<div style="display:flex;align-items:center;gap:12px;margin-bottom:10px;">' + head +
+        '<div style="flex:1;"><div style="font-size:15px;font-weight:600;color:#e4e4e7;">' + v2Esc(c.client_name) + '</div>' +
+        '<div style="font-size:12px;color:#71717a;">' + v2Esc(v2CompanyName(c.company)) + '</div></div>' +
+        '<span style="font-size:9px;font-weight:700;letter-spacing:.05em;color:#34b433;border:1px solid rgba(52,180,51,0.4);border-radius:4px;padding:2px 6px;">' + v2Esc(c.axis_label || '') + '</span>' +
+      '</div>' +
+      (c.tam ? '<div style="font-size:12px;color:#a1a1aa;margin-bottom:8px;">Market of <strong style="color:#e4e4e7;">' + Number(c.tam).toLocaleString() + '</strong>' +
+        (c.industries ? ' · ' + v2Esc(String(c.industries).split(';')[0]) : '') + '</div>' : '') +
+      (c.key_quote ? '<div style="font-size:13px;color:#d4d4d8;line-height:1.6;font-style:italic;">“' + v2Esc(c.key_quote) + '”</div>' : '') +
+      (c.total_booked_calls != null ? '<div style="font-size:12px;color:#71717a;margin-top:8px;">' +
+        _v2Num(c.total_attendees) + ' attendees · ' + _v2Num(c.total_booked_calls) + ' calls booked across ' + (c.webinars_run || '—') + ' webinars</div>' : '') +
+    '</div>';
+  }).join('');
+}
+
 var _v2CaseStudies = null;
 async function v2LoadCaseStudies() {
   if (_v2CaseStudies) return _v2CaseStudies;
@@ -2394,9 +2654,12 @@ function applyPortalVersion() {
   const on = window.IS_V2 && window.IS_V2();
   document.querySelectorAll('.v2-only').forEach(function (el) { el.style.display = on ? '' : 'none'; });
   if (!on) return;
-  const nav = document.getElementById('outreach-subtab-nav');
-  if (nav) nav.style.display = '';
+  ['outreach-subtab-nav', 'roi-subtab-nav'].forEach(function (id) {
+    const nav = document.getElementById(id);
+    if (nav) nav.style.display = '';
+  });
   v2RenderVaProof();
+  v2RenderInviteSwap();
 }
 
 function switchSubTab(group, idx) {
@@ -3659,7 +3922,8 @@ if (document.readyState === 'loading') {
       // Pin the flow for the rest of the render. V2 features check IS_V2().
       window.PORTAL_VERSION = (job && job.portal_version) === 'v2' ? 'v2' : 'v1';
       applyPortalVersion();
-      if (window.IS_V2 && window.IS_V2()) v2RenderDeck(job);
+      window.__V2_JOB = job;
+      if (window.IS_V2 && window.IS_V2()) { v2RenderDeck(job); v2RenderRoiReal(); }
       const tasks = job.tasks || {};
 
       // ── DIAGNOSTIC — remove after debugging ─────────────────────────────

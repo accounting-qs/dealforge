@@ -559,8 +559,22 @@ async function listCaseStudies({ tab = null, limit = 100 } = {}) {
 // closest to the prospect's, regardless of what they sell. Offering is the
 // second axis. Business model is the third and has no data yet, so it is not
 // faked — the slot is simply absent until the library carries it.
+// A rep-typed TAM reaches us as a string — the portal stores whatever
+// isNaN(Number(v)) ? v : Number(v) yields, so "1.1M" and "55k" arrive as text.
+// Number() on those is NaN, which silently disabled the whole TAM match axis.
+function parseHumanNumber(v) {
+  if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+  if (v == null || v === '') return null;
+  const m = String(v).replace(/[,\s$€£]/g, '').match(/^([\d.]+)([kKmMbB]?)$/);
+  if (!m) return null;
+  const n = parseFloat(m[1]);
+  if (!Number.isFinite(n)) return null;
+  const u = m[2].toLowerCase();
+  return u === 'k' ? n * 1e3 : u === 'm' ? n * 1e6 : u === 'b' ? n * 1e9 : n;
+}
+
 function matchCaseStudies(all, prospect) {
-  const tam = Number(prospect && prospect.tam) || null;
+  const tam = parseHumanNumber(prospect && prospect.tam);
   const words = String((prospect && prospect.industry) || '').toLowerCase().split(/[^a-z0-9]+/).filter(w => w.length > 3);
   const out = [];
   const used = new Set();
@@ -7075,7 +7089,8 @@ const server = http.createServer(async (req, res) => {
         const ov  = ext._overrides || {};
         const prospect = {
           company:  job.prospect_company,
-          tam:      ov.tam_total ?? gen.tam_total ?? null,
+          tam:      parseHumanNumber(ov.tam_total != null ? ov.tam_total : gen.tam_total),
+          tam_raw:  ov.tam_total != null ? ov.tam_total : (gen.tam_total != null ? gen.tam_total : null),
           industry: icpIndustryLabel(ext.icp || {})
         };
         res.writeHead(200, { 'Content-Type': 'application/json' });
