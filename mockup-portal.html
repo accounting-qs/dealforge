@@ -754,6 +754,18 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
 .cs-modal-result { font-size: 14px; color: #a1a1aa; line-height: 1.65; margin-bottom: 16px; padding: 14px 16px; background: rgba(255,255,255,0.03); border-radius: 10px; border: 1px solid rgba(255,255,255,0.06); }
 .cs-modal-quote { font-size: 13px; color: #71717a; font-style: italic; line-height: 1.55; margin-bottom: 16px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.06); }
 .cs-modal-cta { font-size: 12px; color: #52525b; text-align: center; }
+
+/* ── V2 portal flow ─────────────────────────────────────────────────────────
+   Every .v2-only node is display:none until applyPortalVersion() finds the job
+   is v2, so a rep on a v1 job sees exactly the UI they see today. */
+.v2-card { background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; padding: 16px 18px; }
+.v2-card strong { display:block; font-size:14px; color:#e4e4e7; margin-bottom:5px; }
+.v2-card span   { display:block; font-size:13px; color:#a1a1aa; line-height:1.6; }
+.v2-step { width:22px; height:22px; border-radius:6px; margin-bottom:9px; display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:700; color:#0a0a0a; background:#34b433; }
+.v2-proof-claim { font-size:14px; font-weight:600; color:#34b433; line-height:1.45; margin:10px 0 4px; }
+.v2-proof-head  { display:flex; align-items:center; gap:10px; }
+.v2-proof-head img { width:38px; height:38px; border-radius:50%; object-fit:cover; flex:none; background:rgba(255,255,255,0.06); }
+.v2-proof-initials { width:38px; height:38px; border-radius:50%; flex:none; display:flex; align-items:center; justify-content:center; font-size:13px; font-weight:700; color:#a1a1aa; background:rgba(255,255,255,0.07); }
 </style>
 <script>
   // Runs before <body> is parsed so rep-only UI never flashes in for prospects.
@@ -1013,6 +1025,15 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
 <!-- TAB 2: CALENDAR INVITE         -->
 <!-- ═══════════════════════════════ -->
 <div class="tab-content" id="tab-1">
+  <!-- V2 only. Hidden for V1 jobs so a rep's current view is untouched; shown by
+       applyPortalVersion() once the job reports portal_version === 'v2'. -->
+  <div class="subtab-nav v2-only" id="outreach-subtab-nav" style="display:none;">
+    <button class="subtab-btn active" data-subgroup="outreach" data-subidx="0" onclick="switchSubTab('outreach',0)">The invite</button>
+    <button class="subtab-btn" data-subgroup="outreach" data-subidx="1" onclick="switchSubTab('outreach',1)">How it gets sent</button>
+    <button class="subtab-btn" data-subgroup="outreach" data-subidx="2" onclick="switchSubTab('outreach',2)">Who runs it</button>
+  </div>
+
+  <div class="subtab-panel active" data-subgroup="outreach" data-subidx="0">
   <div class="cal-wrap">
     <div class="cal-bg">
       <div class="cal-grid-line" style="top:15%"><span class="cal-time-label">9 AM</span></div>
@@ -1152,6 +1173,54 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
         </div>
       </div>
 
+    </div>
+  </div>
+  </div><!-- /outreach panel 0 -->
+
+  <!-- ── How it gets sent — the Hermes calendar automation ──────────────────
+       Answers "what do I have to plug in?" before it is asked. Static by
+       design: this is a talking aid, not data. -->
+  <div class="subtab-panel v2-only" data-subgroup="outreach" data-subidx="1">
+    <div style="max-width:940px;margin:0 auto;padding:8px 0 40px;">
+      <h2 style="font-size:30px;font-weight:700;color:#fff;text-align:center;margin:24px 0 6px;">It sends itself.</h2>
+      <p style="text-align:center;color:#a1a1aa;font-size:15px;margin:0 0 32px;">Hermes puts the invite on their calendar. No sequence to build, nothing to connect.</p>
+
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px;margin-bottom:34px;">
+        <div class="v2-card"><div class="v2-step">1</div><strong>The list is built</strong><span>Your verified lead list from the previous tab — the same companies, already matched to your ICP.</span></div>
+        <div class="v2-card"><div class="v2-step">2</div><strong>Hermes sends the invite</strong><span>A real calendar invite lands in their inbox, not a marketing email. It shows up as an event, with your name on it.</span></div>
+        <div class="v2-card"><div class="v2-step">3</div><strong>They accept or decline</strong><span>Accepting IS the registration. There is no landing page, no form, no second step to lose them at.</span></div>
+        <div class="v2-card"><div class="v2-step">4</div><strong>Reminders run themselves</strong><span>Follow-ups go out on the schedule that has worked across every campaign we have run.</span></div>
+      </div>
+
+      <div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:20px 22px;">
+        <div style="font-size:11px;font-weight:700;letter-spacing:.06em;color:#71717a;margin-bottom:10px;">WHY A CALENDAR INVITE AND NOT AN EMAIL</div>
+        <p style="color:#a1a1aa;font-size:14px;line-height:1.7;margin:0;">
+          An email asks for attention and competes with everything else in the inbox. A calendar invite asks for a decision,
+          and whichever way they answer, you learn something. Accepting puts the session in their diary with a reminder
+          already attached — the step where most webinar funnels lose people simply does not exist here.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Who runs it — the VA answer ────────────────────────────────────────
+       Alex's script, 2026-09-04 training 59:53. The proof cards are QUANTUM
+       SCALING's own clients, which is correct here: this tab proves OUR
+       delivery model to the prospect. Contrast the webinar slides, where a case
+       study belongs to the PROSPECT and must never come from the QS library. -->
+  <div class="subtab-panel v2-only" data-subgroup="outreach" data-subidx="2">
+    <div style="max-width:940px;margin:0 auto;padding:8px 0 40px;">
+      <h2 style="font-size:30px;font-weight:700;color:#fff;text-align:center;margin:24px 0 6px;">You don't run any of this.</h2>
+      <p style="text-align:center;color:#a1a1aa;font-size:15px;margin:0 0 32px;">A trained assistant does. Around five hours a week.</p>
+
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px;margin-bottom:34px;">
+        <div class="v2-card"><strong>They come from us</strong><span>You are not hiring, screening or onboarding anyone.</span></div>
+        <div class="v2-card"><strong>Pre-trained on the system</strong><span>They arrive knowing the invite flow, the tracking and the follow-up.</span></div>
+        <div class="v2-card"><strong>You show up to present</strong><span>The webinar is yours. Everything around it isn't your job.</span></div>
+      </div>
+
+      <div style="font-size:11px;font-weight:700;letter-spacing:.06em;color:#71717a;text-align:center;margin-bottom:14px;">CLIENTS WHO STOPPED TOUCHING IT</div>
+      <div id="va-proof" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px;"></div>
     </div>
   </div>
 </div>
@@ -2152,6 +2221,87 @@ function switchTab(i, opts) {
 // Sub-tab nav (nested inside a top-level tab). Buttons and panels are paired by
 // data-subgroup (the group name) + data-subidx (0-based). Static/purely visual —
 // no URL change, no data hydration.
+
+// ── V2 portal flow ──────────────────────────────────────────────────────────
+// The job decides. Nothing here runs for a v1 job, so the rep-facing UI is what
+// it was before V2 existed.
+
+// Alex's VA script, verbatim from the 2026-09-04 sales training (59:53). The
+// claims are his, not generated; photos come from our own synced library so they
+// survive Airtable's attachment links expiring.
+var V2_VA_PROOF = [
+  { name: 'Karl Lashkari',          company: 'Men of Mastery', claim: 'A trained VA runs about 80% of the system.', detail: 'He shows up only where his face is required.' },
+  { name: 'Felix Petzel',           company: 'Panda Media',    claim: 'A whole outbound team down to one assistant.', detail: 'Runs the system on about an hour a week. Margin went 30% to 90%.' },
+  { name: 'Philipp Von Schulthess', company: 'Oxoia',          claim: '16 hours a week to almost none.',            detail: 'Once his assistant took the process over.' }
+];
+
+// escHtml() lives in a different <script> block, so it is not reliably in scope
+// here. Local, minimal, and only ever used on library text.
+function v2Esc(v) {
+  return String(v == null ? '' : v)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+// Company names in the library carry internal research annotations — e.g.
+// 'Men of Mastery (transcript renders it "Meta Mastery")' or 'Panda Media
+// (Panda Media Beteiligungs-GmbH; also Panda Consulting)'. Useful in Airtable,
+// wrong on a prospect-facing tab. Strip a trailing parenthetical.
+function v2CompanyName(v) {
+  return String(v == null ? '' : v).replace(/\s*\([^)]*\)\s*$/, '').trim();
+}
+
+var _v2CaseStudies = null;
+async function v2LoadCaseStudies() {
+  if (_v2CaseStudies) return _v2CaseStudies;
+  try {
+    const r = await fetch('/api/case-studies');
+    const d = await r.json();
+    _v2CaseStudies = (d && d.case_studies) || [];
+  } catch (e) {
+    console.warn('[v2] case-study library unavailable:', e.message);
+    _v2CaseStudies = [];
+  }
+  return _v2CaseStudies;
+}
+
+function _v2Initials(name) {
+  return String(name || '').split(/\s+/).filter(Boolean).slice(0, 2).map(w => w[0]).join('').toUpperCase();
+}
+
+async function v2RenderVaProof() {
+  const box = document.getElementById('va-proof');
+  if (!box) return;
+  const lib = await v2LoadCaseStudies();
+  const byName = {};
+  lib.forEach(c => { byName[String(c.client_name || '').toLowerCase()] = c; });
+
+  box.innerHTML = V2_VA_PROOF.map(function (p) {
+    const hit = byName[p.name.toLowerCase()];
+    const avatar = (hit && hit.headshot_url)
+      ? '<img src="' + v2Esc(hit.headshot_url) + '" alt="">'
+      : '<div class="v2-proof-initials">' + v2Esc(_v2Initials(p.name)) + '</div>';
+    return '<div class="v2-card">' +
+        '<div class="v2-proof-head">' + avatar +
+          '<div><div style="font-size:13px;font-weight:600;color:#e4e4e7;">' + v2Esc(p.name) + '</div>' +
+          '<div style="font-size:11px;color:#71717a;">' + v2Esc(p.company || v2CompanyName(hit && hit.company)) + '</div></div>' +
+        '</div>' +
+        '<div class="v2-proof-claim">' + v2Esc(p.claim) + '</div>' +
+        '<span style="font-size:13px;color:#a1a1aa;line-height:1.6;">' + v2Esc(p.detail) + '</span>' +
+      '</div>';
+  }).join('');
+}
+
+// Reveals the V2 surfaces once the job says it is a v2 job. Safe to call twice.
+function applyPortalVersion() {
+  const on = window.IS_V2 && window.IS_V2();
+  document.querySelectorAll('.v2-only').forEach(function (el) { el.style.display = on ? '' : 'none'; });
+  if (!on) return;
+  const nav = document.getElementById('outreach-subtab-nav');
+  if (nav) nav.style.display = '';
+  v2RenderVaProof();
+}
+
 function switchSubTab(group, idx) {
   document.querySelectorAll('.subtab-btn[data-subgroup="' + group + '"]').forEach(b =>
     b.classList.toggle('active', Number(b.dataset.subidx) === idx));
@@ -3411,6 +3561,7 @@ if (document.readyState === 'loading') {
       const job = await res.json();
       // Pin the flow for the rest of the render. V2 features check IS_V2().
       window.PORTAL_VERSION = (job && job.portal_version) === 'v2' ? 'v2' : 'v1';
+      applyPortalVersion();
       const tasks = job.tasks || {};
 
       // ── DIAGNOSTIC — remove after debugging ─────────────────────────────
