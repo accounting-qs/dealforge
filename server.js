@@ -580,6 +580,160 @@ function matchCaseStudies(all, prospect) {
   return out;
 }
 
+// ── Webinar deck — nine beats ────────────────────────────────────────────────
+// The storyline Alex teaches at 46:59-48:09 of the 2026-09-04 sales training.
+// Extract writes the prospect-specific copy into extracted_data.webinar; where
+// it could not (the call never covered that ground, the site says nothing), a
+// generic beat is shown instead and LABELLED as generic.
+//
+// Why generic rather than invented: a fabricated "you are losing 25% of your
+// changeover time" is worse than an honest placeholder, because a rep will read
+// it aloud to a prospect who knows it is wrong. Every slide carries `source`
+// so the portal can badge the difference and the rep knows what to replace.
+
+const WEBINAR_STEPS = [
+  { key: 'bold_claim',      step: 'The bold claim',      purpose: 'State the one thing they have not considered.' },
+  { key: 'audience',        step: 'Who this is for',     purpose: 'Let them self-identify in one read.' },
+  { key: 'problem',         step: 'The problem',         purpose: 'Name the thing they live with daily.' },
+  { key: 'cost_of_waiting', step: 'The cost of waiting', purpose: 'Make a year of inaction concrete.' },
+  { key: 'good_looks_like', step: 'What good looks like',purpose: 'Show the destination in their units.' },
+  { key: 'case_study',      step: 'Proof',               purpose: 'One client who already did it.' },
+  { key: 'how_it_goes',     step: 'How it goes',         purpose: 'Remove the fear of a long, vague engagement.' },
+  { key: 'risks',           step: 'What could go wrong', purpose: 'Say their objections out loud before they do.' },
+  { key: 'close',           step: 'The close',           purpose: 'One ask. Nothing to weigh up.' }
+];
+
+// Generic reference copy. Deliberately non-specific — it reads as a competent
+// placeholder, never as a claim about this prospect's market.
+function webinarFallback(key, ctx) {
+  const who   = ctx.audience || 'the people you sell to';
+  const offer = ctx.offering || 'what you do';
+  const F = {
+    bold_claim: {
+      headline: 'The bottleneck is not where most people look.',
+      sub: 'It is upstream of the thing everyone tries to fix first.',
+      line: 'Ninety minutes on where the real constraint sits — and what moves once you find it.'
+    },
+    problem: {
+      headline: 'The problem is not a lack of effort.',
+      sub: 'It is that the effort goes into the wrong step.',
+      line: `Most of ${who} are already working hard at this. That is exactly why it is frustrating.`
+    },
+    cost_of_waiting: {
+      headline: 'Another year of this costs more than fixing it.',
+      sub: 'Not in one big loss — in the small ones that never get counted.',
+      line: 'We will size it against your own numbers on the call rather than quote an average.'
+    },
+    good_looks_like: {
+      headline: 'A predictable month, not a lucky one.',
+      sub: 'Same team, same capacity, a repeatable result.',
+      line: 'The change is in the system, not in working harder.'
+    },
+    case_study: {
+      headline: 'A client who already did this.',
+      sub: 'Same problem, same constraints, a measured result.',
+      line: '',
+      before: 'Where they started.',
+      after: 'Where they got to, and how long it took.'
+    },
+    how_it_goes: {
+      headline: 'You will know early whether it is working.',
+      sub: 'We measure first, change one thing, then you decide.',
+      line: 'No wholesale rollout on day one. It gets proved on a small slice, on your numbers.'
+    },
+    risks: {
+      headline: 'What could go wrong.',
+      sub: 'The four things worth asking about before you commit.',
+      risks: [
+        { risk: '"It costs more than it returns."',      answer: 'The first milestone is sized so the return is visible before the bulk of the spend.' },
+        { risk: '"It does not work for us."',            answer: 'We prove it on one slice first. If it does not move, you have lost weeks, not a year.' },
+        { risk: '"We get left to figure it out alone."', answer: 'There is a named person and a fixed cadence, not a shared inbox.' },
+        { risk: '"We do not have the time."',            answer: 'The work that needs your team is front-loaded and measured in hours, not weeks.' }
+      ]
+    },
+    close: {
+      headline: 'You could do this yourself.',
+      sub: `Most teams cannot spare the months it takes to get ${offer} right by trial and error.`,
+      line: 'We have already made the mistakes. You keep the method either way.',
+      cta: 'Book a 30-minute working session'
+    }
+  };
+  return F[key] || null;
+}
+
+/**
+ * Builds the nine-slide deck for a job.
+ * Slide 2 ("Who this is for") is composed from the ICP rather than written by
+ * the model — it is the one beat that is pure restatement of structured data.
+ */
+function composeWebinarSlides(job) {
+  const ext   = (job && job.extracted_data) || {};
+  const icp   = ext.icp || {};
+  const wb    = ext.webinar || {};
+  const ov    = ext._overrides || {};
+  const titles = (icp.apollo_titles || []).slice(0, 3).join(', ');
+  const geo    = geoDisplayFromIcp(icp);
+  const ind    = icpIndustryLabel(icp);
+  // offering is spliced into a sentence, so it has to be a SHORT noun phrase.
+  // offer_description is a full paragraph — using it produced a run-on close
+  // slide ("...the months it takes to get <three sentences> right").
+  const offeringName = (ext.prospect && ext.prospect.offering_name) || '';
+  const ctx = {
+    audience: icp.role || titles || 'the people you sell to',
+    offering: (offeringName && offeringName.length <= 40) ? offeringName : 'this'
+  };
+
+  return WEBINAR_STEPS.map((meta, i) => {
+    const n = i + 1;
+    // Rep overrides win, exactly as they do everywhere else in the portal.
+    const ovHead = ov[`slide_${n}_headline`];
+    const ovSub  = ov[`slide_${n}_sub`];
+
+    let body, source;
+    if (meta.key === 'audience') {
+      // icp.role is documented as a human-readable phrase but in practice often
+      // holds a comma list of titles, so it cannot be dropped into a sentence.
+      // Render the seats as a list instead — unambiguous, and no pluralisation
+      // or article guessing to get wrong ("You are owner in professional...").
+      const cap   = t => t ? t.charAt(0).toUpperCase() + t.slice(1) : t;
+      const seats = (icp.apollo_titles && icp.apollo_titles.length
+                      ? icp.apollo_titles
+                      : String(icp.role || '').split(','))
+                    .map(t => cap(String(t || '').trim())).filter(Boolean).slice(0, 3);
+      const sub = [ind && `In ${ind}`, icp.company_size && `typically ${icp.company_size}`]
+                    .filter(Boolean).join(', ');
+      body = seats.length
+        ? { headline: `Built for ${seats.join(' · ')}`,
+            sub: sub ? sub + '.' : 'Built for one seat, not a general audience.',
+            line: geo ? `${geo}` : '' }
+        : null;
+      source = body ? 'icp' : 'fallback';
+      if (!body) body = { headline: 'This is for a specific seat.', sub: 'If it is not yours, the next ninety minutes will not land.', line: '' };
+    } else {
+      const written = wb[meta.key];
+      const hasCopy = written && typeof written === 'object' && (written.headline || (written.risks && written.risks.length));
+      body   = hasCopy ? written : webinarFallback(meta.key, ctx);
+      source = hasCopy ? 'extracted' : 'fallback';
+    }
+
+    return {
+      n,
+      step: meta.step,
+      purpose: meta.purpose,
+      headline: ovHead || (body && body.headline) || '',
+      sub:      ovSub  || (body && body.sub) || '',
+      line:     (body && body.line) || '',
+      before:   (body && body.before) || null,
+      after:    (body && body.after) || null,
+      risks:    (body && body.risks) || null,
+      cta:      (body && body.cta) || null,
+      // 'extracted' = written for this prospect; 'icp' = composed from their own
+      // filters; 'fallback' = generic reference copy the rep should replace.
+      source:   (ovHead || ovSub) ? 'override' : source
+    };
+  });
+}
+
 // ── DB helpers — jobs & tasks ─────────────────────────────────────────────────
 async function createJob(email, websiteUrl, brief, repName = null, linkedinUrl = null, portalVersion = 'v1') {
   // Website precedence: rep-entered → email domain (only if not free-mail).
@@ -2265,6 +2419,17 @@ Return this exact JSON (null for anything not found):
     "a": "string | null — compelling webinar title based on their pain + result, max 70 chars",
     "b": "string | null — second variant with different angle or audience framing, max 70 chars"
   },
+  "webinar": {
+    "_doc": "The nine beats of the webinar the PROSPECT will run for THEIR audience. Written from the seat of the prospect's ICP — the person who will watch the webinar — not from Quantum Scaling's seat and not addressed to the prospect. Each beat is a headline (the claim), a sub-line that completes the thought, and at most one supporting line. Sparse and instantly legible: a busy buyer must know what the slide claims before they finish reading it. Return null for any beat the transcript and website genuinely cannot support — a generic fallback is shown instead, which is far better than an invented specific.",
+    "bold_claim":      "object | null — {headline, sub, line}. The one thing the audience has not considered, stated flatly. Draw from angle.methodology or the prospect's contrarian point of view. Example shape — headline: 'Your margin isn't leaking in the machines.' sub: 'It's leaking in the handoffs between them.'",
+    "problem":         "object | null — {headline, sub, line}. The thing the audience lives with daily, in their language. Condense angle.pain to one sharp claim; do NOT paste the whole pain paragraph.",
+    "cost_of_waiting": "object | null — {headline, sub, line}. What another year of not fixing it costs, in the audience's own money or time. Only produce a number if the transcript or website supports one; otherwise make the cost concrete without inventing a figure. NEVER fabricate a percentage or dollar amount.",
+    "good_looks_like": "object | null — {headline, sub, line}. The destination in the audience's units, drawn from angle.result. Specific outcomes, verbatim numbers only if stated.",
+    "case_study":      "object | null — {headline, sub, line, before, after}. ONE OF THE PROSPECT'S OWN CLIENTS — a customer of the prospect, shown to the prospect's audience. This is NOT a Quantum Scaling client and must never be filled from the QS case-study library; the direction is opposite. Source from angle.proof. Null if the transcript names no client result.",
+    "how_it_goes":     "object | null — {headline, sub, line}. What the engagement actually looks like from first contact to result — timeline, first milestone, what the buyer has to do. Removes the fear of a long vague engagement. Source from angle.methodology.",
+    "risks":           "object | null — {headline, sub, risks:[{risk, answer}]}. The objections said out loud before the audience raises them. Cover the four categories that come up: money/investment, fear of it not working, communication or being left alone, and time. 3-4 entries. Each risk is phrased as the buyer would say it; each answer is structural, not reassurance.",
+    "close":           "object | null — {headline, sub, line, cta}. One ask, nothing to weigh up. The honest framing is that the audience could do this themselves but it would take them far longer than buying it. cta is the single action, e.g. 'Book a 30-minute teardown'."
+  },
   "_provenance": {
     "prospect.company":        "one of: transcript | inferred | missing — how you got this value",
     "prospect.contact_name":   "one of: transcript | inferred | missing",
@@ -2319,6 +2484,10 @@ function emptyBrief(contactInfo) {
     situation: { current_lead_gen: null, revenue_range: null, team_size: null, biggest_challenge: null },
     context:   { goals: null, why_webinar: null },
     titles:    { a: null, b: null },
+    // Nine webinar beats. Null entries fall back to generic copy at render time
+    // (WEBINAR_FALLBACKS) rather than being invented by the model.
+    webinar:   { bold_claim: null, problem: null, cost_of_waiting: null, good_looks_like: null,
+                 case_study: null, how_it_goes: null, risks: null, close: null },
     _provenance: {
       // External fields populated by GHL/Apollo/website_title at prefetch time —
       // marked as missing if not filled; the prefetch wrapper overlays the right
@@ -7972,6 +8141,7 @@ const server = http.createServer(async (req, res) => {
       res.end(JSON.stringify({
         job_id:                job.id,
         portal_version:        job.portal_version || 'v1',
+        webinar_slides:        composeWebinarSlides(job),
         status:                job.status,
         prospect_email:        job.prospect_email,
         prospect_company:      job.prospect_company,

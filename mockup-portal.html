@@ -766,6 +766,38 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
 .v2-proof-head  { display:flex; align-items:center; gap:10px; }
 .v2-proof-head img { width:38px; height:38px; border-radius:50%; object-fit:cover; flex:none; background:rgba(255,255,255,0.06); }
 .v2-proof-initials { width:38px; height:38px; border-radius:50%; flex:none; display:flex; align-items:center; justify-content:center; font-size:13px; font-weight:700; color:#a1a1aa; background:rgba(255,255,255,0.07); }
+
+.v2-deck-stage {
+  background: linear-gradient(150deg, rgba(52,180,51,0.14), rgba(255,255,255,0.02));
+  border: 1px solid rgba(255,255,255,0.09);
+  border-radius: 14px; padding: 40px 42px; min-height: 300px;
+  display: flex; flex-direction: column; justify-content: center;
+}
+.v2-deck-step { font-size:11px; font-weight:700; letter-spacing:.07em; color:#34b433; margin-bottom:14px; }
+.v2-deck-head { font-size:32px; font-weight:700; color:#fff; line-height:1.2; margin:0 0 12px; }
+.v2-deck-sub  { font-size:18px; color:#d4d4d8; line-height:1.5; margin:0 0 14px; }
+.v2-deck-line { font-size:14px; color:#a1a1aa; line-height:1.65; margin:0; max-width:70ch; }
+.v2-deck-nav  { display:flex; flex-wrap:wrap; gap:6px; margin-top:16px; }
+.v2-deck-pill {
+  display:flex; align-items:center; gap:7px; cursor:pointer;
+  background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.08);
+  border-radius:999px; padding:6px 12px; font-size:12px; color:#a1a1aa;
+  font-family:inherit;
+}
+.v2-deck-pill.active { background:rgba(255,255,255,0.10); color:#fff; border-color:rgba(255,255,255,0.2); }
+.v2-deck-pill .num {
+  width:18px; height:18px; border-radius:50%; flex:none; display:flex;
+  align-items:center; justify-content:center; font-size:10px; font-weight:700;
+  background:rgba(255,255,255,0.10); color:#e4e4e7;
+}
+.v2-deck-pill.active .num { background:#34b433; color:#0a0a0a; }
+.v2-generic {
+  font-size:9px; font-weight:700; letter-spacing:.05em; color:#fbbf24;
+  border:1px solid rgba(251,191,36,0.4); border-radius:4px; padding:1px 5px; margin-left:8px;
+}
+.v2-risk { background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.07); border-radius:9px; padding:11px 13px; }
+.v2-risk b { display:block; font-size:13px; color:#e4e4e7; margin-bottom:4px; font-weight:600; }
+.v2-risk span { font-size:12px; color:#a1a1aa; line-height:1.55; }
 </style>
 <script>
   // Runs before <body> is parsed so rep-only UI never flashes in for prospects.
@@ -1214,7 +1246,7 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
       <p style="text-align:center;color:#a1a1aa;font-size:15px;margin:0 0 32px;">A trained assistant does. Around five hours a week.</p>
 
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px;margin-bottom:34px;">
-        <div class="v2-card"><strong>They come from us</strong><span>You are not hiring, screening or onboarding anyone.</span></div>
+        <div class="v2-card"><strong>We bring one, or train yours</strong><span>We place a trained assistant with you, or train someone already on your team. Either way you are not screening candidates.</span></div>
         <div class="v2-card"><strong>Pre-trained on the system</strong><span>They arrive knowing the invite flow, the tracking and the follow-up.</span></div>
         <div class="v2-card"><strong>You show up to present</strong><span>The webinar is yours. Everything around it isn't your job.</span></div>
       </div>
@@ -1238,7 +1270,10 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
 
   <!-- ── Sub-tab 0: Live Preview (the existing hero + chat + rep tools) ── -->
   <div class="subtab-panel active" data-subgroup="webinar" data-subidx="0">
-  <div class="webinar-wrap">
+  <!-- V2: the nine-beat deck replaces the single hero slide. Rendered by
+       v2RenderDeck() from GET /api/jobs/:id -> webinar_slides. -->
+  <div class="v2-only" id="v2-deck" style="display:none;"></div>
+  <div class="webinar-wrap v1-when-v2-hidden">
     <div class="webinar-top-bar">
       <div style="display:flex;align-items:center;gap:16px;">
         <div class="live-badge"><div class="live-dot"></div><span class="live-text">LIVE</span></div>
@@ -2249,6 +2284,68 @@ function v2Esc(v) {
 // wrong on a prospect-facing tab. Strip a trailing parenthetical.
 function v2CompanyName(v) {
   return String(v == null ? '' : v).replace(/\s*\([^)]*\)\s*$/, '').trim();
+}
+
+
+// ── V2 webinar deck ─────────────────────────────────────────────────────────
+// Nine beats from GET /api/jobs/:id -> webinar_slides. Slides the extractor
+// could not write for this prospect come back source:'fallback' and are badged
+// GENERIC, because a rep reading invented specifics aloud is worse than a rep
+// seeing an honest placeholder.
+var _v2Slides = [];
+var _v2SlideIdx = 0;
+
+function v2GoSlide(i) {
+  if (!_v2Slides.length) return;
+  _v2SlideIdx = Math.max(0, Math.min(i, _v2Slides.length - 1));
+  v2PaintSlide();
+}
+
+function v2PaintSlide() {
+  const box = document.getElementById('v2-deck');
+  if (!box || !_v2Slides.length) return;
+  const s = _v2Slides[_v2SlideIdx];
+  const generic = s.source === 'fallback'
+    ? '<span class="v2-generic" title="No transcript or website signal for this beat — replace before sending">GENERIC</span>' : '';
+
+  let extra = '';
+  if (s.risks && s.risks.length) {
+    extra = '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:10px;margin-top:16px;">' +
+      s.risks.map(r => '<div class="v2-risk"><b>' + v2Esc(r.risk) + '</b><span>' + v2Esc(r.answer) + '</span></div>').join('') +
+      '</div>';
+  } else if (s.before || s.after) {
+    extra = '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:10px;margin-top:16px;">' +
+      '<div class="v2-risk"><b>Before</b><span>' + v2Esc(s.before || '') + '</span></div>' +
+      '<div class="v2-risk"><b>After</b><span>' + v2Esc(s.after || '') + '</span></div></div>';
+  }
+  if (s.cta) {
+    extra += '<div style="margin-top:18px;"><span style="display:inline-block;background:#34b433;color:#0a0a0a;font-weight:700;font-size:13px;padding:9px 18px;border-radius:8px;">' + v2Esc(s.cta) + '</span></div>';
+  }
+
+  box.innerHTML =
+    '<div class="v2-deck-stage">' +
+      '<div class="v2-deck-step">' + s.n + ' / ' + _v2Slides.length + ' · ' + v2Esc(s.step).toUpperCase() + generic + '</div>' +
+      '<h2 class="v2-deck-head">' + v2Esc(s.headline) + '</h2>' +
+      (s.sub  ? '<p class="v2-deck-sub">'  + v2Esc(s.sub)  + '</p>' : '') +
+      (s.line ? '<p class="v2-deck-line">' + v2Esc(s.line) + '</p>' : '') +
+      extra +
+    '</div>' +
+    '<div class="v2-deck-nav">' +
+      _v2Slides.map((x, i) =>
+        '<button class="v2-deck-pill' + (i === _v2SlideIdx ? ' active' : '') + '" onclick="v2GoSlide(' + i + ')">' +
+          '<span class="num">' + x.n + '</span>' + v2Esc(x.step) +
+          (x.source === 'fallback' ? '<span style="color:#fbbf24;font-size:10px;">•</span>' : '') +
+        '</button>').join('') +
+    '</div>';
+}
+
+function v2RenderDeck(job) {
+  _v2Slides = (job && job.webinar_slides) || [];
+  _v2SlideIdx = 0;
+  if (_v2Slides.length) v2PaintSlide();
+  // The V2 deck supersedes the single hero slide, so hide the V1 one rather
+  // than showing the same message twice to a prospect.
+  document.querySelectorAll('.v1-when-v2-hidden').forEach(el => { el.style.display = 'none'; });
 }
 
 var _v2CaseStudies = null;
@@ -3562,6 +3659,7 @@ if (document.readyState === 'loading') {
       // Pin the flow for the rest of the render. V2 features check IS_V2().
       window.PORTAL_VERSION = (job && job.portal_version) === 'v2' ? 'v2' : 'v1';
       applyPortalVersion();
+      if (window.IS_V2 && window.IS_V2()) v2RenderDeck(job);
       const tasks = job.tasks || {};
 
       // ── DIAGNOSTIC — remove after debugging ─────────────────────────────
