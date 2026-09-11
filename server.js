@@ -542,10 +542,15 @@ function withFunnel(row) {
 
 async function listCaseStudies({ tab = null, limit = 100 } = {}) {
   let path = `/rest/v1/case_study_clients?select=${CASE_STUDY_COLS}&order=client_name.asc&limit=${Math.min(Number(limit) || 100, 500)}`;
-  // cs.{...} is PostgREST's array-contains operator — the tab gate is a hard
-  // filter, not a ranking hint: a client with weak invite-to-registration is
-  // never shown on Calendar Invite even when they are strong proof elsewhere.
-  if (tab) path += `&use_on_tabs=cs.${encodeURIComponent(JSON.stringify([tab]))}`;
+  // PostgREST array-contains. use_on_tabs is a Postgres text[], so the literal
+  // has to be {"Calendar Invite"} — curly braces with the element quoted. JSON
+  // bracket syntax (["Calendar Invite"]) parses without error and silently
+  // matches nothing, which is exactly how this shipped broken the first time.
+  //
+  // The tab gate is a hard filter, not a ranking hint: a client with weak
+  // invite-to-registration is never shown on Calendar Invite even when they are
+  // strong proof elsewhere.
+  if (tab) path += `&use_on_tabs=cs.${encodeURIComponent('{"' + String(tab).replace(/"/g, '\\"') + '"}')}`;
   const r = await supabaseRequest('GET', path);
   return (Array.isArray(r.body) ? r.body : []).map(withFunnel);
 }
