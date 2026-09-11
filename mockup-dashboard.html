@@ -201,6 +201,19 @@
       <button onclick="njClose()" style="width:28px;height:28px;border-radius:7px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.08);color:#71717a;font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center;line-height:1;">×</button>
     </div>
 
+    <!-- Portal flow — visible from the first step so V2 can be chosen before a
+         prefetch runs. Mirrors the control in step 2; both drive the same state. -->
+    <div class="nj-section" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
+      <div>
+        <div class="nj-label" style="margin-bottom:2px;">Portal Flow</div>
+        <div id="nj-portal-version-hint-1" style="font-size:11px;color:#71717a;max-width:340px;line-height:1.4;">The current flow every rep uses. Nothing changes.</div>
+      </div>
+      <div class="nj-seg" role="group" aria-label="Portal flow">
+        <button type="button" id="nj-pv1-v1" class="nj-seg-btn active" onclick="njSetPortalVersion('v1')">V1 · Current</button>
+        <button type="button" id="nj-pv1-v2" class="nj-seg-btn" onclick="njSetPortalVersion('v2')">V2 · Preview</button>
+      </div>
+    </div>
+
     <!-- Email Search -->
     <div class="nj-section">
       <div class="nj-label">Contact Email (GHL)</div>
@@ -1684,15 +1697,20 @@ var _NJ_PV_HINTS = {
 };
 function njSetPortalVersion(v) {
   _njPortalVersion = (v === 'v2') ? 'v2' : 'v1';
-  ['v1','v2'].forEach(function(key){
-    var btn = document.getElementById('nj-pv-' + key);
-    if (btn) btn.classList.toggle('active', _njPortalVersion === key);
+  // Two controls, one state: step 1 (before any prefetch) and step 2 (the brief).
+  ['nj-pv-', 'nj-pv1-'].forEach(function (prefix) {
+    ['v1','v2'].forEach(function (key) {
+      var btn = document.getElementById(prefix + key);
+      if (btn) btn.classList.toggle('active', _njPortalVersion === key);
+    });
   });
-  var hint = document.getElementById('nj-portal-version-hint');
-  if (hint) {
-    hint.textContent = _NJ_PV_HINTS[_njPortalVersion];
-    hint.style.color = _njPortalVersion === 'v2' ? '#fbbf24' : '#71717a';
-  }
+  ['nj-portal-version-hint', 'nj-portal-version-hint-1'].forEach(function (id) {
+    var hint = document.getElementById(id);
+    if (hint) {
+      hint.textContent = _NJ_PV_HINTS[_njPortalVersion];
+      hint.style.color = _njPortalVersion === 'v2' ? '#fbbf24' : '#71717a';
+    }
+  });
 }
 
 var _njTamMethod = 'apollo';
