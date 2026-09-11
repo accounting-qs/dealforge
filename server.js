@@ -96,20 +96,120 @@ const PROGRESS_TTL_MS = 10 * 60 * 1000;
 function newProgressJob(kind) {
   const id = crypto.randomUUID();
   _progressJobs.set(id, { kind, progress: 0, step: 'Starting…', status: 'running', updated_at: Date.now() });
+  persistProgress(id, { force: true });   // fire and forget; memory already answers
   return id;
 }
 function setProgress(id, patch) {
   const cur = _progressJobs.get(id);
   if (!cur) return;
   _progressJobs.set(id, { ...cur, ...patch, updated_at: Date.now() });
+  persistProgress(id);
 }
 function getProgress(id) { return _progressJobs.get(id) || null; }
+
+// ── Durability ───────────────────────────────────────────────────────────────
+// The Map above is a write-through cache, not the record. It was the record,
+// and that broke agents: an MCP client would prefetch, Render would redeploy,
+// and the follow-up call got a permanent 404 with no way to recover. A rep has
+// a retry button; an agent does not.
+//
+// Writes are throttled because setProgress is called on every step of a long
+// pipeline and the client polls every second or two — a row write per tick
+// would be pure waste. Terminal states always flush immediately, since that is
+// the write a poller is actually waiting for.
+
+const PROGRESS_WRITE_GAP_MS = 700;
+const _progressLastWrite = new Map();   // id → ms
+
+// _extras carries a Map (candidatesById). JSON.stringify turns a Map into {},
+// which would silently drop every transcript candidate and leave extract-brief
+// with nothing to bind to. Convert both ways explicitly.
+function _serialiseExtras(extras) {
+  if (!extras || typeof extras !== 'object') return null;
+  const out = { ...extras };
+  if (extras.candidatesById instanceof Map) out.candidatesById = Object.fromEntries(extras.candidatesById);
+  return out;
+}
+function _reviveExtras(extras) {
+  if (!extras || typeof extras !== 'object') return extras || null;
+  const out = { ...extras };
+  if (out.candidatesById && !(out.candidatesById instanceof Map)) out.candidatesById = new Map(Object.entries(out.candidatesById));
+  return out;
+}
+
+async function persistProgress(id, { force = false } = {}) {
+  if (!USE_SUPABASE) return;
+  const j = _progressJobs.get(id);
+  if (!j) return;
+  const terminal = j.status && j.status !== 'running';
+  const now = Date.now();
+  if (!force && !terminal && now - (_progressLastWrite.get(id) || 0) < PROGRESS_WRITE_GAP_MS) return;
+  _progressLastWrite.set(id, now);
+  try {
+    await supabaseRequest('POST', '/rest/v1/progress_jobs?on_conflict=id', {
+      id,
+      kind:       j.kind || 'unknown',
+      status:     j.status || 'running',
+      progress:   Math.round(Number(j.progress) || 0),
+      step:       j.step || null,
+      result:     j.result || null,
+      extras:     _serialiseExtras(j._extras),
+      error:      j.error || null,
+      error_kind: j.error_kind || null,
+      updated_at: new Date().toISOString()
+    }, { 'Prefer': 'resolution=merge-duplicates,return=minimal' });
+  } catch (e) {
+    // Never fail the pipeline over progress bookkeeping — the in-memory copy
+    // still serves this instance.
+    console.warn(`[progress] could not persist ${id}: ${e.message}`);
+  }
+}
+
+/**
+ * Memory first, database second. Rehydrates into memory so a poll that lands on
+ * a fresh instance is only slow once.
+ */
+async function getProgressAsync(id) {
+  const hit = _progressJobs.get(id);
+  if (hit) return hit;
+  if (!USE_SUPABASE) return null;
+  try {
+    const r = await supabaseRequest('GET', `/rest/v1/progress_jobs?id=eq.${encodeURIComponent(id)}&limit=1`);
+    const row = Array.isArray(r.body) ? r.body[0] : null;
+    if (!row) return null;
+    const revived = {
+      kind: row.kind, status: row.status, progress: row.progress, step: row.step,
+      result: row.result || undefined, error: row.error || undefined,
+      error_kind: row.error_kind || undefined,
+      _extras: _reviveExtras(row.extras),
+      updated_at: new Date(row.updated_at).getTime() || Date.now()
+    };
+    _progressJobs.set(id, revived);
+    return revived;
+  } catch (e) {
+    console.warn(`[progress] could not load ${id}: ${e.message}`);
+    return null;
+  }
+}
+
 setInterval(() => {
   const now = Date.now();
   for (const [id, j] of _progressJobs) {
-    if (j.status !== 'running' && now - j.updated_at > PROGRESS_TTL_MS) _progressJobs.delete(id);
+    if (j.status !== 'running' && now - j.updated_at > PROGRESS_TTL_MS) {
+      _progressJobs.delete(id);
+      _progressLastWrite.delete(id);
+    }
   }
 }, 60 * 1000).unref();
+
+// Rows outlive the in-memory copy on purpose so a redeploy mid-prefetch is
+// recoverable, but they are not permanent. Sweep hourly.
+setInterval(() => {
+  if (!USE_SUPABASE) return;
+  const cutoff = new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString();
+  supabaseRequest('DELETE', `/rest/v1/progress_jobs?updated_at=lt.${encodeURIComponent(cutoff)}`, null,
+    { 'Prefer': 'return=minimal' }).catch(() => {});
+}, 60 * 60 * 1000).unref();
 
 // ── Prompt templates — loaded from files at startup ───────────────────────────
 const PROMPTS_DIR   = path.join(__dirname, 'prompts');
@@ -7689,12 +7789,16 @@ const server = http.createServer(async (req, res) => {
 
           // Side-cache for phase 2 — extract-brief needs the raw candidate map
           // (Fireflies sentences / Zoom transcript download URLs).
+          // Written straight onto the cached object rather than through
+          // setProgress, so it needs its own flush or extract-brief finds no
+          // candidates after a redeploy.
           _progressJobs.get(id)._extras = {
             email,
             contactInfo,
             contactSources,
             candidatesById:  new Map(merged.map(t => [t.id, t]))
           };
+          persistProgress(id, { force: true });
         } catch (e) {
           console.error(`[prefetch ${id.slice(0,8)}] failed:`, e.message);
           setProgress(id, { progress: 100, status: 'failed', step: 'Failed', error: e.message });
@@ -7712,7 +7816,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && urlPath.startsWith('/api/prefetch/')) {
     setCors(res);
     const id = urlPath.slice('/api/prefetch/'.length);
-    const job = getProgress(id);
+    const job = await getProgressAsync(id);
     if (!job || job.kind !== 'prefetch') {
       res.writeHead(404, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Unknown prefetch_id (expired or never existed)' }));
@@ -7741,7 +7845,7 @@ const server = http.createServer(async (req, res) => {
       const prefetchId  = (body.prefetch_id || '').trim();
       const transcriptId = body.transcript_id ? String(body.transcript_id) : null;
       const transcriptSource = String(body.transcript_source || 'fireflies');
-      const prefetchJob = getProgress(prefetchId);
+      const prefetchJob = await getProgressAsync(prefetchId);
       if (!prefetchJob || prefetchJob.kind !== 'prefetch' || prefetchJob.status !== 'completed') {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Prefetch result not available — re-run search' }));
@@ -7951,7 +8055,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && urlPath.startsWith('/api/extract-brief/')) {
     setCors(res);
     const id = urlPath.slice('/api/extract-brief/'.length);
-    const job = getProgress(id);
+    const job = await getProgressAsync(id);
     if (!job || job.kind !== 'extract_brief') {
       res.writeHead(404, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Unknown extract_id (expired or never existed)' }));
@@ -8011,9 +8115,11 @@ const server = http.createServer(async (req, res) => {
 
       // Seed the prefetch candidate cache so a picked result resolves in extract-brief.
       if (prefetchId) {
-        const job = getProgress(prefetchId);
+        const job = await getProgressAsync(prefetchId);
         if (job && job._extras && job._extras.candidatesById) {
           merged.forEach(c => job._extras.candidatesById.set(c.id, c));
+          // Same reason: a direct Map mutation never passes through setProgress.
+          persistProgress(prefetchId, { force: true });
         }
       }
 
