@@ -1283,7 +1283,12 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
   <div class="subtab-panel active" data-subgroup="webinar" data-subidx="0">
   <!-- V2: the nine-beat deck replaces the single hero slide. Rendered by
        v2RenderDeck() from GET /api/jobs/:id -> webinar_slides. -->
+  <!-- V2: the fourth case-study surface. Alex at 1:01:09 wanted links to real
+       client webinar recordings here. Only clients cleared for this tab appear,
+       and only ones that actually have a recording on file. -->
+  <div class="v2-only" id="webinar-swap-bar" style="display:none;margin-bottom:14px;"></div>
   <div class="v2-only" id="v2-deck" style="display:none;"></div>
+  <div id="webinar-client-view" style="display:none;"></div>
   <div class="webinar-wrap v1-when-v2-hidden">
     <div class="webinar-top-bar">
       <div style="display:flex;align-items:center;gap:16px;">
@@ -1975,7 +1980,8 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
 <!-- TAB 6: CASE STUDIES            -->
 <!-- ═══════════════════════════════ -->
 <div class="tab-content" id="tab-cases">
-  <div class="cs-wrap">
+  <div class="v2-only" id="v2-cases" style="display:none;max-width:1100px;margin:0 auto;padding:20px 0 40px;"></div>
+  <div class="cs-wrap v1-when-v2-hidden">
     <h2 class="cs-title">Client Results</h2>
     <p class="cs-sub">Real clients. Find yours by stage and industry.</p>
 
@@ -2390,9 +2396,6 @@ function v2RenderDeck(job) {
   _v2Slides = (job && job.webinar_slides) || [];
   _v2SlideIdx = 0;
   if (_v2Slides.length) v2PaintSlide();
-  // The V2 deck supersedes the single hero slide, so hide the V1 one rather
-  // than showing the same message twice to a prospect.
-  document.querySelectorAll('.v1-when-v2-hidden').forEach(el => { el.style.display = 'none'; });
 }
 
 
@@ -2608,6 +2611,101 @@ async function v2OpenMatches() {
   }).join('');
 }
 
+
+// ── V2: Webinar Experience — real client recordings ─────────────────────────
+// The fourth case-study surface. Unlike the invite swap there is no copy to
+// show: what proves this tab is the recording itself, so a client only appears
+// when one is actually on file.
+var _v2Webinars = [];
+
+function v2ShowWebinar(idx) {
+  const deck   = document.getElementById('v2-deck');
+  const client = document.getElementById('webinar-client-view');
+  document.querySelectorAll('#webinar-swap-bar button').forEach(function (b, i) {
+    const on = (i === idx + 1);
+    b.style.background = on ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.03)';
+    b.style.color = on ? '#fff' : '#a1a1aa';
+  });
+  if (idx < 0) { deck.style.display = ''; client.style.display = 'none'; return; }
+
+  const c = _v2Webinars[idx];
+  deck.style.display = 'none';
+  client.style.display = '';
+  const head = c.headshot_url
+    ? '<img src="' + v2Esc(c.headshot_url) + '" alt="" style="width:48px;height:48px;border-radius:50%;object-fit:cover;flex:none;">'
+    : '<div class="v2-proof-initials" style="width:48px;height:48px;">' + v2Esc(_v2Initials(c.client_name)) + '</div>';
+  const funnel = (c.total_attendees != null || c.total_booked_calls != null)
+    ? '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:16px;margin-top:20px;padding-top:18px;border-top:1px solid rgba(255,255,255,0.08);">' +
+        '<div><div style="font-size:24px;font-weight:700;color:#fff;">' + _v2Num(c.total_attendees) + '</div><div style="font-size:11px;color:#71717a;">people in the room</div></div>' +
+        '<div><div style="font-size:24px;font-weight:700;color:#34b433;">' + _v2Num(c.total_booked_calls) + '</div><div style="font-size:11px;color:#71717a;">sales calls booked</div></div>' +
+        (c.webinars_run ? '<div><div style="font-size:24px;font-weight:700;color:#fff;">' + c.webinars_run + '</div><div style="font-size:11px;color:#71717a;">webinars run</div></div>' : '') +
+      '</div>'
+    : '';
+  client.innerHTML =
+    '<div class="v2-card" style="padding:26px 28px;">' +
+      '<div style="display:flex;align-items:center;gap:14px;margin-bottom:16px;">' + head +
+        '<div style="flex:1;"><div style="font-size:16px;font-weight:600;color:#e4e4e7;">' + v2Esc(c.client_name) + '</div>' +
+        '<div style="font-size:12px;color:#71717a;">' + v2Esc(v2CompanyName(c.company)) + '</div></div>' +
+      '</div>' +
+      (c.webinar_title ? '<h3 style="font-size:22px;font-weight:700;color:#fff;line-height:1.3;margin:0 0 12px;">' + v2Esc(c.webinar_title) + '</h3>' : '') +
+      (c.key_quote ? '<p style="font-size:14px;color:#d4d4d8;line-height:1.7;font-style:italic;margin:0 0 16px;">“' + v2Esc(c.key_quote) + '”</p>' : '') +
+      '<a href="' + v2Esc(c.recording_url) + '" target="_blank" rel="noopener" ' +
+        'style="display:inline-block;background:#34b433;color:#0a0a0a;font-weight:700;font-size:13px;padding:10px 20px;border-radius:8px;text-decoration:none;">Watch their webinar ↗</a>' +
+      funnel +
+    '</div>';
+}
+
+async function v2RenderWebinarSwap() {
+  const bar = document.getElementById('webinar-swap-bar');
+  if (!bar) return;
+  try {
+    const r = await fetch('/api/case-studies?tab=' + encodeURIComponent('Webinar Experience'));
+    // No recording means nothing to show — this tab is proved by the tape.
+    _v2Webinars = (((await r.json()).case_studies) || []).filter(c => c.recording_url);
+  } catch (e) { _v2Webinars = []; }
+  if (!_v2Webinars.length) { bar.style.display = 'none'; return; }
+
+  const btn = (label, i) =>
+    '<button onclick="v2ShowWebinar(' + i + ')" style="cursor:pointer;font-family:inherit;font-size:12px;padding:6px 13px;border-radius:999px;' +
+    'border:1px solid rgba(255,255,255,0.1);background:' + (i === -1 ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.03)') + ';' +
+    'color:' + (i === -1 ? '#fff' : '#a1a1aa') + ';">' + v2Esc(label) + '</button>';
+  bar.innerHTML = '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">' +
+    '<span style="font-size:12px;color:#71717a;margin-right:2px;">Show webinar:</span>' +
+    btn('Yours', -1) + _v2Webinars.map((c, i) => btn(c.client_name, i)).join('') +
+    '</div>';
+}
+
+// ── V2: Case Studies tab — the live library ─────────────────────────────────
+// The V1 tab is a hand-maintained list. Under V2 it reads the synced library so
+// it cannot drift from what the other four tabs show.
+async function v2RenderCaseStudyLibrary() {
+  const box = document.getElementById('v2-cases');
+  if (!box) return;
+  const lib = await v2LoadCaseStudies();
+  const shown = lib.filter(c => c.key_quote || c.best_used_for);
+  if (!shown.length) { box.innerHTML = '<div class="v2-card"><span>Library is empty — run a sync in Settings.</span></div>'; return; }
+  box.innerHTML =
+    '<div style="font-size:12px;color:#71717a;margin-bottom:14px;">' + shown.length + ' clients, synced from the case-study library.</div>' +
+    '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px;">' +
+    shown.map(function (c) {
+      const head = c.headshot_url
+        ? '<img src="' + v2Esc(c.headshot_url) + '" alt="" style="width:40px;height:40px;border-radius:50%;object-fit:cover;flex:none;">'
+        : '<div class="v2-proof-initials">' + v2Esc(_v2Initials(c.client_name)) + '</div>';
+      const tabs = (c.use_on_tabs || []).map(t =>
+        '<span style="font-size:9px;font-weight:600;color:#71717a;border:1px solid rgba(255,255,255,0.12);border-radius:4px;padding:1px 5px;margin-right:4px;">' + v2Esc(t) + '</span>').join('');
+      return '<div class="v2-card">' +
+        '<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;">' + head +
+          '<div style="flex:1;min-width:0;"><div style="font-size:14px;font-weight:600;color:#e4e4e7;">' + v2Esc(c.client_name) + '</div>' +
+          '<div style="font-size:11px;color:#71717a;">' + v2Esc(v2CompanyName(c.company)) + '</div></div>' +
+        '</div>' +
+        (c.key_quote ? '<div style="font-size:13px;color:#d4d4d8;line-height:1.6;font-style:italic;margin-bottom:8px;">“' + v2Esc(c.key_quote) + '”</div>' : '') +
+        (c.best_used_for ? '<span style="font-size:12px;color:#a1a1aa;line-height:1.55;">' + v2Esc(String(c.best_used_for).slice(0, 190)) + (String(c.best_used_for).length > 190 ? '…' : '') + '</span>' : '') +
+        (c.tam ? '<div style="font-size:11px;color:#71717a;margin-top:8px;">Market ' + Number(c.tam).toLocaleString() + '</div>' : '') +
+        (tabs ? '<div style="margin-top:8px;">' + tabs + '</div>' : '') +
+      '</div>';
+    }).join('') + '</div>';
+}
+
 var _v2CaseStudies = null;
 async function v2LoadCaseStudies() {
   if (_v2CaseStudies) return _v2CaseStudies;
@@ -2653,6 +2751,11 @@ async function v2RenderVaProof() {
 function applyPortalVersion() {
   const on = window.IS_V2 && window.IS_V2();
   document.querySelectorAll('.v2-only').forEach(function (el) { el.style.display = on ? '' : 'none'; });
+  // Superseded V1 blocks: the single hero slide (replaced by the deck) and the
+  // hand-maintained case-study list (replaced by the synced library). Hidden
+  // here rather than inside a renderer, so it does not depend on which tab the
+  // rep happens to open first.
+  document.querySelectorAll('.v1-when-v2-hidden').forEach(function (el) { el.style.display = on ? 'none' : ''; });
   if (!on) return;
   ['outreach-subtab-nav', 'roi-subtab-nav'].forEach(function (id) {
     const nav = document.getElementById(id);
@@ -2660,6 +2763,8 @@ function applyPortalVersion() {
   });
   v2RenderVaProof();
   v2RenderInviteSwap();
+  v2RenderWebinarSwap();
+  v2RenderCaseStudyLibrary();
 }
 
 function switchSubTab(group, idx) {
