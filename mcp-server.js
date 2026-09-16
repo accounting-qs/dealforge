@@ -930,7 +930,7 @@ const TOOLS = [
         recommended_outreach: { type: ['number', 'string'] },
         full_market_cycle:    { type: ['number', 'string'] },
         webinar_title:        { type: 'string', description: 'Headline webinar title override.' },
-        roi_ltv:              { type: ['number', 'string'] },
+        roi_ltv:              { type: ['number', 'string'], description: 'Year 1 revenue per client. Field name is legacy — it is not lifetime value.' },
         roi_show_rate:        { type: ['number', 'string'] },
         roi_close_rate:       { type: ['number', 'string'] },
         webinar_title_0: { type: 'string' }, webinar_desc_0: { type: 'string' },

@@ -655,6 +655,30 @@ function withFunnel(row) {
   };
 }
 
+// Attend-to-booked floor for the two tabs that SHOW that ratio. "Use on tabs"
+// in Airtable says a client has usable artifacts; it does not say their numbers
+// read well. One cleared client sits at 4 booked calls from 866 attendees
+// (0.5%) across 19 runs, next to another at 9.9% — showing both invites a
+// prospect to do the arithmetic and conclude this does not work. The prototype
+// excluded that client by hand; this makes the rule explicit instead.
+//
+// The row is hidden, never rewritten: the underlying numbers stay exactly as
+// the client reported them.
+const ROI_MIN_BOOKED_PCT = Number(process.env.ROI_MIN_BOOKED_PCT || 5);
+// ROI only. Webinar Experience is proved by the recording, so it shows
+// attendees (a strong number on its own — 866 people across 19 runs) and NOT
+// the booking ratio. Nothing weak is displayed there, so nothing needs hiding,
+// and all three recordings stay available instead of being cut to one.
+const RATIO_GATED_TABS = ['ROI Model'];
+
+function passesBookedFloor(c) {
+  const a = Number(c.total_attendees), b = Number(c.total_booked_calls);
+  // No numbers on file is not a weak result — those rows are judged on other
+  // evidence and stay.
+  if (!Number.isFinite(a) || a <= 0 || !Number.isFinite(b)) return true;
+  return (b / a) * 100 >= ROI_MIN_BOOKED_PCT;
+}
+
 async function listCaseStudies({ tab = null, limit = 100 } = {}) {
   let path = `/rest/v1/case_study_clients?select=${CASE_STUDY_COLS}&order=client_name.asc&limit=${Math.min(Number(limit) || 100, 500)}`;
   // PostgREST array-contains. use_on_tabs is a Postgres text[], so the literal
@@ -667,7 +691,17 @@ async function listCaseStudies({ tab = null, limit = 100 } = {}) {
   // strong proof elsewhere.
   if (tab) path += `&use_on_tabs=cs.${encodeURIComponent('{"' + String(tab).replace(/"/g, '\\"') + '"}')}`;
   const r = await supabaseRequest('GET', path);
-  return (Array.isArray(r.body) ? r.body : []).map(withFunnel);
+  let rows = (Array.isArray(r.body) ? r.body : []).map(withFunnel);
+  if (tab && RATIO_GATED_TABS.includes(tab)) {
+    const before = rows.length;
+    rows = rows.filter(passesBookedFloor);
+    if (rows.length !== before) {
+      console.log(`[case-studies] ${tab}: hid ${before - rows.length} client(s) below the ${ROI_MIN_BOOKED_PCT}% booked floor`);
+    }
+    // Strongest first — the point of the tab is the best real comparison.
+    rows.sort((a, b) => (b.attend_to_booked_pct || 0) - (a.attend_to_booked_pct || 0));
+  }
+  return rows;
 }
 
 // Alex's rule (2026-09-04 training): lead with the client whose market is
@@ -2519,7 +2553,7 @@ Return this exact JSON (null for anything not found):
     "kpis":          "array of 3-5 strings — the specific business performance metrics the prospect's service directly helps their ICP improve. Extract verbatim if mentioned. If not explicitly stated, INFER from the service description, promised outcomes, and problems solved — look at what their clients gain. Return short, specific metric names like 'Revenue per client', 'Customer acquisition rate', 'Client retention rate', 'Brand visibility', 'Lead conversion rate', 'Average deal size'. Never null — always infer at least 3."
   },
   "metrics": {
-    "ltv":        "string | null — client lifetime value. If a clear annual or one-time price is stated, compute the annual value (e.g. '$5,000/year') and set _provenance.\"metrics.ltv\" = \"computed\". If stated verbatim ('LTV is $20k'), use that verbatim with _provenance \"transcript\". NEVER compute from goal language ('I want $30k/month'). null + _provenance \"missing\" if no price/LTV.",
+    "ltv":        "string | null — FIRST-YEAR revenue per client (not lifetime value — the field name is legacy). If a clear annual or one-time price is stated, compute the annual value (e.g. '$5,000/year') and set _provenance.\"metrics.ltv\" = \"computed\". If stated verbatim ('LTV is $20k'), use that verbatim with _provenance \"transcript\". NEVER compute from goal language ('I want $30k/month'). null + _provenance \"missing\" if no price/LTV.",
     "close_rate": "string | null — current close rate, verbatim from transcript. NEVER infer. null + _provenance \"missing\" if not explicitly stated.",
     "show_rate":  "string | null — current show/attendance rate, verbatim from transcript. NEVER infer. null + _provenance \"missing\" if not explicitly stated."
   },
@@ -8711,6 +8745,11 @@ const server = http.createServer(async (req, res) => {
         // read path was dead — nobody could write the value the renderer looks
         // for, so a GENERIC beat could never be replaced.
         ...Array.from({ length: 9 }, (_, i) => [`slide_${i + 1}_headline`, `slide_${i + 1}_sub`]).flat(),
+        // Rep-chosen case studies per surface — arrays of airtable_record_id, in
+        // display order. Alex wanted the match automatic; reps want the final
+        // say, so auto-match is the default and a pin overrides it. An empty
+        // array means "pin nothing", which falls back to automatic.
+        'cs_pin_lead_list', 'cs_pin_invite', 'cs_pin_webinar', 'cs_pin_roi',
       ];
       const safeOverrides = {};
       // Color override values are inlined into onclick="..." attributes in

@@ -798,6 +798,25 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
 .v2-risk { background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.07); border-radius:9px; padding:11px 13px; }
 .v2-risk b { display:block; font-size:13px; color:#e4e4e7; margin-bottom:4px; font-weight:600; }
 .v2-risk span { font-size:12px; color:#a1a1aa; line-height:1.55; }
+
+/* ── Hermes console representation (V2, Calendar Invite → How it gets sent) ── */
+.hermes-shell { border:1px solid rgba(255,255,255,0.1); border-radius:12px; overflow:hidden; background:#0b0b0d; }
+.hermes-top { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:14px 16px; border-bottom:1px solid rgba(255,255,255,0.07); }
+.hermes-top h4 { margin:0; font-size:15px; font-weight:700; color:#e4e4e7; }
+.hermes-top p { margin:2px 0 0; font-size:11px; color:#71717a; }
+.hermes-new { background:#fff; color:#0a0a0a; font-size:11px; font-weight:700; padding:6px 11px; border-radius:7px; white-space:nowrap; }
+.hermes-tabs { display:flex; gap:18px; padding:0 16px; border-bottom:1px solid rgba(255,255,255,0.07); }
+.hermes-tabs span { font-size:12px; color:#52525b; padding:9px 0; }
+.hermes-tabs span.on { color:#e4e4e7; box-shadow:inset 0 -2px 0 #34b433; }
+.hermes-scroll { overflow-x:auto; }
+.hermes-table { width:100%; border-collapse:collapse; min-width:720px; }
+.hermes-table th { text-align:left; font-size:10px; font-weight:600; letter-spacing:.03em; color:#52525b; padding:10px 12px; border-bottom:1px solid rgba(255,255,255,0.07); white-space:nowrap; }
+.hermes-table td { padding:11px 12px; border-bottom:1px solid rgba(255,255,255,0.045); vertical-align:top; font-size:12px; color:#a1a1aa; }
+.hermes-name { font-size:12px; color:#e4e4e7; font-weight:500; }
+.hermes-meta { font-size:10px; color:#52525b; margin-top:2px; }
+.hermes-pill { display:inline-block; font-size:9px; font-weight:700; letter-spacing:.04em; padding:2px 7px; border-radius:999px; border:1px solid rgba(52,180,51,0.4); color:#34b433; white-space:nowrap; }
+.hermes-bar { height:3px; border-radius:2px; background:rgba(255,255,255,0.08); margin-top:6px; }
+.hermes-foot { padding:11px 14px; font-size:11px; color:#52525b; background:rgba(255,255,255,0.02); }
 </style>
 <script>
   // Runs before <body> is parsed so rep-only UI never flashes in for prospects.
@@ -940,7 +959,7 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
           <div class="source-row"><span class="source-row-label">Source</span><span class="source-row-value" id="si-call-source">—</span></div>
           <div class="source-row"><span class="source-row-label">Company</span><span class="source-row-value" id="si-call-company">—</span></div>
           <div class="source-row"><span class="source-row-label">Contact</span><span class="source-row-value" id="si-call-contact">—</span></div>
-          <div class="source-row"><span class="source-row-label">LTV</span><span class="source-row-value" id="si-call-ltv">—</span></div>
+          <div class="source-row"><span class="source-row-label">Year 1 revenue</span><span class="source-row-value" id="si-call-ltv">—</span></div>
           <div class="source-row"><span class="source-row-label">Close rate</span><span class="source-row-value" id="si-call-close">—</span></div>
           <div class="source-row"><span class="source-row-label">Pain</span><span class="source-row-value" id="si-call-pain">—</span></div>
           <div class="source-row"><span class="source-row-label">Goal</span><span class="source-row-value" id="si-call-goal">—</span></div>
@@ -1225,15 +1244,14 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
        design: this is a talking aid, not data. -->
   <div class="subtab-panel v2-only" data-subgroup="outreach" data-subidx="1">
     <div style="max-width:940px;margin:0 auto;padding:8px 0 40px;">
-      <h2 style="font-size:30px;font-weight:700;color:#fff;text-align:center;margin:24px 0 6px;">It sends itself.</h2>
-      <p style="text-align:center;color:#a1a1aa;font-size:15px;margin:0 0 32px;">Hermes puts the invite on their calendar. No sequence to build, nothing to connect.</p>
+      <h2 style="font-size:28px;font-weight:700;color:#fff;margin:24px 0 6px;">This is where it runs.</h2>
+      <p style="color:#a1a1aa;font-size:15px;margin:0 0 20px;line-height:1.6;">Our automated sending tool builds the campaigns, sends the invites and tracks every reply. You never log into it — this is what we run on your behalf.</p>
 
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px;margin-bottom:34px;">
-        <div class="v2-card"><div class="v2-step">1</div><strong>The list is built</strong><span>Your verified lead list from the previous tab — the same companies, already matched to your ICP.</span></div>
-        <div class="v2-card"><div class="v2-step">2</div><strong>Hermes sends the invite</strong><span>A real calendar invite lands in their inbox, not a marketing email. It shows up as an event, with your name on it.</span></div>
-        <div class="v2-card"><div class="v2-step">3</div><strong>They accept or decline</strong><span>Accepting IS the registration. There is no landing page, no form, no second step to lose them at.</span></div>
-        <div class="v2-card"><div class="v2-step">4</div><strong>Reminders run themselves</strong><span>Follow-ups go out on the schedule that has worked across every campaign we have run.</span></div>
-      </div>
+      <!-- A representation of the Hermes console, segmented by the prospect's own
+           ICP. Results columns are deliberately empty and the status reads READY:
+           the campaign has not sent yet, and inventing registration numbers here
+           would put fabricated results in front of a prospect. -->
+      <div id="hermes-console" class="hermes-shell"></div>
 
       <div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:20px 22px;">
         <div style="font-size:11px;font-weight:700;letter-spacing:.06em;color:#71717a;margin-bottom:10px;">WHY A CALENDAR INVITE AND NOT AN EMAIL</div>
@@ -1609,10 +1627,10 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
                never sees a default number that then swaps to the real one. -->
           <div class="roi-input-group">
             <div class="roi-field-big">
-              <div class="roi-field-label">Average Client LTV</div>
+              <div class="roi-field-label">Year 1 Revenue per Client</div>
               <div class="roi-field-input-row">
                 <span class="roi-field-affix">$</span>
-                <input class="roi-field-input roi-loading" type="number" id="ltv" value="" placeholder="LTV">
+                <input class="roi-field-input roi-loading" type="number" id="ltv" value="" placeholder="Year 1 revenue">
               </div>
             </div>
             <div class="roi-field-big">
@@ -2182,7 +2200,7 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
         <div class="pi-section-title">Metrics</div>
         <div class="pi-section-sub">Verbatim from the call. Pre-fills the ROI model.</div>
         <div class="pi-grid cols-3">
-          <label class="pi-label"><span>LTV</span><input id="pi-ltv" class="pi-input" type="text" data-brief="metrics.ltv" placeholder="$48,000"></label>
+          <label class="pi-label"><span>Year 1 revenue</span><input id="pi-ltv" class="pi-input" type="text" data-brief="metrics.ltv" placeholder="$48,000"></label>
           <label class="pi-label"><span>Close rate</span><input id="pi-close-rate" class="pi-input" type="text" data-brief="metrics.close_rate" placeholder="20%"></label>
           <label class="pi-label"><span>Show rate</span><input id="pi-show-rate" class="pi-input" type="text" data-brief="metrics.show_rate" placeholder="70%"></label>
         </div>
@@ -2443,6 +2461,8 @@ async function v2RenderRoiReal() {
 
   // Closest market first when we know the prospect's TAM.
   if (tam) rows.sort((a, b) => Math.abs((a.tam || 0) - tam) - Math.abs((b.tam || 0) - tam));
+  const allRoi = rows.slice();
+  rows = v2ApplyPins('roi', rows);
 
   const intro = document.getElementById('roi-real-intro');
   if (intro) {
@@ -2450,7 +2470,7 @@ async function v2RenderRoiReal() {
       + (tam ? ' Ordered by how close their market is to your ' + tam.toLocaleString() + '.' : '');
   }
 
-  list.innerHTML = rows.map(function (c, i) {
+  list.innerHTML = v2PickerHtml('roi', allRoi) + rows.map(function (c, i) {
     const closest = (i === 0 && tam)
       ? '<span style="font-size:9px;font-weight:700;letter-spacing:.05em;color:#34b433;border:1px solid rgba(52,180,51,0.45);border-radius:4px;padding:2px 6px;margin-bottom:8px;display:inline-block;">CLOSEST MARKET TO YOURS</span>' : '';
     const basis = c.stats_basis
@@ -2497,6 +2517,7 @@ async function v2RenderRoiReal() {
 // never blended with QS's offer — that blending is the failure Alex called out
 // at 42:28 ("mixing our offer with his offer").
 var _v2Invites = [];
+var _v2InviteAll = [];
 
 // event_description is stored as plain text on purpose (it has to render into
 // the portal, emails, PDFs and slides). Structure is conveyed by ALL-CAPS lines
@@ -2553,15 +2574,17 @@ async function v2RenderInviteSwap() {
   if (!bar) return;
   try {
     const r = await fetch('/api/case-studies?tab=' + encodeURIComponent('Calendar Invite'));
-    _v2Invites = (((await r.json()).case_studies) || []).filter(c => c.webinar_title && c.event_description);
-  } catch (e) { _v2Invites = []; }
-  if (!_v2Invites.length) { bar.style.display = 'none'; return; }
+    _v2InviteAll = (((await r.json()).case_studies) || []).filter(c => c.webinar_title && c.event_description);
+    _v2Invites = v2ApplyPins('invite', _v2InviteAll);
+  } catch (e) { _v2Invites = []; _v2InviteAll = []; }
+  if (!_v2InviteAll.length) { bar.style.display = 'none'; return; }
 
   const btn = (label, i) =>
     '<button onclick="v2ShowInvite(' + i + ')" style="cursor:pointer;font-family:inherit;font-size:12px;padding:6px 13px;border-radius:999px;' +
     'border:1px solid rgba(255,255,255,0.1);background:' + (i === -1 ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.03)') + ';' +
     'color:' + (i === -1 ? '#fff' : '#a1a1aa') + ';">' + v2Esc(label) + '</button>';
-  bar.innerHTML = '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">' +
+  bar.innerHTML = v2PickerHtml('invite', _v2InviteAll) +
+    '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">' +
     '<span style="font-size:12px;color:#71717a;margin-right:2px;">Show invite:</span>' +
     btn('Yours', -1) + _v2Invites.map((c, i) => btn(c.client_name, i)).join('') +
     '</div>';
@@ -2616,7 +2639,153 @@ async function v2OpenMatches() {
 // The fourth case-study surface. Unlike the invite swap there is no copy to
 // show: what proves this tab is the recording itself, so a client only appears
 // when one is actually on file.
+
+
+// ── V2: rep-chosen case studies ─────────────────────────────────────────────
+// Alex asked for the match to be automatic; reps want the final say. So the
+// auto-match is the default and a pin overrides it. Pins are stored per surface
+// as arrays of airtable_record_id in display order, and the picker only renders
+// in edit mode — a prospect never sees the controls.
+const V2_PIN_KEYS = { lead_list: 'cs_pin_lead_list', invite: 'cs_pin_invite', webinar: 'cs_pin_webinar', roi: 'cs_pin_roi' };
+
+function v2Pinned(surface) {
+  const ov = ((window.__V2_JOB || {}).extracted_data || {})._overrides || {};
+  const v = ov[V2_PIN_KEYS[surface]];
+  return Array.isArray(v) ? v.filter(Boolean) : [];
+}
+
+// Pinned ids first, in the rep's order; everything else follows so the picker
+// can still offer it. Callers take what they need off the front.
+function v2ApplyPins(surface, rows) {
+  const pins = v2Pinned(surface);
+  if (!pins.length) return rows;
+  const byId = {};
+  rows.forEach(r => { byId[r.airtable_record_id] = r; });
+  const picked = pins.map(id => byId[id]).filter(Boolean);
+  return picked.length ? picked : rows;
+}
+
+async function v2TogglePin(surface, recordId) {
+  const pins = v2Pinned(surface).slice();
+  const i = pins.indexOf(recordId);
+  if (i >= 0) pins.splice(i, 1); else pins.push(recordId);
+  try {
+    const r = await fetch('/api/jobs/' + encodeURIComponent(window.__JOB_ID) + '/overrides', {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ [V2_PIN_KEYS[surface]]: pins })
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    // Re-read so the in-page copy matches what was stored, then repaint.
+    const fresh = await fetch('/api/jobs/' + encodeURIComponent(window.__JOB_ID));
+    window.__V2_JOB = await fresh.json();
+    v2RepaintSurface(surface);
+  } catch (e) {
+    console.warn('[v2] could not save pin:', e.message);
+  }
+}
+
+function v2RepaintSurface(surface) {
+  if (surface === 'invite')    v2RenderInviteSwap();
+  if (surface === 'webinar')   v2RenderWebinarSwap();
+  if (surface === 'roi')       v2RenderRoiReal();
+  if (surface === 'lead_list') { /* modal reads pins on open */ }
+}
+
+/** Edit-mode chip row for choosing which clients appear on a surface. */
+function v2PickerHtml(surface, all) {
+  if (!IS_EDIT_MODE || !all.length) return '';
+  const pins = v2Pinned(surface);
+  const chips = all.map(function (c) {
+    const on = pins.indexOf(c.airtable_record_id) >= 0;
+    return '<button onclick="v2TogglePin(\'' + surface + '\',\'' + v2Esc(c.airtable_record_id) + '\')" ' +
+      'style="cursor:pointer;font-family:inherit;font-size:11px;padding:4px 10px;border-radius:999px;' +
+      'border:1px solid ' + (on ? 'rgba(52,180,51,0.5)' : 'rgba(255,255,255,0.1)') + ';' +
+      'background:' + (on ? 'rgba(52,180,51,0.14)' : 'rgba(255,255,255,0.03)') + ';' +
+      'color:' + (on ? '#34b433' : '#a1a1aa') + ';">' + (on ? '✓ ' : '') + v2Esc(c.client_name) + '</button>';
+  }).join('');
+  return '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:12px;padding:8px 10px;' +
+      'background:rgba(255,255,255,0.02);border:1px dashed rgba(255,255,255,0.12);border-radius:9px;">' +
+      '<span style="font-size:10px;font-weight:700;letter-spacing:.04em;color:#71717a;margin-right:4px;">REP ONLY · SHOW</span>' +
+      chips +
+      (pins.length ? '<button onclick="v2ClearPins(\'' + surface + '\')" style="cursor:pointer;font-family:inherit;font-size:11px;padding:4px 9px;border-radius:999px;border:1px solid rgba(255,255,255,0.1);background:none;color:#71717a;">auto</button>' : '') +
+    '</div>';
+}
+
+async function v2ClearPins(surface) {
+  try {
+    await fetch('/api/jobs/' + encodeURIComponent(window.__JOB_ID) + '/overrides', {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ [V2_PIN_KEYS[surface]]: [] })
+    });
+    const fresh = await fetch('/api/jobs/' + encodeURIComponent(window.__JOB_ID));
+    window.__V2_JOB = await fresh.json();
+    v2RepaintSurface(surface);
+  } catch (e) { console.warn('[v2] could not clear pins:', e.message); }
+}
+
+// ── V2: Hermes console representation ───────────────────────────────────────
+// A faithful render of the console we run the campaign in, segmented by the
+// prospect's OWN ICP so they see their campaign rather than a generic tool tour.
+//
+// Deliberately no invented results: status is READY, progress is 0 sent, and the
+// registration / attendance columns are empty. The campaign has not run, and
+// putting plausible-looking registration numbers in front of a prospect would be
+// fabricating results.
+function v2RenderHermesConsole() {
+  const box = document.getElementById('hermes-console');
+  if (!box) return;
+  const job = window.__V2_JOB || {};
+  const ext = job.extracted_data || {};
+  const icp = ext.icp || {};
+  const gen = ext._generated || {};
+  const ov  = ext._overrides || {};
+
+  // Segments are how Hermes actually splits a campaign: by industry, then by
+  // the seats being targeted. Fall back to the geography or a single segment.
+  let segments = [];
+  const inds = Array.isArray(icp.apollo_keyword) ? icp.apollo_keyword
+             : (icp.apollo_keyword ? [icp.apollo_keyword] : []);
+  if (inds.length) segments = inds.slice(0, 4).map(String);
+  else if (Array.isArray(icp.apollo_titles) && icp.apollo_titles.length) segments = icp.apollo_titles.slice(0, 4).map(String);
+  if (!segments.length) segments = ['Your ICP'];
+
+  const geo = Array.isArray(icp.apollo_geography) && icp.apollo_geography.length
+    ? icp.apollo_geography.slice(0, 2).join(' + ') : null;
+
+  // Contact counts come from the planned monthly outreach — a real number the
+  // rep set or Apollo produced — spread across the segments.
+  const outreach = _v2ParseNum(ov.recommended_outreach != null ? ov.recommended_outreach : gen.recommendedOutreach) || 0;
+  const per = outreach ? Math.round(outreach / segments.length) : null;
+
+  const company = job.prospect_company || 'your';
+  const rows = segments.map(function (seg, i) {
+    const label = seg.charAt(0).toUpperCase() + seg.slice(1) + (geo ? ' · ' + geo : '');
+    return '<tr>' +
+      '<td><div class="hermes-name">' + v2Esc(company) + ' — ' + v2Esc(label) + '</div>' +
+        '<div class="hermes-meta">' + (per ? per.toLocaleString() + ' contacts' : 'list building') + ' · invite + 3 reminders</div>' +
+        '<div class="hermes-bar"></div></td>' +
+      '<td><span class="hermes-pill">READY</span></td>' +
+      '<td>' + (per ? '0 / ' + per.toLocaleString() + ' sent' : '—') + '</td>' +
+      '<td>—</td><td>—</td><td>—</td>' +
+    '</tr>';
+  }).join('');
+
+  box.innerHTML =
+    '<div class="hermes-top">' +
+      '<div><h4>Campaigns</h4><p>Create and manage invitation campaigns</p></div>' +
+      '<span class="hermes-new">+ New campaign</span>' +
+    '</div>' +
+    '<div class="hermes-tabs"><span class="on">Campaigns</span><span>WebinarGeek</span><span>Bulk Actions</span></div>' +
+    '<div class="hermes-scroll"><table class="hermes-table"><thead><tr>' +
+      '<th>Campaign</th><th>Status</th><th>Progress</th><th>Regs</th><th>Attendees</th><th>Webinar date</th>' +
+    '</tr></thead><tbody>' + rows + '</tbody></table></div>' +
+    '<div class="hermes-foot">' + segments.length + ' campaign' + (segments.length === 1 ? '' : 's') +
+      ' segmented from your ICP' + (outreach ? ', ' + outreach.toLocaleString() + ' contacts a month' : '') +
+      ' — run by us, on your calendar. Results fill in here once it sends.</div>';
+}
+
 var _v2Webinars = [];
+var _v2WebinarAll = [];
 
 function v2ShowWebinar(idx) {
   const deck   = document.getElementById('v2-deck');
@@ -2634,10 +2803,12 @@ function v2ShowWebinar(idx) {
   const head = c.headshot_url
     ? '<img src="' + v2Esc(c.headshot_url) + '" alt="" style="width:48px;height:48px;border-radius:50%;object-fit:cover;flex:none;">'
     : '<div class="v2-proof-initials" style="width:48px;height:48px;">' + v2Esc(_v2Initials(c.client_name)) + '</div>';
-  const funnel = (c.total_attendees != null || c.total_booked_calls != null)
-    ? '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:16px;margin-top:20px;padding-top:18px;border-top:1px solid rgba(255,255,255,0.08);">' +
+  // Attendees and runs only. The booking ratio belongs on the ROI tab, where it
+  // is floor-gated; showing it here would put a 0.5% row next to a 9.9% one and
+  // invite the prospect to do that arithmetic.
+  const funnel = (c.total_attendees != null || c.webinars_run != null)
+    ? '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:16px;margin-top:20px;padding-top:18px;border-top:1px solid rgba(255,255,255,0.08);">' +
         '<div><div style="font-size:24px;font-weight:700;color:#fff;">' + _v2Num(c.total_attendees) + '</div><div style="font-size:11px;color:#71717a;">people in the room</div></div>' +
-        '<div><div style="font-size:24px;font-weight:700;color:#34b433;">' + _v2Num(c.total_booked_calls) + '</div><div style="font-size:11px;color:#71717a;">sales calls booked</div></div>' +
         (c.webinars_run ? '<div><div style="font-size:24px;font-weight:700;color:#fff;">' + c.webinars_run + '</div><div style="font-size:11px;color:#71717a;">webinars run</div></div>' : '') +
       '</div>'
     : '';
@@ -2661,15 +2832,17 @@ async function v2RenderWebinarSwap() {
   try {
     const r = await fetch('/api/case-studies?tab=' + encodeURIComponent('Webinar Experience'));
     // No recording means nothing to show — this tab is proved by the tape.
-    _v2Webinars = (((await r.json()).case_studies) || []).filter(c => c.recording_url);
-  } catch (e) { _v2Webinars = []; }
-  if (!_v2Webinars.length) { bar.style.display = 'none'; return; }
+    _v2WebinarAll = (((await r.json()).case_studies) || []).filter(c => c.recording_url);
+    _v2Webinars = v2ApplyPins('webinar', _v2WebinarAll);
+  } catch (e) { _v2Webinars = []; _v2WebinarAll = []; }
+  if (!_v2WebinarAll.length) { bar.style.display = 'none'; return; }
 
   const btn = (label, i) =>
     '<button onclick="v2ShowWebinar(' + i + ')" style="cursor:pointer;font-family:inherit;font-size:12px;padding:6px 13px;border-radius:999px;' +
     'border:1px solid rgba(255,255,255,0.1);background:' + (i === -1 ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.03)') + ';' +
     'color:' + (i === -1 ? '#fff' : '#a1a1aa') + ';">' + v2Esc(label) + '</button>';
-  bar.innerHTML = '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">' +
+  bar.innerHTML = v2PickerHtml('webinar', _v2WebinarAll) +
+    '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">' +
     '<span style="font-size:12px;color:#71717a;margin-right:2px;">Show webinar:</span>' +
     btn('Yours', -1) + _v2Webinars.map((c, i) => btn(c.client_name, i)).join('') +
     '</div>';
@@ -2765,6 +2938,7 @@ function applyPortalVersion() {
   v2RenderInviteSwap();
   v2RenderWebinarSwap();
   v2RenderCaseStudyLibrary();
+  v2RenderHermesConsole();
 }
 
 function switchSubTab(group, idx) {
@@ -3882,7 +4056,7 @@ function wireROIEditMode() {
 
   // ─ LTV / Show Rate / Close Rate inputs — auto-save as overrides on change ─
   const roiInputs = [
-    { id: 'ltv',        field: 'roi_ltv',        hint: 'Average Client LTV — changes save to this job' },
+    { id: 'ltv',        field: 'roi_ltv',        hint: 'Year 1 revenue per client — changes save to this job' },
     { id: 'show-rate',  field: 'roi_show_rate',   hint: 'Sales Call Show Rate — changes save to this job' },
     { id: 'close-rate', field: 'roi_close_rate',  hint: 'Sales Close Rate — changes save to this job' },
   ];
@@ -4028,7 +4202,7 @@ if (document.readyState === 'loading') {
       window.PORTAL_VERSION = (job && job.portal_version) === 'v2' ? 'v2' : 'v1';
       applyPortalVersion();
       window.__V2_JOB = job;
-      if (window.IS_V2 && window.IS_V2()) { v2RenderDeck(job); v2RenderRoiReal(); }
+      if (window.IS_V2 && window.IS_V2()) { v2RenderDeck(job); v2RenderRoiReal(); v2RenderHermesConsole(); }
       const tasks = job.tasks || {};
 
       // ── DIAGNOSTIC — remove after debugging ─────────────────────────────
