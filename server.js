@@ -8706,6 +8706,11 @@ const server = http.createServer(async (req, res) => {
         // that pull from CSS vars) anything tied to --prospect-primary etc.
         // Empty string clears the override.
         'webinar_primary_color','webinar_secondary_color','webinar_accent_color',
+        // Per-beat deck overrides. composeWebinarSlides() reads these
+        // (slide_1_headline … slide_9_sub); without them on this allow-list the
+        // read path was dead — nobody could write the value the renderer looks
+        // for, so a GENERIC beat could never be replaced.
+        ...Array.from({ length: 9 }, (_, i) => [`slide_${i + 1}_headline`, `slide_${i + 1}_sub`]).flat(),
       ];
       const safeOverrides = {};
       // Color override values are inlined into onclick="..." attributes in

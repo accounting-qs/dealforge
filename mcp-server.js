@@ -719,6 +719,49 @@ const TOOLS = [
     }
   },
   {
+    name: 'list_case_studies',
+    title: 'List case-study clients',
+    description:
+      'The Quantum Scaling case-study library, mirrored from Airtable. Use it to answer "which client should I show ' +
+      'on this tab?". Pass `tab` to get only the clients cleared for that surface — that clearance is a hard gate, ' +
+      'not a hint: a client with weak invite-to-registration never appears on Calendar Invite even when they are ' +
+      'strong proof elsewhere. Pass `job_id` instead to get the two auto-matched clients for that job (one on ' +
+      'market size, one on offering). ' +
+      'NOTE: these are QS\'s OWN clients, used to prove OUR results to the prospect. The webinar deck\'s proof beat ' +
+      'is the opposite direction — one of the PROSPECT\'S clients — and must never be filled from this library.',
+    annotations: { readOnlyHint: true, openWorldHint: false },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tab: { type: 'string', enum: ['Lead List / TAM', 'Calendar Invite', 'Webinar Experience', 'ROI Model'],
+               description: 'Only clients cleared for this surface.' },
+        job_id: { type: 'string', description: 'Return the auto-matched clients for this job instead of the full list.' },
+        limit: { type: 'integer', minimum: 1, maximum: 100, default: 50 }
+      }
+    },
+    async run(args) {
+      if (args.job_id) {
+        const id = jobId({ job_id: args.job_id });
+        return fromApi(await callApi('GET', `/api/case-studies?match=${encodeURIComponent(id)}`));
+      }
+      const qs = new URLSearchParams();
+      if (args.tab) qs.set('tab', args.tab);
+      qs.set('limit', String(args.limit || 50));
+      const r = await callApi('GET', `/api/case-studies?${qs.toString()}`);
+      if (!r.ok) return fromApi(r);
+      // The full records carry long narrative fields; keep the list readable.
+      const slim = (r.data.case_studies || []).map(c => ({
+        client_name: c.client_name, company: c.company, tam: c.tam,
+        webinar_title: c.webinar_title, has_invite_copy: !!c.event_description,
+        recording_url: c.recording_url, key_quote: c.key_quote,
+        cleared_for: c.use_on_tabs, stats_basis: c.stats_basis,
+        total_attendees: c.total_attendees, total_booked_calls: c.total_booked_calls,
+        invite_to_reg_pct: c.invite_to_reg_pct
+      }));
+      return okResult({ count: slim.length, case_studies: slim });
+    }
+  },
+  {
     name: 'worker_status',
     title: 'Pipeline worker status',
     description:
@@ -876,7 +919,8 @@ const TOOLS = [
       'values everywhere in the portal and survive pipeline reruns. Covers headline TAM numbers, the ROI calculator ' +
       'inputs, per-variant calendar copy (A/B/C), brand colours and the three image slots. ' +
       'Pass an empty string to clear a field back to the AI value. Setting tam_total or recommended_outreach ' +
-      'automatically clears a now-stale full_market_cycle.',
+      'automatically clears a now-stale full_market_cycle. slide_N_headline / slide_N_sub (N = 1-9) override the ' +
+      'nine-beat webinar deck — use these to replace a beat that came back badged GENERIC.',
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: 'object', required: ['job_id'],
@@ -896,6 +940,15 @@ const TOOLS = [
         webinar_secondary_color: { type: 'string', description: 'Hex, or "" to clear.' },
         webinar_accent_color:    { type: 'string', description: 'Hex, or "" to clear.' },
         webinar_logo_url:        { type: 'string' },
+        slide_1_headline: { type: 'string' }, slide_1_sub: { type: 'string' },
+        slide_2_headline: { type: 'string' }, slide_2_sub: { type: 'string' },
+        slide_3_headline: { type: 'string' }, slide_3_sub: { type: 'string' },
+        slide_4_headline: { type: 'string' }, slide_4_sub: { type: 'string' },
+        slide_5_headline: { type: 'string' }, slide_5_sub: { type: 'string' },
+        slide_6_headline: { type: 'string' }, slide_6_sub: { type: 'string' },
+        slide_7_headline: { type: 'string' }, slide_7_sub: { type: 'string' },
+        slide_8_headline: { type: 'string' }, slide_8_sub: { type: 'string' },
+        slide_9_headline: { type: 'string' }, slide_9_sub: { type: 'string' },
         webinar_hero_image_url:  { type: 'string' },
         webinar_headshot_url:    { type: 'string' }
       }
