@@ -863,12 +863,18 @@ function composeWebinarSlides(job) {
                       ? icp.apollo_titles
                       : String(icp.role || '').split(','))
                     .map(t => cap(String(t || '').trim())).filter(Boolean).slice(0, 3);
-      const sub = [ind && `In ${ind}`, icp.company_size && `typically ${icp.company_size}`]
-                    .filter(Boolean).join(', ');
+      // company_size is free text and is often a whole sentence ("Any size — from
+      // small independent security firms to large system integrators"), which
+      // read as "In security services, typically Any size — from small…".
+      // A short value is spliced; anything sentence-shaped stands on its own.
+      const size = String(icp.company_size || '').trim().replace(/\.$/, '');
+      const sizeIsShort = size && size.length <= 26 && !/[—–;,]/.test(size);
+      const subBits = [ind && `In ${ind}`, sizeIsShort && `typically ${size}`].filter(Boolean);
+      const lineBits = [!sizeIsShort && size, geo].filter(Boolean);
       body = seats.length
         ? { headline: `Built for ${seats.join(' · ')}`,
-            sub: sub ? sub + '.' : 'Built for one seat, not a general audience.',
-            line: geo ? `${geo}` : '' }
+            sub: subBits.length ? subBits.join(', ') + '.' : 'Built for one seat, not a general audience.',
+            line: lineBits.join(' · ') }
         : null;
       source = body ? 'icp' : 'fallback';
       if (!body) body = { headline: 'This is for a specific seat.', sub: 'If it is not yours, the next ninety minutes will not land.', line: '' };
@@ -876,7 +882,12 @@ function composeWebinarSlides(job) {
       const written = wb[meta.key];
       const hasCopy = written && typeof written === 'object' && (written.headline || (written.risks && written.risks.length));
       body   = hasCopy ? written : webinarFallback(meta.key, ctx);
-      source = hasCopy ? 'extracted' : 'fallback';
+      // The proof beat is the one slide a generic fallback cannot carry. "A
+      // client who already did this" in the middle of an otherwise specific
+      // deck reads as unfinished, and a rep would have to talk over it. It is
+      // marked 'missing' rather than 'fallback' so the portal can hide it from
+      // the prospect while still showing the rep that it needs filling.
+      source = hasCopy ? 'extracted' : (meta.key === 'case_study' ? 'missing' : 'fallback');
     }
 
     return {
@@ -10154,8 +10165,40 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  const filePath = path.join(__dirname, urlPath);
+  // Percent-decode, then contain. These ship together on purpose: the handler
+  // previously joined the RAW url, so any file with a space in its name was
+  // unreachable (/assets/a%20b.png looked for a file literally called
+  // "a%20b.png"). Decoding alone would make traversal easier, not harder —
+  // %2e%2e%2f decodes to ../ — so the containment check is not optional.
+  let decodedPath;
+  try {
+    decodedPath = decodeURIComponent(urlPath);
+  } catch (e) {
+    res.writeHead(400); res.end('Bad request'); return;   // malformed escape
+  }
+  // A NUL byte truncates the path at the filesystem layer.
+  if (decodedPath.indexOf('\0') !== -1) { res.writeHead(400); res.end('Bad request'); return; }
+
+  const filePath = path.resolve(__dirname, '.' + path.posix.normalize(decodedPath));
+  if (filePath !== __dirname && !filePath.startsWith(__dirname + path.sep)) {
+    console.warn(`[static] blocked path escape: ${JSON.stringify(urlPath)}`);
+    res.writeHead(404); res.end('Not found'); return;
+  }
   const ext      = path.extname(filePath);
+
+  // Allow-list, not deny-list. Containment stops escapes out of the app, but
+  // everything INSIDE the app was still served — .env, server.js, the specs,
+  // the prompts. Grepping every served page shows exactly one local asset
+  // reference (/assets/calendar-automation.png); the pages are otherwise
+  // self-contained, and /lloyd-avatar has its own route. So the whole legitimate
+  // surface is: images under /assets, and root-level .html.
+  const rel     = filePath.slice(__dirname.length + 1);
+  const isAsset = /^assets[\\/][^\\/]+$/.test(rel) && /^\.(png|jpe?g|webp|svg|gif|ico)$/i.test(ext);
+  const isPage  = !rel.includes(path.sep) && ext.toLowerCase() === '.html';
+  if (!isAsset && !isPage) {
+    res.writeHead(404); res.end('Not found'); return;
+  }
+
   fs.readFile(filePath, (err, data) => {
     if (err) { res.writeHead(404); res.end('Not found'); return; }
     const isHtml = (MIME[ext] || '').includes('html');

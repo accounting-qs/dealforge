@@ -799,24 +799,6 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
 .v2-risk b { display:block; font-size:13px; color:#e4e4e7; margin-bottom:4px; font-weight:600; }
 .v2-risk span { font-size:12px; color:#a1a1aa; line-height:1.55; }
 
-/* ── Hermes console representation (V2, Calendar Invite → How it gets sent) ── */
-.hermes-shell { border:1px solid rgba(255,255,255,0.1); border-radius:12px; overflow:hidden; background:#0b0b0d; }
-.hermes-top { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:14px 16px; border-bottom:1px solid rgba(255,255,255,0.07); }
-.hermes-top h4 { margin:0; font-size:15px; font-weight:700; color:#e4e4e7; }
-.hermes-top p { margin:2px 0 0; font-size:11px; color:#71717a; }
-.hermes-new { background:#fff; color:#0a0a0a; font-size:11px; font-weight:700; padding:6px 11px; border-radius:7px; white-space:nowrap; }
-.hermes-tabs { display:flex; gap:18px; padding:0 16px; border-bottom:1px solid rgba(255,255,255,0.07); }
-.hermes-tabs span { font-size:12px; color:#52525b; padding:9px 0; }
-.hermes-tabs span.on { color:#e4e4e7; box-shadow:inset 0 -2px 0 #34b433; }
-.hermes-scroll { overflow-x:auto; }
-.hermes-table { width:100%; border-collapse:collapse; min-width:720px; }
-.hermes-table th { text-align:left; font-size:10px; font-weight:600; letter-spacing:.03em; color:#52525b; padding:10px 12px; border-bottom:1px solid rgba(255,255,255,0.07); white-space:nowrap; }
-.hermes-table td { padding:11px 12px; border-bottom:1px solid rgba(255,255,255,0.045); vertical-align:top; font-size:12px; color:#a1a1aa; }
-.hermes-name { font-size:12px; color:#e4e4e7; font-weight:500; }
-.hermes-meta { font-size:10px; color:#52525b; margin-top:2px; }
-.hermes-pill { display:inline-block; font-size:9px; font-weight:700; letter-spacing:.04em; padding:2px 7px; border-radius:999px; border:1px solid rgba(52,180,51,0.4); color:#34b433; white-space:nowrap; }
-.hermes-bar { height:3px; border-radius:2px; background:rgba(255,255,255,0.08); margin-top:6px; }
-.hermes-foot { padding:11px 14px; font-size:11px; color:#52525b; background:rgba(255,255,255,0.02); }
 </style>
 <script>
   // Runs before <body> is parsed so rep-only UI never flashes in for prospects.
@@ -1247,11 +1229,15 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
       <h2 style="font-size:28px;font-weight:700;color:#fff;margin:24px 0 6px;">This is where it runs.</h2>
       <p style="color:#a1a1aa;font-size:15px;margin:0 0 20px;line-height:1.6;">Our automated sending tool builds the campaigns, sends the invites and tracks every reply. You never log into it — this is what we run on your behalf.</p>
 
-      <!-- A representation of the Hermes console, segmented by the prospect's own
-           ICP. Results columns are deliberately empty and the status reads READY:
-           the campaign has not sent yet, and inventing registration numbers here
-           would put fabricated results in front of a prospect. -->
-      <div id="hermes-console" class="hermes-shell"></div>
+      <!-- The real sending console. Replaces the HTML reconstruction that stood
+           in before the screenshot existed: showing the actual tool is more
+           convincing than a rebuild of it, and there is no risk of the mock
+           drifting from what the tool really looks like. -->
+      <figure style="margin:0;border:1px solid rgba(255,255,255,0.1);border-radius:12px;overflow:hidden;background:#0b0b0d;">
+        <img src="/assets/calendar-automation.png" alt="The invitation campaigns console: each campaign segmented by industry, with contacts, send progress, registrations and attendance tracked per campaign."
+             loading="lazy" style="display:block;width:100%;height:auto;">
+      </figure>
+      <p style="font-size:11px;color:#52525b;margin:8px 0 22px;">Live campaigns from our sending console. Yours is set up the same way — segmented by the industries in your ICP.</p>
 
       <div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:20px 22px;">
         <div style="font-size:11px;font-weight:700;letter-spacing:.06em;color:#71717a;margin-bottom:10px;">WHY A CALENDAR INVITE AND NOT AN EMAIL</div>
@@ -2377,7 +2363,10 @@ function v2PaintSlide() {
   if (!box || !_v2Slides.length) return;
   const s = _v2Slides[_v2SlideIdx];
   const generic = s.source === 'fallback'
-    ? '<span class="v2-generic" title="No transcript or website signal for this beat — replace before sending">GENERIC</span>' : '';
+    ? '<span class="v2-generic" title="No transcript or website signal for this beat — replace before sending">GENERIC</span>'
+    : s.source === 'missing'
+      ? '<span class="v2-generic" style="color:#f87171;border-color:rgba(248,113,113,0.45);" title="The call gave us no client result for this beat. The prospect does not see this slide until you write it.">NEEDS PROOF · HIDDEN FROM PROSPECT</span>'
+      : '';
 
   let extra = '';
   if (s.risks && s.risks.length) {
@@ -2395,7 +2384,7 @@ function v2PaintSlide() {
 
   box.innerHTML =
     '<div class="v2-deck-stage">' +
-      '<div class="v2-deck-step">' + s.n + ' / ' + _v2Slides.length + ' · ' + v2Esc(s.step).toUpperCase() + generic + '</div>' +
+      '<div class="v2-deck-step">' + (_v2SlideIdx + 1) + ' / ' + _v2Slides.length + ' · ' + v2Esc(s.step).toUpperCase() + generic + '</div>' +
       '<h2 class="v2-deck-head">' + v2Esc(s.headline) + '</h2>' +
       (s.sub  ? '<p class="v2-deck-sub">'  + v2Esc(s.sub)  + '</p>' : '') +
       (s.line ? '<p class="v2-deck-line">' + v2Esc(s.line) + '</p>' : '') +
@@ -2404,14 +2393,21 @@ function v2PaintSlide() {
     '<div class="v2-deck-nav">' +
       _v2Slides.map((x, i) =>
         '<button class="v2-deck-pill' + (i === _v2SlideIdx ? ' active' : '') + '" onclick="v2GoSlide(' + i + ')">' +
-          '<span class="num">' + x.n + '</span>' + v2Esc(x.step) +
+          '<span class="num">' + (i + 1) + '</span>' + v2Esc(x.step) +
           (x.source === 'fallback' ? '<span style="color:#fbbf24;font-size:10px;">•</span>' : '') +
+          (x.source === 'missing'  ? '<span style="color:#f87171;font-size:10px;">•</span>' : '') +
         '</button>').join('') +
     '</div>';
 }
 
 function v2RenderDeck(job) {
-  _v2Slides = (job && job.webinar_slides) || [];
+  const all = (job && job.webinar_slides) || [];
+  // A beat marked 'missing' has no prospect-specific copy and no fallback worth
+  // showing — currently only Proof, where "a client who already did this" in the
+  // middle of an otherwise specific deck reads as unfinished. Hidden from the
+  // prospect; kept in edit mode so the rep can see it needs filling and write it
+  // with the slide override.
+  _v2Slides = IS_EDIT_MODE ? all : all.filter(x => x.source !== 'missing');
   _v2SlideIdx = 0;
   if (_v2Slides.length) v2PaintSlide();
 }
@@ -2723,67 +2719,6 @@ async function v2ClearPins(surface) {
   } catch (e) { console.warn('[v2] could not clear pins:', e.message); }
 }
 
-// ── V2: Hermes console representation ───────────────────────────────────────
-// A faithful render of the console we run the campaign in, segmented by the
-// prospect's OWN ICP so they see their campaign rather than a generic tool tour.
-//
-// Deliberately no invented results: status is READY, progress is 0 sent, and the
-// registration / attendance columns are empty. The campaign has not run, and
-// putting plausible-looking registration numbers in front of a prospect would be
-// fabricating results.
-function v2RenderHermesConsole() {
-  const box = document.getElementById('hermes-console');
-  if (!box) return;
-  const job = window.__V2_JOB || {};
-  const ext = job.extracted_data || {};
-  const icp = ext.icp || {};
-  const gen = ext._generated || {};
-  const ov  = ext._overrides || {};
-
-  // Segments are how Hermes actually splits a campaign: by industry, then by
-  // the seats being targeted. Fall back to the geography or a single segment.
-  let segments = [];
-  const inds = Array.isArray(icp.apollo_keyword) ? icp.apollo_keyword
-             : (icp.apollo_keyword ? [icp.apollo_keyword] : []);
-  if (inds.length) segments = inds.slice(0, 4).map(String);
-  else if (Array.isArray(icp.apollo_titles) && icp.apollo_titles.length) segments = icp.apollo_titles.slice(0, 4).map(String);
-  if (!segments.length) segments = ['Your ICP'];
-
-  const geo = Array.isArray(icp.apollo_geography) && icp.apollo_geography.length
-    ? icp.apollo_geography.slice(0, 2).join(' + ') : null;
-
-  // Contact counts come from the planned monthly outreach — a real number the
-  // rep set or Apollo produced — spread across the segments.
-  const outreach = _v2ParseNum(ov.recommended_outreach != null ? ov.recommended_outreach : gen.recommendedOutreach) || 0;
-  const per = outreach ? Math.round(outreach / segments.length) : null;
-
-  const company = job.prospect_company || 'your';
-  const rows = segments.map(function (seg, i) {
-    const label = seg.charAt(0).toUpperCase() + seg.slice(1) + (geo ? ' · ' + geo : '');
-    return '<tr>' +
-      '<td><div class="hermes-name">' + v2Esc(company) + ' — ' + v2Esc(label) + '</div>' +
-        '<div class="hermes-meta">' + (per ? per.toLocaleString() + ' contacts' : 'list building') + ' · invite + 3 reminders</div>' +
-        '<div class="hermes-bar"></div></td>' +
-      '<td><span class="hermes-pill">READY</span></td>' +
-      '<td>' + (per ? '0 / ' + per.toLocaleString() + ' sent' : '—') + '</td>' +
-      '<td>—</td><td>—</td><td>—</td>' +
-    '</tr>';
-  }).join('');
-
-  box.innerHTML =
-    '<div class="hermes-top">' +
-      '<div><h4>Campaigns</h4><p>Create and manage invitation campaigns</p></div>' +
-      '<span class="hermes-new">+ New campaign</span>' +
-    '</div>' +
-    '<div class="hermes-tabs"><span class="on">Campaigns</span><span>WebinarGeek</span><span>Bulk Actions</span></div>' +
-    '<div class="hermes-scroll"><table class="hermes-table"><thead><tr>' +
-      '<th>Campaign</th><th>Status</th><th>Progress</th><th>Regs</th><th>Attendees</th><th>Webinar date</th>' +
-    '</tr></thead><tbody>' + rows + '</tbody></table></div>' +
-    '<div class="hermes-foot">' + segments.length + ' campaign' + (segments.length === 1 ? '' : 's') +
-      ' segmented from your ICP' + (outreach ? ', ' + outreach.toLocaleString() + ' contacts a month' : '') +
-      ' — run by us, on your calendar. Results fill in here once it sends.</div>';
-}
-
 var _v2Webinars = [];
 var _v2WebinarAll = [];
 
@@ -2938,7 +2873,6 @@ function applyPortalVersion() {
   v2RenderInviteSwap();
   v2RenderWebinarSwap();
   v2RenderCaseStudyLibrary();
-  v2RenderHermesConsole();
 }
 
 function switchSubTab(group, idx) {
@@ -4202,7 +4136,7 @@ if (document.readyState === 'loading') {
       window.PORTAL_VERSION = (job && job.portal_version) === 'v2' ? 'v2' : 'v1';
       applyPortalVersion();
       window.__V2_JOB = job;
-      if (window.IS_V2 && window.IS_V2()) { v2RenderDeck(job); v2RenderRoiReal(); v2RenderHermesConsole(); }
+      if (window.IS_V2 && window.IS_V2()) { v2RenderDeck(job); v2RenderRoiReal(); }
       const tasks = job.tasks || {};
 
       // ── DIAGNOSTIC — remove after debugging ─────────────────────────────
