@@ -8761,6 +8761,10 @@ const server = http.createServer(async (req, res) => {
         // say, so auto-match is the default and a pin overrides it. An empty
         // array means "pin nothing", which falls back to automatic.
         'cs_pin_lead_list', 'cs_pin_invite', 'cs_pin_webinar', 'cs_pin_roi',
+        // Which panel the tab OPENS on. 'yours' (the prospect's own) or an
+        // airtable_record_id. Without this the prospect always landed on their
+        // own invite and the rep had no way to lead with a client's instead.
+        'cs_default_invite', 'cs_default_webinar',
       ];
       const safeOverrides = {};
       // Color override values are inlined into onclick="..." attributes in

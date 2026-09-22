@@ -799,6 +799,23 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
 .v2-risk b { display:block; font-size:13px; color:#e4e4e7; margin-bottom:4px; font-weight:600; }
 .v2-risk span { font-size:12px; color:#a1a1aa; line-height:1.55; }
 
+
+/* ── V2 rep picker (Calendar Invite / Webinar Experience example chooser) ── */
+.v2-pick { border:1px dashed rgba(255,255,255,0.16); border-radius:11px; background:rgba(255,255,255,0.02); padding:12px 14px; margin-bottom:14px; }
+.v2-pick-head { display:flex; align-items:baseline; gap:8px; margin-bottom:10px; flex-wrap:wrap; }
+.v2-pick-head b { font-size:12px; color:#e4e4e7; font-weight:600; }
+.v2-pick-head span { font-size:10px; font-weight:700; letter-spacing:.05em; color:#fbbf24; border:1px solid rgba(251,191,36,0.4); border-radius:4px; padding:1px 5px; }
+.v2-pick-hint { font-size:11px; color:#71717a; margin-left:auto; }
+.v2-pick-grid { display:grid; grid-template-columns:auto auto 1fr auto auto; gap:0 10px; align-items:center; }
+.v2-pick-grid > div { padding:6px 0; border-bottom:1px solid rgba(255,255,255,0.045); }
+.v2-pick-grid .hdr { font-size:9px; font-weight:700; letter-spacing:.05em; color:#52525b; padding-bottom:5px; }
+.v2-pick-name { font-size:13px; color:#e4e4e7; }
+.v2-pick-co { font-size:11px; color:#71717a; }
+.v2-pick-metric { font-size:11px; color:#71717a; white-space:nowrap; }
+.v2-pick-ord { font-size:10px; font-weight:700; color:#34b433; min-width:14px; text-align:center; }
+.v2-pick input[type=checkbox], .v2-pick input[type=radio] { width:14px; height:14px; accent-color:#34b433; cursor:pointer; }
+.v2-pick-foot { display:flex; align-items:center; gap:10px; margin-top:10px; flex-wrap:wrap; }
+.v2-pick-reset { cursor:pointer; font-family:inherit; font-size:11px; padding:4px 10px; border-radius:7px; border:1px solid rgba(255,255,255,0.12); background:none; color:#a1a1aa; }
 </style>
 <script>
   // Runs before <body> is parsed so rep-only UI never flashes in for prospects.
@@ -2466,7 +2483,9 @@ async function v2RenderRoiReal() {
       + (tam ? ' Ordered by how close their market is to your ' + tam.toLocaleString() + '.' : '');
   }
 
-  list.innerHTML = v2PickerHtml('roi', allRoi) + rows.map(function (c, i) {
+  list.innerHTML = v2PickerHtml('roi', allRoi, function (c) {
+      return c.attend_to_booked_pct != null ? c.attend_to_booked_pct + '% booked' : '';
+    }) + rows.map(function (c, i) {
     const closest = (i === 0 && tam)
       ? '<span style="font-size:9px;font-weight:700;letter-spacing:.05em;color:#34b433;border:1px solid rgba(52,180,51,0.45);border-radius:4px;padding:2px 6px;margin-bottom:8px;display:inline-block;">CLOSEST MARKET TO YOURS</span>' : '';
     const basis = c.stats_basis
@@ -2536,7 +2555,7 @@ function v2FmtInvite(text) {
 function v2ShowInvite(idx) {
   const own    = document.getElementById('invite-own-view');
   const client = document.getElementById('invite-client-view');
-  document.querySelectorAll('#invite-swap-bar button').forEach(function (b, i) {
+  document.querySelectorAll('#invite-swap-bar .v2-swap-row button').forEach(function (b, i) {
     b.classList.toggle('active', i === idx + 1);
     b.style.background = (i === idx + 1) ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.03)';
     b.style.color = (i === idx + 1) ? '#fff' : '#a1a1aa';
@@ -2579,11 +2598,15 @@ async function v2RenderInviteSwap() {
     '<button onclick="v2ShowInvite(' + i + ')" style="cursor:pointer;font-family:inherit;font-size:12px;padding:6px 13px;border-radius:999px;' +
     'border:1px solid rgba(255,255,255,0.1);background:' + (i === -1 ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.03)') + ';' +
     'color:' + (i === -1 ? '#fff' : '#a1a1aa') + ';">' + v2Esc(label) + '</button>';
-  bar.innerHTML = v2PickerHtml('invite', _v2InviteAll) +
-    '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">' +
+  bar.innerHTML = v2PickerHtml('invite', _v2InviteAll, function (c) {
+      return c.invite_to_reg_pct != null ? c.invite_to_reg_pct + '% registered' : '';
+    }) +
+    '<div class="v2-swap-row" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">' +
     '<span style="font-size:12px;color:#71717a;margin-right:2px;">Show invite:</span>' +
     btn('Yours', -1) + _v2Invites.map((c, i) => btn(c.client_name, i)).join('') +
     '</div>';
+  // Open on whatever the rep set, not always the prospect's own.
+  v2ShowInvite(v2DefaultIndex('invite', _v2Invites));
 }
 
 // ── V2: Lead List case-study matches ────────────────────────────────────────
@@ -2687,23 +2710,91 @@ function v2RepaintSurface(surface) {
   if (surface === 'lead_list') { /* modal reads pins on open */ }
 }
 
-/** Edit-mode chip row for choosing which clients appear on a surface. */
-function v2PickerHtml(surface, all) {
+const V2_DEFAULT_KEYS = { invite: 'cs_default_invite', webinar: 'cs_default_webinar' };
+
+function v2DefaultFor(surface) {
+  const ov = ((window.__V2_JOB || {}).extracted_data || {})._overrides || {};
+  return ov[V2_DEFAULT_KEYS[surface]] || 'yours';
+}
+
+/**
+ * Index of the panel a surface should open on: -1 for the prospect's own,
+ * otherwise the position of the defaulted client within the shown list. Falls
+ * back to 'yours' if the defaulted client is no longer shown, so un-ticking a
+ * client cannot leave the tab opening on nothing.
+ */
+function v2DefaultIndex(surface, shown) {
+  const def = v2DefaultFor(surface);
+  if (def === 'yours') return -1;
+  const i = shown.findIndex(c => c.airtable_record_id === def);
+  return i >= 0 ? i : -1;
+}
+
+async function v2SetDefault(surface, value) {
+  try {
+    await fetch('/api/jobs/' + encodeURIComponent(window.__JOB_ID) + '/overrides', {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ [V2_DEFAULT_KEYS[surface]]: value })
+    });
+    const fresh = await fetch('/api/jobs/' + encodeURIComponent(window.__JOB_ID));
+    window.__V2_JOB = await fresh.json();
+    v2RepaintSurface(surface);
+  } catch (e) { console.warn('[v2] could not save default:', e.message); }
+}
+
+/**
+ * Edit-mode panel for choosing which examples appear on a surface and which one
+ * the tab opens on. Two separate decisions, so two separate controls: a tick to
+ * include, a radio to make it the default. Rendered only in edit mode — the
+ * prospect never sees any of it.
+ */
+function v2PickerHtml(surface, all, metricFn) {
   if (!IS_EDIT_MODE || !all.length) return '';
   const pins = v2Pinned(surface);
-  const chips = all.map(function (c) {
-    const on = pins.indexOf(c.airtable_record_id) >= 0;
-    return '<button onclick="v2TogglePin(\'' + surface + '\',\'' + v2Esc(c.airtable_record_id) + '\')" ' +
-      'style="cursor:pointer;font-family:inherit;font-size:11px;padding:4px 10px;border-radius:999px;' +
-      'border:1px solid ' + (on ? 'rgba(52,180,51,0.5)' : 'rgba(255,255,255,0.1)') + ';' +
-      'background:' + (on ? 'rgba(52,180,51,0.14)' : 'rgba(255,255,255,0.03)') + ';' +
-      'color:' + (on ? '#34b433' : '#a1a1aa') + ';">' + (on ? '✓ ' : '') + v2Esc(c.client_name) + '</button>';
-  }).join('');
-  return '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:12px;padding:8px 10px;' +
-      'background:rgba(255,255,255,0.02);border:1px dashed rgba(255,255,255,0.12);border-radius:9px;">' +
-      '<span style="font-size:10px;font-weight:700;letter-spacing:.04em;color:#71717a;margin-right:4px;">REP ONLY · SHOW</span>' +
-      chips +
-      (pins.length ? '<button onclick="v2ClearPins(\'' + surface + '\')" style="cursor:pointer;font-family:inherit;font-size:11px;padding:4px 9px;border-radius:999px;border:1px solid rgba(255,255,255,0.1);background:none;color:#71717a;">auto</button>' : '') +
+  const def  = v2DefaultFor(surface);
+  const auto = !pins.length;
+  // ROI shows every chosen client side by side, so there is nothing to "open
+  // on" — the radio column only makes sense for the swap surfaces.
+  const hasDefault = !!V2_DEFAULT_KEYS[surface];
+
+  const row = function (c) {
+    const on  = auto || pins.indexOf(c.airtable_record_id) >= 0;
+    const ord = auto ? '' : String(pins.indexOf(c.airtable_record_id) + 1);
+    const isDef = def === c.airtable_record_id;
+    return '<div><input type="checkbox" ' + (on ? 'checked' : '') +
+             ' onchange="v2TogglePin(\'' + surface + '\',\'' + v2Esc(c.airtable_record_id) + '\')"></div>' +
+           '<div class="v2-pick-ord">' + ord + '</div>' +
+           '<div><div class="v2-pick-name">' + v2Esc(c.client_name) + '</div>' +
+             '<div class="v2-pick-co">' + v2Esc(v2CompanyName(c.company)) + '</div></div>' +
+           '<div class="v2-pick-metric">' + (metricFn ? metricFn(c) : '') + '</div>' +
+           (hasDefault
+             ? '<div><input type="radio" name="v2def-' + surface + '" ' + (isDef ? 'checked' : '') +
+               (on ? '' : ' disabled') +
+               ' onchange="v2SetDefault(\'' + surface + '\',\'' + v2Esc(c.airtable_record_id) + '\')"></div>'
+             : '<div></div>');
+  };
+
+  return '<div class="v2-pick">' +
+      '<div class="v2-pick-head"><b>Which examples to show</b><span>REP ONLY</span>' +
+        '<span class="v2-pick-hint">' + (auto ? 'Showing all — tick to choose' : pins.length + ' chosen, in order') + '</span></div>' +
+      '<div class="v2-pick-grid">' +
+        '<div class="hdr">Show</div><div class="hdr">#</div><div class="hdr">Client</div><div class="hdr"></div><div class="hdr">' + (hasDefault ? 'Opens' : '') + '</div>' +
+        (hasDefault
+          ? '<div></div><div></div><div><div class="v2-pick-name">Yours</div>' +
+            '<div class="v2-pick-co">' + v2Esc(((window.__V2_JOB || {}).prospect_company) || 'This prospect') + '</div></div>' +
+            '<div class="v2-pick-metric">always shown first</div>' +
+            '<div><input type="radio" name="v2def-' + surface + '" ' + (def === 'yours' ? 'checked' : '') +
+              ' onchange="v2SetDefault(\'' + surface + '\',\'yours\')"></div>'
+          : '') +
+        all.map(row).join('') +
+      '</div>' +
+      '<div class="v2-pick-foot">' +
+        (auto ? '' : '<button class="v2-pick-reset" onclick="v2ClearPins(\'' + surface + '\')">Show all again</button>') +
+        (def !== 'yours' ? '<button class="v2-pick-reset" onclick="v2SetDefault(\'' + surface + '\',\'yours\')">Open on yours</button>' : '') +
+        '<span style="font-size:11px;color:#52525b;">' +
+          (hasDefault ? 'The prospect sees only the ticked examples, opening on whichever row is set to Opens.'
+                      : 'The prospect sees only the ticked examples, strongest result first.') + '</span>' +
+      '</div>' +
     '</div>';
 }
 
@@ -2725,7 +2816,7 @@ var _v2WebinarAll = [];
 function v2ShowWebinar(idx) {
   const deck   = document.getElementById('v2-deck');
   const client = document.getElementById('webinar-client-view');
-  document.querySelectorAll('#webinar-swap-bar button').forEach(function (b, i) {
+  document.querySelectorAll('#webinar-swap-bar .v2-swap-row button').forEach(function (b, i) {
     const on = (i === idx + 1);
     b.style.background = on ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.03)';
     b.style.color = on ? '#fff' : '#a1a1aa';
@@ -2776,11 +2867,14 @@ async function v2RenderWebinarSwap() {
     '<button onclick="v2ShowWebinar(' + i + ')" style="cursor:pointer;font-family:inherit;font-size:12px;padding:6px 13px;border-radius:999px;' +
     'border:1px solid rgba(255,255,255,0.1);background:' + (i === -1 ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.03)') + ';' +
     'color:' + (i === -1 ? '#fff' : '#a1a1aa') + ';">' + v2Esc(label) + '</button>';
-  bar.innerHTML = v2PickerHtml('webinar', _v2WebinarAll) +
-    '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">' +
+  bar.innerHTML = v2PickerHtml('webinar', _v2WebinarAll, function (c) {
+      return c.total_attendees != null ? _v2Num(c.total_attendees) + ' attended' : '';
+    }) +
+    '<div class="v2-swap-row" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">' +
     '<span style="font-size:12px;color:#71717a;margin-right:2px;">Show webinar:</span>' +
     btn('Yours', -1) + _v2Webinars.map((c, i) => btn(c.client_name, i)).join('') +
     '</div>';
+  v2ShowWebinar(v2DefaultIndex('webinar', _v2Webinars));
 }
 
 // ── V2: Case Studies tab — the live library ─────────────────────────────────
