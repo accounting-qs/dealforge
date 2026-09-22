@@ -679,7 +679,7 @@ function passesBookedFloor(c) {
   return (b / a) * 100 >= ROI_MIN_BOOKED_PCT;
 }
 
-async function listCaseStudies({ tab = null, limit = 100 } = {}) {
+async function listCaseStudies({ tab = null, limit = 100, applyFloor = true } = {}) {
   let path = `/rest/v1/case_study_clients?select=${CASE_STUDY_COLS}&order=client_name.asc&limit=${Math.min(Number(limit) || 100, 500)}`;
   // PostgREST array-contains. use_on_tabs is a Postgres text[], so the literal
   // has to be {"Calendar Invite"} — curly braces with the element quoted. JSON
@@ -693,10 +693,19 @@ async function listCaseStudies({ tab = null, limit = 100 } = {}) {
   const r = await supabaseRequest('GET', path);
   let rows = (Array.isArray(r.body) ? r.body : []).map(withFunnel);
   if (tab && RATIO_GATED_TABS.includes(tab)) {
-    const before = rows.length;
-    rows = rows.filter(passesBookedFloor);
-    if (rows.length !== before) {
-      console.log(`[case-studies] ${tab}: hid ${before - rows.length} client(s) below the ${ROI_MIN_BOOKED_PCT}% booked floor`);
+    // Always label, so a rep pinning a sub-floor client can see that is what
+    // they are doing rather than discovering it in front of a prospect.
+    rows = rows.map(c => ({ ...c, below_booked_floor: !passesBookedFloor(c), booked_floor_pct: ROI_MIN_BOOKED_PCT }));
+    if (applyFloor) {
+      // The floor governs the AUTOMATIC pick, not the rep's. applyFloor=false is
+      // how the rep-facing picker gets the full list: a weak overall ratio can
+      // still be the right example for a prospect in that client's vertical,
+      // and that judgement is the rep's to make.
+      const before = rows.length;
+      rows = rows.filter(c => !c.below_booked_floor);
+      if (rows.length !== before) {
+        console.log(`[case-studies] ${tab}: hid ${before - rows.length} client(s) below the ${ROI_MIN_BOOKED_PCT}% booked floor`);
+      }
     }
     // Strongest first — the point of the tab is the best real comparison.
     rows.sort((a, b) => (b.attend_to_booked_pct || 0) - (a.attend_to_booked_pct || 0));
@@ -7240,7 +7249,10 @@ const server = http.createServer(async (req, res) => {
       const qs   = new URLSearchParams(req.url.includes('?') ? req.url.split('?')[1] : '');
       const tab  = qs.get('tab');
       const match = qs.get('match');
-      const all  = await listCaseStudies({ tab, limit: qs.get('limit') || 100 });
+      // floor=0 returns sub-floor clients too, labelled. Defaults to floored so
+      // every other consumer (the prospect-facing render, MCP) stays safe.
+      const applyFloor = qs.get('floor') !== '0';
+      const all  = await listCaseStudies({ tab, limit: qs.get('limit') || 100, applyFloor });
       if (match) {
         const job = await getJob(match);
         if (!job) { res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'No such job' })); return; }

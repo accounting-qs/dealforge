@@ -2463,7 +2463,10 @@ async function v2RenderRoiReal() {
 
   let rows = [];
   try {
-    const r = await fetch('/api/case-studies?tab=' + encodeURIComponent('ROI Model'));
+    // floor=0 so the PICKER can offer every cleared client. The floor still
+    // governs the automatic pick below — it decides the default, it does not
+    // veto the rep.
+    const r = await fetch('/api/case-studies?tab=' + encodeURIComponent('ROI Model') + '&floor=0');
     rows = ((await r.json()).case_studies) || [];
   } catch (e) { console.warn('[v2] roi comparison unavailable:', e.message); }
 
@@ -2473,9 +2476,14 @@ async function v2RenderRoiReal() {
   }
 
   // Closest market first when we know the prospect's TAM.
-  if (tam) rows.sort((a, b) => Math.abs((a.tam || 0) - tam) - Math.abs((b.tam || 0) - tam));
+  // The picker offers everything; what is DISPLAYED depends on whether the rep
+  // has chosen. Pinned wins outright — a weak overall ratio can still be the
+  // right example for a prospect in that client's vertical, and that call is
+  // the rep's. With nothing pinned, the floor picks for them.
   const allRoi = rows.slice();
-  rows = v2ApplyPins('roi', rows);
+  const roiPins = v2Pinned('roi');
+  rows = roiPins.length ? v2ApplyPins('roi', rows) : rows.filter(c => !c.below_booked_floor);
+  if (tam) rows.sort((a, b) => Math.abs((a.tam || 0) - tam) - Math.abs((b.tam || 0) - tam));
 
   const intro = document.getElementById('roi-real-intro');
   if (intro) {
@@ -2484,12 +2492,19 @@ async function v2RenderRoiReal() {
   }
 
   list.innerHTML = v2PickerHtml('roi', allRoi, function (c) {
-      return c.attend_to_booked_pct != null ? c.attend_to_booked_pct + '% booked' : '';
+      if (c.attend_to_booked_pct == null) return '';
+      // Flagged, not hidden: if a rep pins a sub-floor client it should be a
+      // deliberate choice, not a surprise mid-call.
+      return c.attend_to_booked_pct + '% booked' +
+        (c.below_booked_floor ? ' <span style="color:#f87171;">· below ' + (c.booked_floor_pct || 5) + '% bar</span>' : '');
     }) + rows.map(function (c, i) {
     const closest = (i === 0 && tam)
       ? '<span style="font-size:9px;font-weight:700;letter-spacing:.05em;color:#34b433;border:1px solid rgba(52,180,51,0.45);border-radius:4px;padding:2px 6px;margin-bottom:8px;display:inline-block;">CLOSEST MARKET TO YOURS</span>' : '';
     const basis = c.stats_basis
       ? '<span style="font-size:9px;font-weight:700;letter-spacing:.04em;color:#71717a;border:1px solid rgba(255,255,255,0.12);border-radius:4px;padding:2px 6px;">' + v2Esc(c.stats_basis) + '</span>' : '';
+    // Rep-side reminder only — never shown to the prospect.
+    const weak = (IS_EDIT_MODE && c.below_booked_floor)
+      ? '<span style="font-size:9px;font-weight:700;letter-spacing:.04em;color:#f87171;border:1px solid rgba(248,113,113,0.45);border-radius:4px;padding:2px 6px;margin-left:6px;">YOU PINNED THIS · ' + c.attend_to_booked_pct + '% BOOKED</span>' : '';
     const logo = c.logo_url ? '<img src="' + v2Esc(c.logo_url) + '" alt="" style="max-height:34px;max-width:130px;object-fit:contain;opacity:.9;">' : '';
     const head = c.headshot_url
       ? '<img src="' + v2Esc(c.headshot_url) + '" alt="" style="width:44px;height:44px;border-radius:50%;object-fit:cover;flex:none;">'
@@ -2513,7 +2528,7 @@ async function v2RenderRoiReal() {
         stat(_v2Num(c.total_booked_calls), 'sales calls booked', true) +
         stat(c.attend_to_booked_pct != null ? c.attend_to_booked_pct + '%' : '—', 'of attendees booked', false) +
       '</div>' +
-      (basis ? '<div style="margin-top:12px;">' + basis + '</div>' : '') +
+      (basis || weak ? '<div style="margin-top:12px;">' + basis + weak + '</div>' : '') +
     '</div>';
   }).join('');
 
