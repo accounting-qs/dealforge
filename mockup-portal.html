@@ -768,33 +768,30 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
 .v2-proof-initials { width:38px; height:38px; border-radius:50%; flex:none; display:flex; align-items:center; justify-content:center; font-size:13px; font-weight:700; color:#a1a1aa; background:rgba(255,255,255,0.07); }
 
 .v2-deck-stage {
+  flex:1; display:flex; flex-direction:column; justify-content:center; overflow-y:auto;
   background: linear-gradient(150deg, rgba(52,180,51,0.14), rgba(255,255,255,0.02));
-  border: 1px solid rgba(255,255,255,0.09);
-  border-radius: 14px; padding: 40px 42px; min-height: 300px;
-  display: flex; flex-direction: column; justify-content: center;
+  border-radius:14px; padding:32px 36px;
 }
-.v2-deck-step { font-size:11px; font-weight:700; letter-spacing:.07em; color:#34b433; margin-bottom:14px; }
-.v2-deck-head { font-size:32px; font-weight:700; color:#fff; line-height:1.2; margin:0 0 12px; }
-.v2-deck-sub  { font-size:18px; color:#d4d4d8; line-height:1.5; margin:0 0 14px; }
-.v2-deck-line { font-size:14px; color:#a1a1aa; line-height:1.65; margin:0; max-width:70ch; }
-.v2-deck-nav  { display:flex; flex-wrap:wrap; gap:6px; margin-top:16px; }
-.v2-deck-pill {
-  display:flex; align-items:center; gap:7px; cursor:pointer;
+.v2-deck-step { font-size:11px; font-weight:700; letter-spacing:.07em; color:#34b433; margin-bottom:12px; }
+.v2-deck-head { font-size:27px; font-weight:700; color:#fff; line-height:1.2; margin:0 0 10px; }
+.v2-deck-sub  { font-size:16px; color:#d4d4d8; line-height:1.5; margin:0 0 12px; }
+.v2-deck-line { font-size:13px; color:#a1a1aa; line-height:1.6; margin:0; max-width:70ch; }
+.v2-deck-nav  { display:flex; align-items:center; gap:8px; margin-top:14px; flex-wrap:wrap; }
+.v2-deck-arrow { cursor:pointer; font-family:inherit; font-size:13px; font-weight:600; padding:7px 14px;
+  border-radius:8px; border:1px solid rgba(255,255,255,0.12); background:rgba(255,255,255,0.05); color:#e4e4e7; white-space:nowrap; }
+.v2-deck-arrow:disabled { opacity:.35; cursor:default; }
+.v2-deck-count { font-size:11px; color:#71717a; margin:0 4px; white-space:nowrap; }
+.v2-deck-pills { display:flex; gap:5px; flex-wrap:wrap; flex:1; }
+.v2-deck-pill { display:flex; align-items:center; gap:5px; cursor:pointer; font-family:inherit;
   background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.08);
-  border-radius:999px; padding:6px 12px; font-size:12px; color:#a1a1aa;
-  font-family:inherit;
-}
+  border-radius:999px; padding:4px 9px; font-size:11px; color:#a1a1aa; }
 .v2-deck-pill.active { background:rgba(255,255,255,0.10); color:#fff; border-color:rgba(255,255,255,0.2); }
-.v2-deck-pill .num {
-  width:18px; height:18px; border-radius:50%; flex:none; display:flex;
-  align-items:center; justify-content:center; font-size:10px; font-weight:700;
-  background:rgba(255,255,255,0.10); color:#e4e4e7;
-}
+.v2-deck-pill .num { width:16px; height:16px; border-radius:50%; flex:none; display:flex;
+  align-items:center; justify-content:center; font-size:9px; font-weight:700;
+  background:rgba(255,255,255,0.10); color:#e4e4e7; }
 .v2-deck-pill.active .num { background:#34b433; color:#0a0a0a; }
-.v2-generic {
-  font-size:9px; font-weight:700; letter-spacing:.05em; color:#fbbf24;
-  border:1px solid rgba(251,191,36,0.4); border-radius:4px; padding:1px 5px; margin-left:8px;
-}
+.v2-generic { font-size:9px; font-weight:700; letter-spacing:.05em; color:#fbbf24;
+  border:1px solid rgba(251,191,36,0.4); border-radius:4px; padding:1px 5px; margin-left:8px; }
 .v2-risk { background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.07); border-radius:9px; padding:11px 13px; }
 .v2-risk b { display:block; font-size:13px; color:#e4e4e7; margin-bottom:4px; font-weight:600; }
 .v2-risk span { font-size:12px; color:#a1a1aa; line-height:1.55; }
@@ -1308,9 +1305,8 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
        client webinar recordings here. Only clients cleared for this tab appear,
        and only ones that actually have a recording on file. -->
   <div class="v2-only" id="webinar-swap-bar" style="display:none;margin-bottom:14px;"></div>
-  <div class="v2-only" id="v2-deck" style="display:none;"></div>
   <div id="webinar-client-view" style="display:none;"></div>
-  <div class="webinar-wrap v1-when-v2-hidden">
+  <div class="webinar-wrap">
     <div class="webinar-top-bar">
       <div style="display:flex;align-items:center;gap:16px;">
         <div class="live-badge"><div class="live-dot"></div><span class="live-text">LIVE</span></div>
@@ -2374,59 +2370,97 @@ function v2GoSlide(i) {
   _v2SlideIdx = Math.max(0, Math.min(i, _v2Slides.length - 1));
   v2PaintSlide();
 }
+function v2NextSlide() { v2GoSlide(_v2SlideIdx + 1); }
+function v2PrevSlide() { v2GoSlide(_v2SlideIdx - 1); }
 
+/**
+ * Paints the current beat.
+ *
+ * Beat 1 is the V1 hero — the existing #slide-0 node, shown untouched, so its
+ * layout, brand colours, host block and stats bar stay exactly what V1
+ * produced. Every other beat paints into one generated .slide sibling inside
+ * .slide-area, which is what keeps the slide dimensions and the live chat panel
+ * beside it on every beat. The deck used to replace the whole webinar shell,
+ * which threw all three away.
+ */
 function v2PaintSlide() {
-  const box = document.getElementById('v2-deck');
-  if (!box || !_v2Slides.length) return;
-  const s = _v2Slides[_v2SlideIdx];
-  const generic = s.source === 'fallback'
-    ? '<span class="v2-generic" title="No transcript or website signal for this beat — replace before sending">GENERIC</span>'
-    : s.source === 'missing'
-      ? '<span class="v2-generic" style="color:#f87171;border-color:rgba(248,113,113,0.45);" title="The call gave us no client result for this beat. The prospect does not see this slide until you write it.">NEEDS PROOF · HIDDEN FROM PROSPECT</span>'
-      : '';
+  const hero  = document.getElementById('slide-0');
+  const stage = document.getElementById('v2-beat-slide');
+  const nav   = document.getElementById('v2-deck-nav');
+  if (!stage || !nav) return;
 
-  let extra = '';
-  if (s.risks && s.risks.length) {
-    extra = '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:10px;margin-top:16px;">' +
-      s.risks.map(r => '<div class="v2-risk"><b>' + v2Esc(r.risk) + '</b><span>' + v2Esc(r.answer) + '</span></div>').join('') +
+  const s = _v2Slides[_v2SlideIdx] || {};
+  const isHero = !!s.hero;
+  if (hero) hero.classList.toggle('active', isHero);
+  stage.classList.toggle('active', !isHero);
+
+  if (!isHero) {
+    const generic = s.source === 'fallback'
+      ? '<span class="v2-generic" title="No transcript or website signal for this beat — replace before sending">GENERIC</span>'
+      : s.source === 'missing'
+        ? '<span class="v2-generic" style="color:#f87171;border-color:rgba(248,113,113,0.45);" title="The call gave us no client result. The prospect does not see this slide until you write it.">NEEDS PROOF · HIDDEN FROM PROSPECT</span>'
+        : '';
+    let extra = '';
+    if (s.risks && s.risks.length) {
+      extra = '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:9px;margin-top:14px;">' +
+        s.risks.map(r => '<div class="v2-risk"><b>' + v2Esc(r.risk) + '</b><span>' + v2Esc(r.answer) + '</span></div>').join('') + '</div>';
+    } else if (s.before || s.after) {
+      extra = '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:9px;margin-top:14px;">' +
+        '<div class="v2-risk"><b>Before</b><span>' + v2Esc(s.before || '') + '</span></div>' +
+        '<div class="v2-risk"><b>After</b><span>' + v2Esc(s.after || '') + '</span></div></div>';
+    }
+    if (s.cta) {
+      extra += '<div style="margin-top:16px;"><span style="display:inline-block;background:#34b433;color:#0a0a0a;font-weight:700;font-size:13px;padding:9px 18px;border-radius:8px;">' + v2Esc(s.cta) + '</span></div>';
+    }
+    stage.innerHTML =
+      '<div class="v2-deck-stage">' +
+        '<div class="v2-deck-step">' + v2Esc(s.step || '').toUpperCase() + generic + '</div>' +
+        '<h2 class="v2-deck-head">' + v2Esc(s.headline || '') + '</h2>' +
+        (s.sub  ? '<p class="v2-deck-sub">'  + v2Esc(s.sub)  + '</p>' : '') +
+        (s.line ? '<p class="v2-deck-line">' + v2Esc(s.line) + '</p>' : '') +
+        extra +
       '</div>';
-  } else if (s.before || s.after) {
-    extra = '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:10px;margin-top:16px;">' +
-      '<div class="v2-risk"><b>Before</b><span>' + v2Esc(s.before || '') + '</span></div>' +
-      '<div class="v2-risk"><b>After</b><span>' + v2Esc(s.after || '') + '</span></div></div>';
-  }
-  if (s.cta) {
-    extra += '<div style="margin-top:18px;"><span style="display:inline-block;background:#34b433;color:#0a0a0a;font-weight:700;font-size:13px;padding:9px 18px;border-radius:8px;">' + v2Esc(s.cta) + '</span></div>';
   }
 
-  box.innerHTML =
-    '<div class="v2-deck-stage">' +
-      '<div class="v2-deck-step">' + (_v2SlideIdx + 1) + ' / ' + _v2Slides.length + ' · ' + v2Esc(s.step).toUpperCase() + generic + '</div>' +
-      '<h2 class="v2-deck-head">' + v2Esc(s.headline) + '</h2>' +
-      (s.sub  ? '<p class="v2-deck-sub">'  + v2Esc(s.sub)  + '</p>' : '') +
-      (s.line ? '<p class="v2-deck-line">' + v2Esc(s.line) + '</p>' : '') +
-      extra +
-    '</div>' +
-    '<div class="v2-deck-nav">' +
-      _v2Slides.map((x, i) =>
-        '<button class="v2-deck-pill' + (i === _v2SlideIdx ? ' active' : '') + '" onclick="v2GoSlide(' + i + ')">' +
-          '<span class="num">' + (i + 1) + '</span>' + v2Esc(x.step) +
-          (x.source === 'fallback' ? '<span style="color:#fbbf24;font-size:10px;">•</span>' : '') +
-          (x.source === 'missing'  ? '<span style="color:#f87171;font-size:10px;">•</span>' : '') +
-        '</button>').join('') +
+  nav.innerHTML =
+    '<button class="v2-deck-arrow" onclick="v2PrevSlide()"' + (_v2SlideIdx === 0 ? ' disabled' : '') + '>&lsaquo; Back</button>' +
+    '<span class="v2-deck-count">' + (_v2SlideIdx + 1) + ' / ' + _v2Slides.length + '</span>' +
+    '<button class="v2-deck-arrow" onclick="v2NextSlide()"' + (_v2SlideIdx === _v2Slides.length - 1 ? ' disabled' : '') + '>Next &rsaquo;</button>' +
+    '<div class="v2-deck-pills">' +
+      _v2Slides.map(function (x, i) {
+        return '<button class="v2-deck-pill' + (i === _v2SlideIdx ? ' active' : '') + '" onclick="v2GoSlide(' + i + ')" title="' + v2Esc(x.step || '') + '">' +
+          '<span class="num">' + (i + 1) + '</span>' + v2Esc(x.step || '') +
+          (x.source === 'fallback' ? '<span style="color:#fbbf24;font-size:10px;">&bull;</span>' : '') +
+          (x.source === 'missing'  ? '<span style="color:#f87171;font-size:10px;">&bull;</span>' : '') +
+        '</button>';
+      }).join('') +
     '</div>';
 }
 
 function v2RenderDeck(job) {
+  const area = document.querySelector('#tab-2 .slide-area');
+  if (!area) return;
   const all = (job && job.webinar_slides) || [];
   // A beat marked 'missing' has no prospect-specific copy and no fallback worth
   // showing — currently only Proof, where "a client who already did this" in the
   // middle of an otherwise specific deck reads as unfinished. Hidden from the
-  // prospect; kept in edit mode so the rep can see it needs filling and write it
-  // with the slide override.
-  _v2Slides = IS_EDIT_MODE ? all : all.filter(x => x.source !== 'missing');
+  // prospect; kept in edit mode so the rep can see it needs filling.
+  const beats = IS_EDIT_MODE ? all : all.filter(x => x.source !== 'missing');
+  // The V1 hero leads: it is the title slide, and V1 is what reps already know.
+  _v2Slides = [{ hero: true, step: 'Title', source: 'v1' }].concat(beats);
   _v2SlideIdx = 0;
-  if (_v2Slides.length) v2PaintSlide();
+
+  if (!document.getElementById('v2-beat-slide')) {
+    const stage = document.createElement('div');
+    stage.className = 'slide';
+    stage.id = 'v2-beat-slide';
+    area.appendChild(stage);
+    const nav = document.createElement('div');
+    nav.className = 'v2-deck-nav';
+    nav.id = 'v2-deck-nav';
+    area.appendChild(nav);
+  }
+  v2PaintSlide();
 }
 
 
@@ -2829,8 +2863,11 @@ var _v2Webinars = [];
 var _v2WebinarAll = [];
 
 function v2ShowWebinar(idx) {
-  const deck   = document.getElementById('v2-deck');
+  // The deck now lives inside .webinar-wrap rather than in a standalone
+  // container, so swapping to a client's recording hides the whole shell.
+  const deck   = document.querySelector('#tab-2 .webinar-wrap');
   const client = document.getElementById('webinar-client-view');
+  if (!deck || !client) return;
   document.querySelectorAll('#webinar-swap-bar .v2-swap-row button').forEach(function (b, i) {
     const on = (i === idx + 1);
     b.style.background = on ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.03)';
