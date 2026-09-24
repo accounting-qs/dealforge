@@ -1272,11 +1272,11 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
   <div class="subtab-panel v2-only" data-subgroup="outreach" data-subidx="2">
     <div style="max-width:940px;margin:0 auto;padding:8px 0 40px;">
       <h2 style="font-size:30px;font-weight:700;color:#fff;text-align:center;margin:24px 0 6px;">You don't run any of this.</h2>
-      <p style="text-align:center;color:#a1a1aa;font-size:15px;margin:0 0 32px;">A trained assistant does. Around five hours a week.</p>
+      <p style="text-align:center;color:#a1a1aa;font-size:15px;margin:0 0 32px;">A trained assistant does, on our automated sending tool. Around five hours of their week — near none of yours.</p>
 
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px;margin-bottom:34px;">
         <div class="v2-card"><strong>We bring one, or train yours</strong><span>We place a trained assistant with you, or train someone already on your team. Either way you are not screening candidates.</span></div>
-        <div class="v2-card"><strong>Pre-trained on the system</strong><span>They arrive knowing the invite flow, the tracking and the follow-up.</span></div>
+        <div class="v2-card"><strong>Pre-trained on the tool</strong><span>They arrive knowing the sending tool, the invite flow, the tracking and the follow-up. Nothing for you to learn.</span></div>
         <div class="v2-card"><strong>You show up to present</strong><span>The webinar is yours. Everything around it isn't your job.</span></div>
       </div>
 
@@ -2427,6 +2427,82 @@ function v2PrevSlide() { v2GoSlide(_v2SlideIdx - 1); }
  * beside it on every beat. The deck used to replace the whole webinar shell,
  * which threw all three away.
  */
+
+// ── V2: beat visuals ────────────────────────────────────────────────────────
+// A schematic motif per beat, plus real data where we actually have it. The
+// motifs are deliberately unlabelled shapes: a chart with numbers on it would
+// either repeat the copy or invent figures, and this deck is shown to a
+// prospect's real audience. Anything numeric here comes from the job.
+const V2_MOTIF = {
+  'The bold claim':       '<path d="M8 44 L28 24 L44 34 L64 8" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/><circle cx="64" cy="8" r="4.5" fill="currentColor"/><path d="M8 56h56" stroke="currentColor" stroke-width="1" opacity=".25"/>',
+  'Who this is for':      '<circle cx="18" cy="20" r="7" fill="currentColor" opacity=".9"/><circle cx="36" cy="20" r="7" fill="currentColor" opacity=".55"/><circle cx="54" cy="20" r="7" fill="currentColor" opacity=".3"/><path d="M6 40h60M6 50h40" stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity=".45"/>',
+  'The problem':          '<path d="M6 32h22" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/><path d="M44 32h22" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/><path d="M30 22v20M42 22v20" stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity=".4" stroke-dasharray="3 4"/><circle cx="36" cy="32" r="3" fill="currentColor" opacity=".6"/>',
+  'The cost of waiting':  '<rect x="8"  y="42" width="10" height="14" rx="2" fill="currentColor" opacity=".3"/><rect x="24" y="34" width="10" height="22" rx="2" fill="currentColor" opacity=".5"/><rect x="40" y="24" width="10" height="32" rx="2" fill="currentColor" opacity=".7"/><rect x="56" y="12" width="10" height="44" rx="2" fill="currentColor"/>',
+  'What good looks like': '<path d="M8 50 C24 50 30 22 64 14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/><circle cx="64" cy="14" r="6" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="64" cy="14" r="2.5" fill="currentColor"/>',
+  'Proof':                '<rect x="6"  y="18" width="24" height="28" rx="4" fill="none" stroke="currentColor" stroke-width="2" opacity=".45"/><rect x="42" y="12" width="24" height="40" rx="4" fill="currentColor" opacity=".85"/><path d="M32 32h8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M37 28l4 4-4 4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>',
+  'How it goes':          '<path d="M10 32h54" stroke="currentColor" stroke-width="2" opacity=".3"/><circle cx="10" cy="32" r="5" fill="currentColor"/><circle cx="37" cy="32" r="5" fill="currentColor" opacity=".6"/><circle cx="64" cy="32" r="5" fill="none" stroke="currentColor" stroke-width="2"/>',
+  'What could go wrong':  '<path d="M36 8l22 8v16c0 14-10 22-22 26-12-4-22-12-22-26V16z" fill="none" stroke="currentColor" stroke-width="2.2"/><path d="M27 33l7 7 14-15" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>',
+  'The close':            '<path d="M8 32h44" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/><path d="M44 22l10 10-10 10" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/><circle cx="62" cy="32" r="4" fill="currentColor"/>'
+};
+
+// apollo_keyword is a string on older jobs and an array on newer ones.
+function icpKeywordChips(icp) {
+  const raw = icp && (icp.apollo_keyword != null ? icp.apollo_keyword : icp.industry);
+  if (raw == null) return [];
+  return (Array.isArray(raw) ? raw : String(raw).split(',')).slice(0, 2);
+}
+
+function v2BeatMotif(step) {
+  const m = V2_MOTIF[step];
+  if (!m) return '';
+  return '<svg viewBox="0 0 72 64" width="92" height="82" style="color:#34b433;opacity:.92;" aria-hidden="true">' + m + '</svg>';
+}
+
+/**
+ * Right-hand column for a beat: the motif, plus any real data worth showing.
+ * Beat 2 is the only one with structured data of its own — the seats, industry
+ * and geography the deck is aimed at, and the market size if the job has one.
+ */
+function v2BeatAside(s) {
+  const job = window.__V2_JOB || {};
+  const ext = job.extracted_data || {};
+  let extra = '';
+
+  if (s.step === 'Who this is for') {
+    // Built from the ICP fields themselves rather than by splitting the rendered
+    // line — that produced one chip holding a whole sentence about company size.
+    const icp = ext.icp || {};
+    const chips = []
+      .concat((icp.apollo_titles || []).slice(0, 3))
+      .concat(icpKeywordChips(icp))
+      .concat((icp.apollo_geography || []).slice(0, 2))
+      .map(t => String(t || '').trim()).filter(Boolean)
+      .filter(t => t.length <= 28);
+    if (chips.length) {
+      extra = '<div style="display:flex;flex-wrap:wrap;gap:5px;justify-content:center;margin-top:12px;max-width:210px;">' +
+        chips.slice(0, 6).map(t => '<span style="font-size:10px;color:#a1a1aa;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:999px;padding:3px 9px;">' + v2Esc(t) + '</span>').join('') +
+        '</div>';
+    }
+    const gen = ext._generated || {}, ov = ext._overrides || {};
+    const tam = _v2ParseNum(ov.tam_total != null ? ov.tam_total : gen.tam_total);
+    if (tam) {
+      extra += '<div style="margin-top:14px;text-align:center;">' +
+        '<div style="font-size:22px;font-weight:700;color:#fff;line-height:1.1;">' + tam.toLocaleString() + '</div>' +
+        '<div style="font-size:10px;color:#71717a;margin-top:2px;">people in this market</div></div>';
+    }
+  }
+
+  // A beat with risk cards or a before/after pair is already visual, and at
+  // 952x446 the aside alongside four cards pushed the slide into scrolling.
+  const hasCards = !!((s.risks && s.risks.length) || s.before || s.after);
+  if (hasCards) return '';
+
+  const motif = v2BeatMotif(s.step);
+  if (!motif && !extra) return '';
+  return '<div style="flex:none;width:230px;display:flex;flex-direction:column;align-items:center;justify-content:center;' +
+    'border-left:1px solid rgba(255,255,255,0.07);padding-left:26px;">' + motif + extra + '</div>';
+}
+
 function v2PaintSlide() {
   const hero  = document.getElementById('slide-0');
   const stage = document.getElementById('v2-beat-slide');
@@ -2478,13 +2554,18 @@ function v2PaintSlide() {
       ? '<div style="margin-top:14px;"><button onclick="v2OpenProof()" style="cursor:pointer;font-family:inherit;background:none;border:1px solid rgba(255,255,255,0.14);color:#a1a1aa;font-size:11px;padding:5px 11px;border-radius:7px;">Edit this proof</button></div>'
       : '';
 
+    // Beat 2 puts its detail in the aside as chips, so it is not repeated as a line.
+    const showLine = s.line && s.step !== 'Who this is for';
+    const aside = v2BeatAside(s);
     stage.innerHTML =
-      '<div class="v2-deck-stage">' +
-        '<div class="v2-deck-step">' + v2Esc(s.step || '').toUpperCase() + generic + '</div>' +
-        '<h2 class="v2-deck-head">' + v2Esc(s.headline || '') + '</h2>' +
-        (s.sub  ? '<p class="v2-deck-sub">'  + v2Esc(s.sub)  + '</p>' : '') +
-        (s.line ? '<p class="v2-deck-line">' + v2Esc(s.line) + '</p>' : '') +
-        extra + editLink +
+      '<div class="v2-deck-stage" style="flex-direction:row;align-items:center;gap:26px;">' +
+        '<div style="flex:1;min-width:0;">' +
+          '<div class="v2-deck-step">' + v2Esc(s.step || '').toUpperCase() + generic + '</div>' +
+          '<h2 class="v2-deck-head">' + v2Esc(s.headline || '') + '</h2>' +
+          (s.sub  ? '<p class="v2-deck-sub">'  + v2Esc(s.sub)  + '</p>' : '') +
+          (showLine ? '<p class="v2-deck-line">' + v2Esc(s.line) + '</p>' : '') +
+          extra + editLink +
+        '</div>' + aside +
       '</div>';
   }
 
