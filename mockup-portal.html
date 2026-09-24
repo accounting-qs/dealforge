@@ -2115,6 +2115,50 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
   .pi-input:focus, .pi-textarea:focus { border-color:#3f3f46; }
   .pi-textarea { min-height:64px; resize:vertical; line-height:1.5; }
 </style>
+<!-- V2 Proof-beat modal (Webinar Experience). The call often gives no client
+     result, and Proof is the one beat a generic fallback cannot carry — so the
+     rep writes it here and the slide stays hidden from the prospect until they do. -->
+<div id="v2-proof-modal" style="display:none;position:fixed;inset:0;z-index:9000;background:rgba(0,0,0,0.72);align-items:center;justify-content:center;padding:24px;"
+     onclick="if(event.target===this)v2CloseProof()">
+  <div style="background:#0f0f11;border:1px solid rgba(255,255,255,0.1);border-radius:14px;max-width:560px;width:100%;max-height:86vh;overflow:auto;padding:24px 26px;">
+    <div style="display:flex;align-items:flex-start;gap:12px;margin-bottom:4px;">
+      <h3 style="flex:1;font-size:19px;font-weight:700;color:#fff;margin:0;">One client result</h3>
+      <button onclick="v2CloseProof()" style="background:none;border:none;color:#71717a;font-size:22px;cursor:pointer;line-height:1;">&times;</button>
+    </div>
+    <p style="color:#71717a;font-size:12px;line-height:1.6;margin:0 0 18px;">
+      One of <strong style="color:#a1a1aa;">their</strong> clients, not one of ours — this slide is shown to the prospect's own audience.
+      The first two fields are enough; the prospect sees nothing until they are filled.
+    </p>
+    <label style="display:block;margin-bottom:12px;">
+      <span style="display:block;font-size:11px;font-weight:600;color:#a1a1aa;margin-bottom:4px;">Who they were <span style="color:#f87171;">*</span></span>
+      <input id="v2-proof-client" type="text" placeholder="A 200-person plastics manufacturer in Ohio"
+        style="width:100%;box-sizing:border-box;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.1);border-radius:8px;padding:9px 12px;color:#e4e4e7;font-size:13px;font-family:inherit;">
+    </label>
+    <label style="display:block;margin-bottom:12px;">
+      <span style="display:block;font-size:11px;font-weight:600;color:#a1a1aa;margin-bottom:4px;">What changed <span style="color:#f87171;">*</span></span>
+      <input id="v2-proof-result" type="text" placeholder="Changeover time cut 40%. $1.1M back a year."
+        style="width:100%;box-sizing:border-box;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.1);border-radius:8px;padding:9px 12px;color:#e4e4e7;font-size:13px;font-family:inherit;">
+    </label>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:6px;">
+      <label style="display:block;">
+        <span style="display:block;font-size:11px;font-weight:600;color:#a1a1aa;margin-bottom:4px;">Before <span style="font-weight:400;color:#52525b;">optional</span></span>
+        <textarea id="v2-proof-before" rows="3" placeholder="Where they started."
+          style="width:100%;box-sizing:border-box;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.1);border-radius:8px;padding:9px 12px;color:#e4e4e7;font-size:13px;font-family:inherit;resize:vertical;"></textarea>
+      </label>
+      <label style="display:block;">
+        <span style="display:block;font-size:11px;font-weight:600;color:#a1a1aa;margin-bottom:4px;">After <span style="font-weight:400;color:#52525b;">optional</span></span>
+        <textarea id="v2-proof-after" rows="3" placeholder="Where they got to, and how long it took."
+          style="width:100%;box-sizing:border-box;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.1);border-radius:8px;padding:9px 12px;color:#e4e4e7;font-size:13px;font-family:inherit;resize:vertical;"></textarea>
+      </label>
+    </div>
+    <div style="display:flex;align-items:center;gap:10px;margin-top:16px;flex-wrap:wrap;">
+      <button id="v2-proof-save" onclick="v2SaveProof()" style="cursor:pointer;font-family:inherit;font-size:13px;font-weight:700;padding:9px 18px;border-radius:8px;border:none;background:#34b433;color:#0a0a0a;">Add the slide</button>
+      <button onclick="v2ClearProof()" id="v2-proof-clear" style="cursor:pointer;font-family:inherit;font-size:12px;padding:8px 14px;border-radius:8px;border:1px solid rgba(255,255,255,0.12);background:none;color:#a1a1aa;">Remove</button>
+      <span id="v2-proof-msg" style="font-size:11px;color:#71717a;"></span>
+    </div>
+  </div>
+</div>
+
 <!-- V2 case-study match modal (Lead List) -->
 <div id="v2-match-modal" style="display:none;position:fixed;inset:0;z-index:9000;background:rgba(0,0,0,0.72);align-items:center;justify-content:center;padding:24px;"
      onclick="if(event.target===this)v2CloseMatches()">
@@ -2399,7 +2443,9 @@ function v2PaintSlide() {
       ? '<span class="v2-generic" title="No transcript or website signal for this beat — replace before sending">GENERIC</span>'
       : s.source === 'missing'
         ? '<span class="v2-generic" style="color:#f87171;border-color:rgba(248,113,113,0.45);" title="The call gave us no client result. The prospect does not see this slide until you write it.">NEEDS PROOF · HIDDEN FROM PROSPECT</span>'
-        : '';
+        : s.source === 'rep' && IS_EDIT_MODE
+          ? '<span class="v2-generic" style="color:#34b433;border-color:rgba(52,180,51,0.45);" title="You wrote this. The prospect sees it.">YOURS · LIVE</span>'
+          : '';
     let extra = '';
     if (s.risks && s.risks.length) {
       extra = '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:9px;margin-top:14px;">' +
@@ -2412,13 +2458,33 @@ function v2PaintSlide() {
     if (s.cta) {
       extra += '<div style="margin-top:16px;"><span style="display:inline-block;background:#34b433;color:#0a0a0a;font-weight:700;font-size:13px;padding:9px 18px;border-radius:8px;">' + v2Esc(s.cta) + '</span></div>';
     }
+
+    // An unfilled Proof beat shows the rep a prompt, not the placeholder copy —
+    // there is nothing useful to read there, and the ask is one client result.
+    if (s.source === 'missing' && IS_EDIT_MODE) {
+      stage.innerHTML =
+        '<div class="v2-deck-stage" style="background:linear-gradient(150deg, rgba(248,113,113,0.10), rgba(255,255,255,0.02));">' +
+          '<div class="v2-deck-step" style="color:#f87171;">' + v2Esc(s.step || '').toUpperCase() + ' · HIDDEN FROM PROSPECT</div>' +
+          '<h2 class="v2-deck-head">One client result and this slide appears.</h2>' +
+          '<p class="v2-deck-sub">The call did not mention one, so the prospect is not shown this beat at all — better a deck of ' + (_v2Slides.length - 1) + ' that all land than one that stalls here.</p>' +
+          '<p class="v2-deck-line">One of <strong style="color:#d4d4d8;">their</strong> clients, not one of ours. Two short lines is enough.</p>' +
+          '<div style="margin-top:18px;"><button onclick="v2OpenProof()" style="cursor:pointer;font-family:inherit;background:#34b433;color:#0a0a0a;font-weight:700;font-size:13px;padding:10px 20px;border-radius:8px;border:none;">Add the proof</button></div>' +
+        '</div>';
+      return;
+    }
+
+    // Filled in by the rep — offer a way back in without hunting for it.
+    const editLink = (s.source === 'rep' && IS_EDIT_MODE)
+      ? '<div style="margin-top:14px;"><button onclick="v2OpenProof()" style="cursor:pointer;font-family:inherit;background:none;border:1px solid rgba(255,255,255,0.14);color:#a1a1aa;font-size:11px;padding:5px 11px;border-radius:7px;">Edit this proof</button></div>'
+      : '';
+
     stage.innerHTML =
       '<div class="v2-deck-stage">' +
         '<div class="v2-deck-step">' + v2Esc(s.step || '').toUpperCase() + generic + '</div>' +
         '<h2 class="v2-deck-head">' + v2Esc(s.headline || '') + '</h2>' +
         (s.sub  ? '<p class="v2-deck-sub">'  + v2Esc(s.sub)  + '</p>' : '') +
         (s.line ? '<p class="v2-deck-line">' + v2Esc(s.line) + '</p>' : '') +
-        extra +
+        extra + editLink +
       '</div>';
   }
 
@@ -2432,6 +2498,7 @@ function v2PaintSlide() {
           '<span class="num">' + (i + 1) + '</span>' + v2Esc(x.step || '') +
           (x.source === 'fallback' ? '<span style="color:#fbbf24;font-size:10px;">&bull;</span>' : '') +
           (x.source === 'missing'  ? '<span style="color:#f87171;font-size:10px;">&bull;</span>' : '') +
+          (x.source === 'rep'      ? '<span style="color:#34b433;font-size:10px;">&bull;</span>' : '') +
         '</button>';
       }).join('') +
     '</div>';
@@ -2708,6 +2775,64 @@ async function v2OpenMatches() {
 // show: what proves this tab is the recording itself, so a client only appears
 // when one is actually on file.
 
+
+// ── V2: the Proof beat, written by the rep ──────────────────────────────────
+// The transcript frequently carries no client result, and Proof is the one beat
+// a generic fallback cannot carry — a rep would have to talk over it. So it is
+// hidden from the prospect until the rep fills these in, at which point the
+// slide generates and becomes visible.
+function v2OpenProof() {
+  const ov = ((window.__V2_JOB || {}).extracted_data || {})._overrides || {};
+  document.getElementById('v2-proof-client').value = ov.proof_client || '';
+  document.getElementById('v2-proof-result').value = ov.proof_result || '';
+  document.getElementById('v2-proof-before').value = ov.proof_before || '';
+  document.getElementById('v2-proof-after').value  = ov.proof_after  || '';
+  document.getElementById('v2-proof-msg').textContent = '';
+  document.getElementById('v2-proof-clear').style.display = ov.proof_client ? '' : 'none';
+  document.getElementById('v2-proof-modal').style.display = 'flex';
+  document.getElementById('v2-proof-client').focus();
+}
+function v2CloseProof() { document.getElementById('v2-proof-modal').style.display = 'none'; }
+
+async function v2WriteProof(patch, btnId) {
+  const btn = document.getElementById(btnId);
+  const msg = document.getElementById('v2-proof-msg');
+  if (btn) btn.disabled = true;
+  try {
+    const r = await fetch('/api/jobs/' + encodeURIComponent(window.__JOB_ID) + '/overrides', {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch)
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    // Re-read so the deck repaints from stored truth rather than the form.
+    const fresh = await fetch('/api/jobs/' + encodeURIComponent(window.__JOB_ID));
+    window.__V2_JOB = await fresh.json();
+    v2RenderDeck(window.__V2_JOB);
+    v2CloseProof();
+  } catch (e) {
+    if (msg) { msg.textContent = 'Could not save: ' + e.message; msg.style.color = '#f87171'; }
+  } finally { if (btn) btn.disabled = false; }
+}
+
+function v2SaveProof() {
+  const client = document.getElementById('v2-proof-client').value.trim();
+  const result = document.getElementById('v2-proof-result').value.trim();
+  const msg = document.getElementById('v2-proof-msg');
+  if (!client || !result) {
+    msg.textContent = 'Both starred fields are needed — without them the slide stays hidden.';
+    msg.style.color = '#fbbf24';
+    return;
+  }
+  v2WriteProof({
+    proof_client: client, proof_result: result,
+    proof_before: document.getElementById('v2-proof-before').value.trim(),
+    proof_after:  document.getElementById('v2-proof-after').value.trim()
+  }, 'v2-proof-save');
+}
+
+function v2ClearProof() {
+  if (!confirm('Remove this proof slide?\n\nIt goes back to being hidden from the prospect.')) return;
+  v2WriteProof({ proof_client: '', proof_result: '', proof_before: '', proof_after: '' }, 'v2-proof-clear');
+}
 
 // ── V2: rep-chosen case studies ─────────────────────────────────────────────
 // Alex asked for the match to be automatic; reps want the final say. So the

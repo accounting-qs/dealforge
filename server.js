@@ -890,13 +890,23 @@ function composeWebinarSlides(job) {
     } else {
       const written = wb[meta.key];
       const hasCopy = written && typeof written === 'object' && (written.headline || (written.risks && written.risks.length));
-      body   = hasCopy ? written : webinarFallback(meta.key, ctx);
+
+      // A rep-written proof beats extraction and the fallback both: the rep
+      // knows a client result the call never mentioned. Client + result are
+      // enough to render; before/after are optional colour.
+      const repProof = (meta.key === 'case_study' && ov.proof_client && ov.proof_result)
+        ? { headline: String(ov.proof_client), sub: String(ov.proof_result), line: '',
+            before: ov.proof_before ? String(ov.proof_before) : null,
+            after:  ov.proof_after  ? String(ov.proof_after)  : null }
+        : null;
+
+      body   = repProof || (hasCopy ? written : webinarFallback(meta.key, ctx));
       // The proof beat is the one slide a generic fallback cannot carry. "A
       // client who already did this" in the middle of an otherwise specific
       // deck reads as unfinished, and a rep would have to talk over it. It is
       // marked 'missing' rather than 'fallback' so the portal can hide it from
       // the prospect while still showing the rep that it needs filling.
-      source = hasCopy ? 'extracted' : (meta.key === 'case_study' ? 'missing' : 'fallback');
+      source = repProof ? 'rep' : hasCopy ? 'extracted' : (meta.key === 'case_study' ? 'missing' : 'fallback');
     }
 
     return {
@@ -8777,6 +8787,10 @@ const server = http.createServer(async (req, res) => {
         // airtable_record_id. Without this the prospect always landed on their
         // own invite and the rep had no way to lead with a client's instead.
         'cs_default_invite', 'cs_default_webinar',
+        // The Proof beat, filled in by the rep. The call often gives no client
+        // result, and this beat is the one a generic fallback cannot carry — so
+        // it stays hidden from the prospect until these are written.
+        'proof_client', 'proof_result', 'proof_before', 'proof_after',
       ];
       const safeOverrides = {};
       // Color override values are inlined into onclick="..." attributes in
