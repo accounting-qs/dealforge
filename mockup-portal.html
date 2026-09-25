@@ -1178,7 +1178,7 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
             Click <strong>No</strong> and we'll remove you from this invite series.<br>
             🔗 <a href="#">Your registration link →</a>
           </div>
-          <div class="cal-desc-hook">If 80% of your pipeline comes from referrals, you don't have a business — you have a dependency. In 90 minutes, I'll show you the exact system 1,400+ consulting firms used to break through the $1.5M ceiling and build predictable revenue that doesn't rely on who you know.</div>
+          <div class="cal-desc-hook">If 80% of your pipeline comes from referrals, you don't have a business — you have a dependency. In 90 minutes, I'll show you the exact system 1,500+ consulting firms used to break through the $1.5M ceiling and build predictable revenue that doesn't rely on who you know.</div>
           <div class="cal-desc-cases">
             <div class="cal-desc-cases-label">What clients built in their first 90 days</div>
             <div class="cal-desc-case"><strong>Sarah Chen (Meridian Advisory)</strong> — went from 100% referral-dependent to 847 registered attendees in her first webinar cycle.</div>
@@ -1352,7 +1352,7 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
                   <div class="stat-label">Client Revenue</div>
                 </div>
                 <div class="stat-item">
-                  <div class="stat-value">1,400+</div>
+                  <div class="stat-value">1,500+</div>
                   <div class="stat-label">Clients Served</div>
                 </div>
                 <div class="stat-item">
@@ -1521,7 +1521,7 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
           <div class="vis-source-emoji">🧠</div>
           <div class="vis-source-txt">
             <div class="vis-source-label">AI Research Engine</div>
-            <div class="vis-source-note">Trained on your knowledge + 5 years of what converts across 1,400+ webinars.</div>
+            <div class="vis-source-note">Trained on your knowledge + 5 years of what converts across 1,500+ webinars.</div>
           </div>
         </div>
         <div class="vis-plus">+</div>
@@ -2404,6 +2404,19 @@ function v2PrevSlide() { v2GoSlide(_v2SlideIdx - 1); }
  * which threw all three away.
  */
 
+// ── V2: forecast attendance in the live-chat panel ─────────────────────────
+// Alex asked for the room size to be the number we forecast for this prospect
+// rather than a fixed 847 — a made-up figure next to our own ROI model is the
+// kind of detail a closer gets asked about.
+function v2SetForecastAttendance(n) {
+  if (!Number.isFinite(n) || n <= 0) return;
+  const fmt = n.toLocaleString();
+  const top  = document.querySelector('#tab-2 .attendee-count');
+  const chat = document.querySelector('#tab-2 .chat-subtitle');
+  if (top)  top.textContent  = fmt + ' attending';
+  if (chat) chat.textContent = fmt + ' participants';
+}
+
 // ── V2: beat visuals ────────────────────────────────────────────────────────
 // A schematic motif per beat, plus real data where we actually have it. The
 // motifs are deliberately unlabelled shapes: a chart with numbers on it would
@@ -2916,10 +2929,21 @@ function v2ApplyPins(surface, rows) {
   return picked.length ? picked : rows;
 }
 
+// Every id currently offered per surface, so a first deselect can mean
+// "all of them except this one" rather than "only this one".
+const _v2PickerAll = {};
+
 async function v2TogglePin(surface, recordId) {
-  const pins = v2Pinned(surface).slice();
-  const i = pins.indexOf(recordId);
-  if (i >= 0) pins.splice(i, 1); else pins.push(recordId);
+  let pins = v2Pinned(surface).slice();
+  if (!pins.length) {
+    // Auto mode: the boxes are all ticked but nothing is pinned, so the click
+    // that just happened was a DESELECT. Pin everything except it. Without this
+    // the click fell through to the push below and made it the only selection.
+    pins = (_v2PickerAll[surface] || []).filter(id => id !== recordId);
+  } else {
+    const i = pins.indexOf(recordId);
+    if (i >= 0) pins.splice(i, 1); else pins.push(recordId);
+  }
   try {
     const r = await fetch('/api/jobs/' + encodeURIComponent(window.__JOB_ID) + '/overrides', {
       method: 'PATCH', headers: { 'Content-Type': 'application/json' },
@@ -2985,6 +3009,7 @@ function v2PickerHtml(surface, all, metricFn) {
   const pins = v2Pinned(surface);
   const def  = v2DefaultFor(surface);
   const auto = !pins.length;
+  _v2PickerAll[surface] = all.map(c => c.airtable_record_id);
   // ROI shows every chosen client side by side, so there is nothing to "open
   // on" — the radio column only makes sense for the swap surfaces.
   const hasDefault = !!V2_DEFAULT_KEYS[surface];
@@ -3301,7 +3326,7 @@ const variants = [
     tag: 'Problem-aware',
     title: 'Why 90% of Consulting Firms Plateau at $1.5M — and the Revenue System That Actually Breaks Through',
     desc: descHTML(
-      'If 80% of your pipeline comes from referrals, you don\'t have a business — you have a dependency. In 90 minutes, I\'ll show you the exact system 1,400+ consulting firms used to break through the $1.5M ceiling and build predictable revenue that doesn\'t rely on who you know.',
+      'If 80% of your pipeline comes from referrals, you don\'t have a business — you have a dependency. In 90 minutes, I\'ll show you the exact system 1,500+ consulting firms used to break through the $1.5M ceiling and build predictable revenue that doesn\'t rely on who you know.',
       [clientCase(QS_CLIENTS[0]), clientCase(QS_CLIENTS[1]), clientCase(QS_CLIENTS[2])],
       [
         'Why the referral ceiling exists — and the 3-phase system that breaks through it',
@@ -3317,7 +3342,7 @@ const variants = [
       'The same acquisition system behind $500M+ in client revenue — now live, with your numbers built in.',
       [clientCase(QS_CLIENTS[3]), clientCase(QS_CLIENTS[4]), clientCase(QS_CLIENTS[5])],
       [
-        'The exact webinar funnel deployed across 1,400+ B2B firms — live, with your numbers',
+        'The exact webinar funnel deployed across 1,500+ B2B firms — live, with your numbers',
         'How clients scaled from referral-dependent to 30K+ outreaches/month on autopilot',
         'Your 90-day revenue projection built live during the session'
       ]
@@ -3327,7 +3352,7 @@ const variants = [
     tag: 'Mechanism-led',
     title: 'The 3-Phase Revenue Engine Replacing Referrals for $1M–$5M Consulting Firms',
     desc: descHTML(
-      'Referrals work — until they don\'t. Here\'s the 3-phase system replacing them across 1,400+ consulting firms.',
+      'Referrals work — until they don\'t. Here\'s the 3-phase system replacing them across 1,500+ consulting firms.',
       [clientCase(QS_CLIENTS[6]), clientCase(QS_CLIENTS[7]), clientCase(QS_CLIENTS[8])],
       [
         'Phase 1: Market identification — pull your exact ICP from a database of 87M+ contacts',
@@ -3518,6 +3543,10 @@ function roiCalc() {
   const annual      = monthly * 12;
 
   document.getElementById('r-attendees').textContent = fmtN(attendees);
+  // The webinar's live-chat panel showed a hardcoded 847. Feed it the number we
+  // actually forecast for this prospect, so the room size on the slide matches
+  // the ROI model rather than contradicting it.
+  v2SetForecastAttendance(attendees);
   document.getElementById('r-booked').textContent    = fmtN(booked);
   document.getElementById('r-held').textContent      = fmtN(held);
   document.getElementById('r-clients').textContent   = fmtN(clients);
