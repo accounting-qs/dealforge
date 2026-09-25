@@ -766,10 +766,13 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
 
 .v2-deck-stage {
   flex:1; display:flex; flex-direction:column; justify-content:center; overflow-y:auto;
-  background: linear-gradient(150deg, rgba(52,180,51,0.14), rgba(255,255,255,0.02));
+  /* Same brand variables the hero uses, so the deck carries the prospect's
+     colours through rather than reverting to Quantum Scaling's green on
+     slide 2. Fallbacks are the old values, for a job with no brand scrape. */
+  background: linear-gradient(150deg, var(--prospect-primary-alpha, rgba(52,180,51,0.14)), rgba(255,255,255,0.02));
   border-radius:14px; padding:32px 36px;
 }
-.v2-deck-step { font-size:11px; font-weight:700; letter-spacing:.07em; color:#34b433; margin-bottom:12px; }
+.v2-deck-step { font-size:11px; font-weight:700; letter-spacing:.07em; color: var(--prospect-primary, #34b433); margin-bottom:12px; }
 .v2-deck-head { font-size:27px; font-weight:700; color:#fff; line-height:1.2; margin:0 0 10px; }
 .v2-deck-sub  { font-size:16px; color:#d4d4d8; line-height:1.5; margin:0 0 12px; }
 .v2-deck-line { font-size:13px; color:#a1a1aa; line-height:1.6; margin:0; max-width:70ch; }
@@ -786,7 +789,7 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
 .v2-deck-pill .num { width:16px; height:16px; border-radius:50%; flex:none; display:flex;
   align-items:center; justify-content:center; font-size:9px; font-weight:700;
   background:rgba(255,255,255,0.10); color:#e4e4e7; }
-.v2-deck-pill.active .num { background:#34b433; color:#0a0a0a; }
+.v2-deck-pill.active .num { background: var(--prospect-primary, #34b433); color:#0a0a0a; }
 .v2-generic { font-size:9px; font-weight:700; letter-spacing:.05em; color:#fbbf24;
   border:1px solid rgba(251,191,36,0.4); border-radius:4px; padding:1px 5px; margin-left:8px; }
 .v2-risk { background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.07); border-radius:9px; padding:11px 13px; }
@@ -2428,7 +2431,8 @@ function icpKeywordChips(icp) {
 function v2BeatMotif(step) {
   const m = V2_MOTIF[step];
   if (!m) return '';
-  return '<svg viewBox="0 0 72 64" width="92" height="82" style="color:#34b433;opacity:.92;" aria-hidden="true">' + m + '</svg>';
+  // The motifs are drawn with currentColor, so this one declaration brands them all.
+  return '<svg viewBox="0 0 72 64" width="92" height="82" style="color:var(--prospect-primary, #34b433);opacity:.92;" aria-hidden="true">' + m + '</svg>';
 }
 
 /**
@@ -2473,7 +2477,7 @@ function v2BeatAside(s) {
   const motif = v2BeatMotif(s.step);
   if (!motif && !extra) return '';
   return '<div style="flex:none;width:230px;display:flex;flex-direction:column;align-items:center;justify-content:center;' +
-    'border-left:1px solid rgba(255,255,255,0.07);padding-left:26px;">' + motif + extra + '</div>';
+    'border-left:1px solid var(--prospect-primary-alpha, rgba(255,255,255,0.07));padding-left:26px;">' + motif + extra + '</div>';
 }
 
 function v2PaintSlide() {
@@ -2505,7 +2509,7 @@ function v2PaintSlide() {
         '<div class="v2-risk"><b>After</b><span>' + v2Esc(s.after || '') + '</span></div></div>';
     }
     if (s.cta) {
-      extra += '<div style="margin-top:16px;"><span style="display:inline-block;background:#34b433;color:#0a0a0a;font-weight:700;font-size:13px;padding:9px 18px;border-radius:8px;">' + v2Esc(s.cta) + '</span></div>';
+      extra += '<div style="margin-top:16px;"><span style="display:inline-block;background:var(--prospect-primary, #34b433);color:#0a0a0a;font-weight:700;font-size:13px;padding:9px 18px;border-radius:8px;">' + v2Esc(s.cta) + '</span></div>';
     }
 
     // An unfilled Proof beat shows the rep a prompt, not the placeholder copy —

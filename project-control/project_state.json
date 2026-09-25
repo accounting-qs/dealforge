@@ -92,6 +92,10 @@
   ],
   "recent_milestones": [
     {
+      "description": "The webinar deck carries the prospect's brand colours through every beat, not just the hero. The beats were hardcoded to Quantum Scaling's green, so slide 1 was branded (TrackDeep teal #20c0c0 from the brand scrape) and slide 2 onward reverted to QS green - the jump Gary spotted. The stage gradient, the step label, the SVG motifs (drawn with currentColor, so one declaration brands them all), the close CTA and the active pill now read --prospect-primary / --prospect-primary-alpha, the same variables the hero already used, with the old values as fallbacks for a job that has no brand scrape. Verified by computed style on a real job: every one of those resolves to rgb(32,192,192). Rep-only chrome (the pickers, NEEDS PROOF, YOURS · LIVE) deliberately keeps QS green - it is our UI, not the prospect's asset. NOT changed: the ROI charts, onboarding and case-study cards still use QS green, because those surfaces are shared with V1 and recolouring them would change what reps on the current flow see.",
+      "date": "2026-09-25"
+    },
+    {
       "description": "Onboarding timeline stripped back to the four phase headers per Gary. Removed the sixteen bullets under them (kickoff/ICP/angle/framework, lead pull/copy/landing page/invites, attendance review/AB tests/call framework/first closes, monthly reviews/iteration/scaling/cross-channel) plus the now-unused .ob-phase-bullets rule. Each phase keeps its icon, timeframe, name and one-line description; the milestone band above is untouched. Verified all four phases render with zero list items and no stray lists, and that the onboarding markup stays div-balanced.",
       "date": "2026-09-25"
     },
