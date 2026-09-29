@@ -679,6 +679,63 @@ function passesBookedFloor(c) {
   return (b / a) * 100 >= ROI_MIN_BOOKED_PCT;
 }
 
+// Editable figures on the webinar deck. The portal renders a chart per figure
+// id and the rep can correct any of them in a modal; these are the keys those
+// corrections are stored under. Kept here because the /overrides allow-list is
+// the security boundary and must not be a wildcard.
+const V2_FIGURE_KEYS = [
+  'fig_claim_value', 'fig_claim_label',
+  'fig_funnel_invites', 'fig_funnel_attendees', 'fig_funnel_booked',
+  'fig_funnel_held', 'fig_funnel_clients',
+  'fig_year1_revenue', 'fig_hours_steady'
+];
+
+// ── Library benchmarks — the numbers the webinar deck is allowed to claim ────
+//
+// The deck used to carry unlabelled schematic motifs precisely because nobody
+// wanted invented figures in front of a prospect's real audience. These are the
+// alternative: medians computed from the synced library, recomputed per request
+// so they stay true as the library grows rather than being frozen into the HTML.
+//
+// MEDIAN, NOT MEAN, AND FLOOR-GATED. Two campaigns dominate the totals
+// (187k and 317k invites), so a blended average describes those two clients and
+// nobody else. And a client who never ran the call-booking motion books ~0.5% of
+// attendees — averaging them in produces the "800 attendees, 4 calls" arithmetic
+// Gary flagged, which reads as our result rather than as an unused motion. Only
+// clients clearing ROI_MIN_BOOKED_PCT count toward the booking median, and the
+// sample size travels with the number so a slide can cite it honestly.
+function caseStudyBenchmarks(rows) {
+  const median = (arr) => {
+    const a = arr.filter(v => Number.isFinite(v)).sort((x, y) => x - y);
+    if (!a.length) return null;
+    const m = Math.floor(a.length / 2);
+    return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2;
+  };
+  const round = (v, d) => (v == null ? null : Number(v.toFixed(d)));
+  const pct = (n, d) => {
+    const a = Number(n), b = Number(d);
+    return (Number.isFinite(a) && Number.isFinite(b) && b > 0) ? (a / b) * 100 : null;
+  };
+  const ran = rows.filter(c => {
+    const a = Number(c.total_attendees), b = Number(c.total_booked_calls);
+    return Number.isFinite(a) && a > 0 && Number.isFinite(b) && (b / a) * 100 >= ROI_MIN_BOOKED_PCT;
+  });
+  return {
+    clients:        ran.length,
+    webinars:       ran.reduce((t, c) => t + (Number(c.webinars_run) || 0), 0),
+    library_total:  rows.length,
+    floor_pct:      ROI_MIN_BOOKED_PCT,
+    invite_to_reg_pct:  round(median(ran.map(c => pct(c.total_registrations, c.total_invites))), 2),
+    reg_to_attend_pct:  round(median(ran.map(c => pct(c.total_attendees, c.total_registrations))), 1),
+    attend_to_book_pct: round(median(ran.map(c => pct(c.total_booked_calls, c.total_attendees))), 1),
+    // Not a percentage — pct() would scale this by 100.
+    attendees_per_run:  round(median(ran.map(c => {
+      const a = Number(c.total_attendees), r = Number(c.webinars_run);
+      return (Number.isFinite(a) && Number.isFinite(r) && r > 0) ? a / r : null;
+    })), 0)
+  };
+}
+
 async function listCaseStudies({ tab = null, limit = 100, applyFloor = true } = {}) {
   let path = `/rest/v1/case_study_clients?select=${CASE_STUDY_COLS}&order=client_name.asc&limit=${Math.min(Number(limit) || 100, 500)}`;
   // PostgREST array-contains. use_on_tabs is a Postgres text[], so the literal
@@ -7280,6 +7337,23 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // ── GET /api/case-studies/benchmarks — medians the deck charts cite ───────
+  if (req.method === 'GET' && urlPath === '/api/case-studies/benchmarks') {
+    setCors(res);
+    try {
+      // floor=false: caseStudyBenchmarks does its own gating and needs to see
+      // the whole library to report library_total honestly.
+      const all = await listCaseStudies({ limit: 500, applyFloor: false });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, benchmarks: caseStudyBenchmarks(all) }));
+    } catch (e) {
+      console.error('[GET /api/case-studies/benchmarks]', e.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
   // ── GET /api/case-studies — the library, optionally gated to one tab ───────
   if (req.method === 'GET' && urlPath === '/api/case-studies') {
     setCors(res);
@@ -8819,6 +8893,14 @@ const server = http.createServer(async (req, res) => {
         // result, and this beat is the one a generic fallback cannot carry — so
         // it stays hidden from the prospect until these are written.
         'proof_client', 'proof_result', 'proof_before', 'proof_after',
+        // Rep-corrected chart figures. Every number drawn on a deck chart is
+        // computed (from this job's ROI forecast or the library medians) and
+        // then passed through this override, so a rep who disagrees with a
+        // figure can fix it on the slide instead of talking around it.
+        // Enumerated rather than a `fig_*` wildcard: this list is a security
+        // boundary — it is what stops arbitrary keys being written into
+        // extracted_data._overrides.
+        ...V2_FIGURE_KEYS,
       ];
       const safeOverrides = {};
       // Color override values are inlined into onclick="..." attributes in

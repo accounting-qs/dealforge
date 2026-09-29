@@ -2094,6 +2094,30 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
 <!-- V2 Proof-beat modal (Webinar Experience). The call often gives no client
      result, and Proof is the one beat a generic fallback cannot carry — so the
      rep writes it here and the slide stays hidden from the prospect until they do. -->
+<div id="v2-fig-modal" style="display:none;position:fixed;inset:0;z-index:9000;background:rgba(0,0,0,0.72);align-items:center;justify-content:center;padding:24px;"
+     onclick="if(event.target===this)v2CloseFig()">
+  <div style="background:#0f0f11;border:1px solid rgba(255,255,255,0.1);border-radius:14px;max-width:440px;width:100%;padding:24px 26px;">
+    <div style="display:flex;align-items:flex-start;gap:12px;margin-bottom:4px;">
+      <h3 id="v2-fig-title" style="flex:1;font-size:18px;font-weight:700;color:#fff;margin:0;">Correct this number</h3>
+      <button onclick="v2CloseFig()" style="background:none;border:none;color:#71717a;font-size:22px;cursor:pointer;line-height:1;">&times;</button>
+    </div>
+    <p id="v2-fig-hint" style="color:#71717a;font-size:12px;line-height:1.6;margin:0 0 16px;"></p>
+    <label style="display:block;margin-bottom:6px;">
+      <span style="display:block;font-size:11px;font-weight:600;color:#a1a1aa;margin-bottom:4px;">Shown on the slide</span>
+      <input id="v2-fig-input" type="text"
+        style="width:100%;box-sizing:border-box;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.1);border-radius:8px;padding:9px 12px;color:#e4e4e7;font-size:14px;font-family:inherit;">
+    </label>
+    <p id="v2-fig-computed" style="color:#52525b;font-size:11px;line-height:1.5;margin:0 0 16px;"></p>
+    <div id="v2-fig-msg" style="font-size:12px;margin-bottom:10px;"></div>
+    <div style="display:flex;gap:8px;">
+      <button id="v2-fig-save" onclick="v2SaveFig()"
+        style="cursor:pointer;font-family:inherit;background:#34b433;color:#0a0a0a;font-weight:700;font-size:13px;padding:9px 18px;border-radius:8px;border:none;">Save</button>
+      <button id="v2-fig-clear" onclick="v2ClearFig()"
+        style="cursor:pointer;font-family:inherit;background:none;border:1px solid rgba(255,255,255,0.14);color:#a1a1aa;font-size:13px;padding:9px 16px;border-radius:8px;">Back to calculated</button>
+    </div>
+  </div>
+</div>
+
 <div id="v2-proof-modal" style="display:none;position:fixed;inset:0;z-index:9000;background:rgba(0,0,0,0.72);align-items:center;justify-content:center;padding:24px;"
      onclick="if(event.target===this)v2CloseProof()">
   <div style="background:#0f0f11;border:1px solid rgba(255,255,255,0.1);border-radius:14px;max-width:560px;width:100%;max-height:86vh;overflow:auto;padding:24px 26px;">
@@ -2434,6 +2458,329 @@ const V2_MOTIF = {
   'The close':            '<path d="M8 32h44" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/><path d="M44 22l10 10-10 10" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/><circle cx="62" cy="32" r="4" fill="currentColor"/>'
 };
 
+// ── V2: real figures on the deck ────────────────────────────────────────────
+//
+// The beats used to carry unlabelled schematic motifs, deliberately: this deck
+// is shown to a prospect's real audience and a chart with invented numbers on
+// it is worse than no chart. Every figure below is instead either (a) this
+// job's own ROI forecast — the same inputs the ROI tab uses, so the deck and
+// the model can never contradict each other on screen — or (b) a median from
+// the synced case-study library, floor-gated and carrying its sample size.
+//
+// And every one of them is rep-correctable. A rep who disagrees with a number
+// clicks it in edit mode and overwrites it; the override is stored per job and
+// wins over the computed value everywhere it appears.
+
+let _V2_BENCH = null;   // library medians, fetched once per page load
+
+async function v2LoadBenchmarks() {
+  if (_V2_BENCH) return _V2_BENCH;
+  try {
+    const r = await fetch('/api/case-studies/benchmarks');
+    const j = await r.json();
+    if (j && j.benchmarks) _V2_BENCH = j.benchmarks;
+  } catch (e) { console.warn('[v2] benchmarks unavailable:', e.message); }
+  return _V2_BENCH;
+}
+
+/**
+ * This job's forecast, computed from the same inputs roiCalc() reads so the
+ * deck never shows a different number from the ROI tab. Falls back to the
+ * model's own defaults when the ROI tab has not been rendered yet — the deck
+ * can be opened first.
+ */
+function v2Forecast() {
+  const ov  = ((window.__V2_JOB || {}).extracted_data || {})._overrides || {};
+  const num = (el, ovKey, dflt) => {
+    if (ov[ovKey] != null && ov[ovKey] !== '') { const v = _v2ParseNum(ov[ovKey]); if (v != null) return v; }
+    const node = document.getElementById(el);
+    const v = node ? parseFloat(node.value) : NaN;
+    return Number.isFinite(v) ? v : dflt;
+  };
+  const vol       = Math.max(1, Number.isFinite(MONTHLY_INVITES) ? MONTHLY_INVITES : 30000);
+  const ltv       = num('ltv', 'roi_ltv', 0);
+  const show      = num('show-rate',  'roi_show_rate',  75) / 100;
+  const close     = num('close-rate', 'roi_close_rate', 25) / 100;
+  const attendees = Math.round(vol * RATES.attend[_modes.attend]);
+  const booked    = Math.round(attendees * RATES.booking[_modes.booking]);
+  const held      = Math.round(booked * show);
+  const clients   = Math.round(held * close);
+  // Year one is the RAMP-weighted cumulative, not clients x ltv x 12 — months 1
+  // and 2 produce nothing and full velocity only lands at month 6. This is the
+  // same sum the ROI tab prints as "total-12m".
+  let year1 = 0;
+  for (let m = 1; m <= 12; m++) year1 += clients * (RAMP[m] || 0) * ltv;
+  return { vol, attendees, booked, held, clients, ltv, year1: Math.round(year1) };
+}
+
+/**
+ * The editable figures. `compute` derives the default; an override of the same
+ * id replaces it. Keys must match V2_FIGURE_KEYS in server.js — that list is
+ * the /overrides allow-list and anything missing from it silently will not save.
+ */
+const V2_FIGURES = {
+  fig_claim_value:     { label: 'Headline ratio',        kind: 'text', hint: 'Shown at 52px on beat 1.',
+                         compute: (f, b) => (b && b.attend_to_book_pct) ? '1 in ' + Math.max(2, Math.round(100 / b.attend_to_book_pct)) : null },
+  fig_claim_label:     { label: 'Headline caption',      kind: 'text', hint: 'The line under the big number.',
+                         compute: (f, b) => (b && b.clients)
+                           ? 'attendees book a call — median of ' + b.clients + ' client campaigns (' + b.webinars + ' webinars)'
+                           : null },
+  fig_funnel_invites:  { label: 'Invites a month',       kind: 'int',  hint: 'Drives the funnel subtitle.',  compute: f => f.vol },
+  fig_funnel_attendees:{ label: 'Attendees a month',     kind: 'int',  hint: '',                             compute: f => f.attendees },
+  fig_funnel_booked:   { label: 'Calls booked',          kind: 'int',  hint: '',                             compute: f => f.booked },
+  fig_funnel_held:     { label: 'Calls held',            kind: 'int',  hint: '',                             compute: f => f.held },
+  fig_funnel_clients:  { label: 'New clients a month',   kind: 'int',  hint: 'The emphasised bar.',          compute: f => f.clients },
+  fig_year1_revenue:   { label: 'Year-one revenue',      kind: 'money',hint: 'Ramp-weighted, matches the ROI tab.', compute: f => f.year1 },
+  fig_hours_steady:    { label: 'Steady-state hrs/week', kind: 'num',  hint: 'Where your time lands once it runs.', compute: () => TIME[12] || 1 }
+};
+
+// Override wins; otherwise compute. Returns null when there is nothing honest
+// to show, and every caller hides its chart rather than drawing a zero.
+function v2Fig(id) {
+  const meta = V2_FIGURES[id];
+  if (!meta) return null;
+  const ov = ((window.__V2_JOB || {}).extracted_data || {})._overrides || {};
+  if (ov[id] != null && String(ov[id]).trim() !== '') {
+    return meta.kind === 'text' ? String(ov[id]) : _v2ParseNum(ov[id]);
+  }
+  try { return meta.compute(v2Forecast(), _V2_BENCH); } catch (e) { return null; }
+}
+
+function v2FigIsOverridden(id) {
+  const ov = ((window.__V2_JOB || {}).extracted_data || {})._overrides || {};
+  return ov[id] != null && String(ov[id]).trim() !== '';
+}
+
+// ── Chart ink ───────────────────────────────────────────────────────────────
+// Validated with the dataviz palette validator against the deck's real surface
+// (#0d0d12 under a 14% brand tint) for four brand hues. The raw brand colour
+// fails the 3:1 contrast floor on a dark surface for darker hues (indigo lands
+// at 2.82:1), so the mark is the brand hue mixed 20% toward white — on a dark
+// ground that lifts every hue past the floor without losing the hue itself.
+// The context grey is #71717a, which clears 3:1 against all four surfaces.
+//
+// This is the EMPHASIS form (one hue + grey), not a categorical palette: the
+// funnel's identity is carried by each row's own label, so colour only marks
+// which bar is the point. It still gets a second, non-colour channel — the
+// emphasised bar is thicker and its value is set in primary ink — because at
+// full protanopia a rose brand hue sits at dE 1.9 against the grey and the
+// emphasis would otherwise be invisible to that reader.
+function v2ChartInk() {
+  let raw = '';
+  try { raw = getComputedStyle(document.documentElement).getPropertyValue('--prospect-primary').trim(); } catch (e) {}
+  let rgb = [52, 180, 51];
+  const hex = /^#?([0-9a-f]{6})$/i.exec(raw);
+  const fn  = /rgba?\(\s*(\d+)[,\s]+(\d+)[,\s]+(\d+)/i.exec(raw);
+  if (hex) rgb = hex[1].match(/../g).map(h => parseInt(h, 16));
+  else if (fn) rgb = [+fn[1], +fn[2], +fn[3]];
+
+  // EMPHASIS IS CARRIED BY LIGHTNESS, NOT HUE. Two real cases forced this:
+  // a prospect whose scraped brand colour is #b8b2b2 — a grey, so a brand-hued
+  // mark is indistinguishable from the grey context marks — and, from the
+  // palette validator, a rose brand hue sitting at dE 1.9 against that same
+  // grey under protanopia. Both are hue failures; lightness survives both.
+  // So the accent is lifted toward white until it clears a luminance floor
+  // well above the context grey, and a brand colour with too little chroma to
+  // read as a colour at all is emphasised in plain white instead.
+  const lum = (c) => {
+    const f = c.map(v => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); });
+    return 0.2126 * f[0] + 0.7152 * f[1] + 0.0722 * f[2];
+  };
+  const chroma = (Math.max.apply(null, rgb) - Math.min.apply(null, rgb)) / 255;
+  let accent;
+  if (chroma < 0.12) {
+    accent = '#ffffff';
+  } else {
+    let lifted = rgb;
+    for (let m = 0; m <= 0.75 && lum(lifted) < 0.42; m += 0.05) {
+      lifted = rgb.map(c => Math.round(c * (1 - m) + 255 * m));
+    }
+    accent = 'rgb(' + lifted.join(',') + ')';
+  }
+  return {
+    accent: accent,
+    grey:   '#71717a',
+    axis:   'rgba(255,255,255,0.10)',
+    ink:    '#fff',
+    muted:  '#a1a1aa',
+    faint:  '#71717a'
+  };
+}
+
+function _v2FigFmt(id, v) {
+  const kind = (V2_FIGURES[id] || {}).kind;
+  if (v == null) return '';
+  if (kind === 'money') return v >= 1000000 ? '$' + (v / 1000000).toFixed(v >= 10000000 ? 0 : 1) + 'M'
+                             : v >= 1000    ? '$' + Math.round(v / 1000) + 'K' : '$' + Math.round(v);
+  if (kind === 'int')   return Math.round(v).toLocaleString();
+  if (kind === 'num')   return String(v);
+  return String(v);
+}
+
+// In edit mode every figure is a click target; for the prospect it is plain
+// text. The dotted underline is the only affordance — a button chrome on a
+// slide reads as a control the audience is meant to press.
+function v2FigWrap(id, html) {
+  if (!IS_EDIT_MODE) return html;
+  const edited = v2FigIsOverridden(id);
+  return '<span onclick="v2OpenFig(\'' + id + '\')" title="' +
+    (edited ? 'You set this. Click to change it.' : 'Click to correct this number.') +
+    '" style="cursor:pointer;border-bottom:1px dashed ' + (edited ? 'rgba(52,180,51,0.7)' : 'rgba(255,255,255,0.28)') +
+    ';">' + html + '</span>';
+}
+
+// ── Deck charts ─────────────────────────────────────────────────────────────
+// Plain HTML/SVG, no chart library. Mark specs follow the house rules: bars cap
+// at 24px and carry a 4px rounded data-end square at the baseline, lines are
+// 2px, gridlines are hairline and recessive, and text never wears the data
+// colour — values and labels use ink tokens, the coloured mark beside them
+// carries the emphasis. Each chart is a single series, so none needs a legend.
+// Every chart returns '' when its figures are missing, and the caller falls
+// back to the schematic motif rather than drawing a zero.
+
+function v2ChartFunnel() {
+  const ink  = v2ChartInk();
+  const defs = [
+    { id: 'fig_funnel_attendees', label: 'Attendees' },
+    { id: 'fig_funnel_booked',    label: 'Calls booked' },
+    { id: 'fig_funnel_held',      label: 'Calls held' },
+    { id: 'fig_funnel_clients',   label: 'New clients', emph: true }
+  ];
+  const rows = defs.map(d => Object.assign({}, d, { v: v2Fig(d.id) }));
+  if (rows.some(r => !Number.isFinite(r.v))) return '';
+  // A funnel that ends at nobody is arithmetic, not proof — the ROI inputs are
+  // simply not filled in yet. Fall back to the motif.
+  if (!(rows[0].v > 0) || !(rows[rows.length - 1].v > 0)) return '';
+
+  // A KPI CASCADE, NOT BARS. These four numbers span roughly 30:1 (60 attendees
+  // down to 2 clients), so a shared length scale renders the last value — the
+  // one the whole beat is about — as a 3px sliver, and padding it to a visible
+  // minimum would misstate it. Four headline numbers are a stat row; the step
+  // between them carries the conversion rate, which is the actual story.
+  const tiles = rows.map(function (r, i) {
+    const prev = i ? rows[i - 1].v : null;
+    const step = (prev > 0)
+      ? '<div style="font-size:9px;color:' + ink.faint + ';margin:7px 0 7px 2px;line-height:1;">&darr;&nbsp; ' +
+          Math.round((r.v / prev) * 100) + '%</div>'
+      : '';
+    return step +
+      '<div style="display:flex;align-items:baseline;gap:9px;">' +
+        '<span style="font-size:' + (r.emph ? '30px' : '20px') + ';font-weight:700;line-height:1;' +
+          'color:' + (r.emph ? ink.accent : ink.muted) + ';min-width:' + (r.emph ? '64' : '52') + 'px;">' +
+          v2FigWrap(r.id, _v2FigFmt(r.id, r.v)) + '</span>' +
+        '<span style="font-size:' + (r.emph ? '12px' : '11px') + ';color:' + (r.emph ? ink.ink : ink.faint) + ';' +
+          (r.emph ? 'font-weight:600;' : '') + '">' + v2Esc(r.label) + '</span>' +
+      '</div>';
+  }).join('');
+
+  const invites = v2Fig('fig_funnel_invites');
+  const sub = Number.isFinite(invites)
+    ? '<div style="font-size:10px;color:' + ink.faint + ';margin-top:12px;border-top:1px solid ' + ink.axis + ';padding-top:8px;">from ' +
+      v2FigWrap('fig_funnel_invites', _v2FigFmt('fig_funnel_invites', invites)) + ' invites a month</div>'
+    : '';
+  return '<div style="width:100%;">' +
+    '<div style="font-size:10px;font-weight:700;letter-spacing:.06em;color:' + ink.faint + ';margin-bottom:12px;">EVERY MONTH, ONCE IT RUNS</div>' +
+    tiles + sub + '</div>';
+}
+
+function v2ChartYear1() {
+  const ink   = v2ChartInk();
+  const total = v2Fig('fig_year1_revenue');
+  if (!Number.isFinite(total) || total <= 0) return '';
+  const f = v2Forecast();
+  // Re-derive the monthly shape from the same RAMP the ROI tab uses, then scale
+  // it so the columns sum to whatever the total currently is — an override of
+  // the total reshapes the chart instead of contradicting it.
+  const raw = [];
+  let running = 0;
+  for (let m = 1; m <= 12; m++) { running += (RAMP[m] || 0); raw.push(running); }
+  const peak  = raw[raw.length - 1] || 1;
+  const cum   = raw.map(v => (v / peak) * total);
+  const cols = cum.map(function (v, i) {
+    const h    = Math.max(2, (v / total) * 88);
+    const emph = i === 11;
+    // flex:1 so the row fills the aside, max-width keeps it inside the 24px
+    // bar cap; 2px gap is the surface spacer between touching marks.
+    return '<div title="Month ' + (i + 1) + ': ' + _v2FigFmt('fig_year1_revenue', Math.round(v)) + '" ' +
+      'style="flex:1;max-width:24px;height:' + h.toFixed(1) + 'px;background:' + (emph ? ink.accent : ink.grey) + ';' +
+      'border-radius:4px 4px 0 0;"></div>';
+  }).join('');
+  return '<div style="width:100%;">' +
+    '<div style="font-size:10px;font-weight:700;letter-spacing:.06em;color:' + ink.faint + ';margin-bottom:10px;">CUMULATIVE, MONTH 1 TO 12</div>' +
+    '<div style="display:flex;align-items:flex-end;gap:2px;height:88px;border-bottom:1px solid ' + ink.axis + ';">' + cols + '</div>' +
+    '<div style="display:flex;justify-content:space-between;font-size:9px;color:' + ink.faint + ';margin-top:5px;"><span>Month 1</span><span>Month 12</span></div>' +
+    '<div style="margin-top:12px;">' +
+      '<div style="font-size:28px;font-weight:700;color:' + ink.ink + ';line-height:1.05;">' +
+        v2FigWrap('fig_year1_revenue', _v2FigFmt('fig_year1_revenue', total)) + '</div>' +
+      '<div style="font-size:10px;color:' + ink.faint + ';margin-top:3px;">by the end of year one</div>' +
+    '</div></div>';
+}
+
+function v2ChartHours() {
+  const ink = v2ChartInk();
+  const steady = v2Fig('fig_hours_steady');
+  if (!Number.isFinite(steady)) return '';
+  const pts = [];
+  for (let m = 1; m <= 12; m++) pts.push(TIME[m] || 0);
+  const max = Math.max.apply(null, pts);
+  if (!(max > 0)) return '';
+  const W = 250, H = 76;
+  const xy = pts.map((v, i) => ({ x: (i / (pts.length - 1)) * W, y: H - (v / max) * H }));
+  const line = xy.map((p, i) => (i ? 'L' : 'M') + p.x.toFixed(1) + ' ' + p.y.toFixed(1)).join(' ');
+  const area = line + ' L' + W + ' ' + H + ' L0 ' + H + ' Z';
+  const end  = xy[xy.length - 1];
+  return '<div style="width:100%;">' +
+    '<div style="font-size:10px;font-weight:700;letter-spacing:.06em;color:' + ink.faint + ';margin-bottom:10px;">YOUR HOURS A WEEK</div>' +
+    '<svg viewBox="0 0 ' + W + ' ' + (H + 8) + '" width="100%" height="84" style="overflow:visible;" aria-hidden="true">' +
+      '<path d="' + area + '" fill="' + ink.accent + '" opacity="0.10"/>' +
+      '<path d="' + line + '" fill="none" stroke="' + ink.accent + '" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>' +
+      '<circle cx="' + end.x.toFixed(1) + '" cy="' + end.y.toFixed(1) + '" r="4.5" fill="' + ink.accent + '" stroke="#0d0d12" stroke-width="2"/>' +
+    '</svg>' +
+    '<div style="display:flex;justify-content:space-between;align-items:baseline;margin-top:6px;">' +
+      '<span style="font-size:9px;color:' + ink.faint + ';">Month 1 &middot; ' + (TIME[1] || 0) + ((TIME[1] || 0) === 1 ? ' hr' : ' hrs') + '</span>' +
+      '<span style="font-size:13px;font-weight:700;color:' + ink.ink + ';">' +
+        v2FigWrap('fig_hours_steady', _v2FigFmt('fig_hours_steady', steady)) + (steady === 1 ? ' hr' : ' hrs') + '</span>' +
+    '</div>' +
+    '<div style="text-align:right;font-size:9px;color:' + ink.faint + ';">once it is running</div>' +
+  '</div>';
+}
+
+// Hero figure — the one number a beat leads with. >=48px, same sans as the rest,
+// proportional figures (tabular-nums makes a display-size number look loose).
+function v2ChartClaim() {
+  const ink   = v2ChartInk();
+  const value = v2Fig('fig_claim_value');
+  const label = v2Fig('fig_claim_label');
+  if (!value || !label) return '';
+  return '<div style="width:100%;text-align:center;">' +
+    '<div style="font-size:52px;font-weight:700;color:' + ink.ink + ';line-height:1;letter-spacing:-0.02em;">' +
+      v2FigWrap('fig_claim_value', v2Esc(String(value))) + '</div>' +
+    '<div style="font-size:11px;color:' + ink.muted + ';line-height:1.5;margin-top:10px;">' +
+      v2FigWrap('fig_claim_label', v2Esc(String(label))) + '</div>' +
+  '</div>';
+}
+
+function v2ChartClose() {
+  const ink   = v2ChartInk();
+  const total = v2Fig('fig_year1_revenue');
+  if (!Number.isFinite(total) || total <= 0) return '';
+  return '<div style="width:100%;text-align:center;">' +
+    '<div style="font-size:52px;font-weight:700;color:' + ink.ink + ';line-height:1;letter-spacing:-0.02em;">' +
+      v2FigWrap('fig_year1_revenue', _v2FigFmt('fig_year1_revenue', total)) + '</div>' +
+    '<div style="font-size:11px;color:' + ink.muted + ';line-height:1.5;margin-top:10px;">' +
+      'year one, at the numbers we just walked through</div>' +
+  '</div>';
+}
+
+// Which beat gets which chart. A beat not listed keeps its motif.
+const V2_BEAT_CHART = {
+  'The bold claim':       v2ChartClaim,
+  'The cost of waiting':  v2ChartYear1,
+  'What good looks like': v2ChartFunnel,
+  'How it goes':          v2ChartHours,
+  'The close':            v2ChartClose
+};
+
 // apollo_keyword is a string on older jobs and an array on newer ones.
 function icpKeywordChips(icp) {
   const raw = icp && (icp.apollo_keyword != null ? icp.apollo_keyword : icp.industry);
@@ -2487,10 +2834,19 @@ function v2BeatAside(s) {
   const hasCards = !!((s.risks && s.risks.length) || s.before || s.after);
   if (hasCards) return '';
 
-  const motif = v2BeatMotif(s.step);
-  if (!motif && !extra) return '';
-  return '<div style="flex:none;width:230px;display:flex;flex-direction:column;align-items:center;justify-content:center;' +
-    'border-left:1px solid var(--prospect-primary-alpha, rgba(255,255,255,0.07));padding-left:26px;">' + motif + extra + '</div>';
+  // A real chart beats a schematic motif wherever we have the figures for one.
+  // The motif stays as the fallback: it is what a beat gets when the job has no
+  // ROI inputs yet, and it is still better than a chart drawn from zeros.
+  let chart = '';
+  const maker = V2_BEAT_CHART[s.step];
+  if (maker) { try { chart = maker() || ''; } catch (e) { console.warn('[v2] chart failed for', s.step, e.message); } }
+
+  const motif = chart ? '' : v2BeatMotif(s.step);
+  if (!chart && !motif && !extra) return '';
+  // Charts need more room than a 92px motif; figures wrap badly at 230.
+  const w = chart ? 286 : 230;
+  return '<div style="flex:none;width:' + w + 'px;display:flex;flex-direction:column;align-items:center;justify-content:center;' +
+    'border-left:1px solid var(--prospect-primary-alpha, rgba(255,255,255,0.07));padding-left:26px;">' + chart + motif + extra + '</div>';
 }
 
 function v2PaintSlide() {
@@ -2585,8 +2941,15 @@ function v2RenderDeck(job) {
   // prospect; kept in edit mode so the rep can see it needs filling.
   const beats = IS_EDIT_MODE ? all : all.filter(x => x.source !== 'missing');
   // The V1 hero leads: it is the title slide, and V1 is what reps already know.
+  const prevStep = (_v2Slides[_v2SlideIdx] || {}).step;
   _v2Slides = [{ hero: true, step: 'Title', source: 'v1' }].concat(beats);
-  _v2SlideIdx = 0;
+  // Hold the rep's place across a re-render. The deck re-renders whenever the
+  // job is re-read — a poll, or saving a figure correction — and resetting to
+  // the title slide would throw a rep back to the start of the deck mid-call.
+  // Matched on step rather than index so it survives a beat appearing or
+  // disappearing (Proof becomes visible the moment it is written).
+  const keep = prevStep ? _v2Slides.findIndex(x => x.step === prevStep) : -1;
+  _v2SlideIdx = keep >= 0 ? keep : 0;
 
   if (!document.getElementById('v2-beat-slide')) {
     const stage = document.createElement('div');
@@ -2852,6 +3215,92 @@ async function v2OpenMatches() {
 // a generic fallback cannot carry — a rep would have to talk over it. So it is
 // hidden from the prospect until the rep fills these in, at which point the
 // slide generates and becomes visible.
+// ── V2: correcting a figure on a slide ──────────────────────────────────────
+// Every number on a deck chart is computed, and a rep who knows the prospect
+// may well disagree with one. Rather than have them talk around a figure they
+// do not believe, each is click-to-edit in edit mode and the correction is
+// stored as a per-job override that wins everywhere that figure appears.
+let _v2FigId = null;
+
+function v2OpenFig(id) {
+  const meta = V2_FIGURES[id];
+  if (!meta) return;
+  _v2FigId = id;
+  const ov = ((window.__V2_JOB || {}).extracted_data || {})._overrides || {};
+  const computed = (function () { try { return meta.compute(v2Forecast(), _V2_BENCH); } catch (e) { return null; } })();
+  document.getElementById('v2-fig-title').textContent = meta.label;
+  document.getElementById('v2-fig-hint').textContent =
+    meta.hint || 'This is what the prospect sees on the slide.';
+  const cur = ov[id] != null && String(ov[id]).trim() !== '' ? ov[id] : computed;
+  document.getElementById('v2-fig-input').value = cur == null ? '' : String(cur);
+  document.getElementById('v2-fig-computed').textContent = computed == null
+    ? 'Nothing calculated for this one yet.'
+    : 'Calculated from this job: ' + computed + '.';
+  document.getElementById('v2-fig-msg').textContent = '';
+  document.getElementById('v2-fig-clear').style.display = v2FigIsOverridden(id) ? '' : 'none';
+  document.getElementById('v2-fig-modal').style.display = 'flex';
+  document.getElementById('v2-fig-input').focus();
+  document.getElementById('v2-fig-input').select();
+}
+
+// Esc closes, Enter saves — a rep correcting a number mid-call should not have
+// to reach for the mouse.
+document.addEventListener('keydown', function (e) {
+  const modal = document.getElementById('v2-fig-modal');
+  if (!modal || modal.style.display !== 'flex') return;
+  if (e.key === 'Escape') { e.preventDefault(); v2CloseFig(); }
+  else if (e.key === 'Enter' && e.target && e.target.id === 'v2-fig-input') { e.preventDefault(); v2SaveFig(); }
+});
+
+function v2CloseFig() {
+  document.getElementById('v2-fig-modal').style.display = 'none';
+  _v2FigId = null;
+}
+
+async function v2WriteFig(patch, btnId) {
+  const btn = document.getElementById(btnId);
+  const msg = document.getElementById('v2-fig-msg');
+  if (btn) btn.disabled = true;
+  try {
+    const r = await fetch('/api/jobs/' + encodeURIComponent(window.__JOB_ID) + '/overrides', {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch)
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    // Re-read so the deck repaints from stored truth rather than the form — the
+    // allow-list on the server is what decides whether a key actually landed.
+    const fresh = await fetch('/api/jobs/' + encodeURIComponent(window.__JOB_ID));
+    window.__V2_JOB = await fresh.json();
+    v2CloseFig();
+    v2PaintSlide();
+  } catch (e) {
+    if (msg) { msg.textContent = 'Could not save: ' + e.message; msg.style.color = '#f87171'; }
+  } finally { if (btn) btn.disabled = false; }
+}
+
+function v2SaveFig() {
+  if (!_v2FigId) return;
+  const meta = V2_FIGURES[_v2FigId];
+  const raw  = document.getElementById('v2-fig-input').value.trim();
+  const msg  = document.getElementById('v2-fig-msg');
+  if (!raw) { msg.textContent = 'Type a value, or use "Back to calculated".'; msg.style.color = '#fbbf24'; return; }
+  // Numeric figures are parsed here so "1.2M" and "$18k" both work, and so a
+  // typo lands as a visible error in the modal rather than as NaN on a slide in
+  // front of the prospect's audience.
+  if (meta.kind !== 'text' && _v2ParseNum(raw) == null) {
+    msg.textContent = 'That is not a number I can read. Try 1200, 1.2k or $18,000.';
+    msg.style.color = '#fbbf24';
+    return;
+  }
+  const patch = {}; patch[_v2FigId] = raw;
+  v2WriteFig(patch, 'v2-fig-save');
+}
+
+function v2ClearFig() {
+  if (!_v2FigId) return;
+  const patch = {}; patch[_v2FigId] = '';
+  v2WriteFig(patch, 'v2-fig-clear');
+}
+
 function v2OpenProof() {
   const ov = ((window.__V2_JOB || {}).extracted_data || {})._overrides || {};
   document.getElementById('v2-proof-client').value = ov.proof_client || '';
@@ -4494,7 +4943,13 @@ if (document.readyState === 'loading') {
       window.PORTAL_VERSION = (job && job.portal_version) === 'v2' ? 'v2' : 'v1';
       applyPortalVersion();
       window.__V2_JOB = job;
-      if (window.IS_V2 && window.IS_V2()) { v2RenderDeck(job); v2RenderRoiReal(); }
+      if (window.IS_V2 && window.IS_V2()) {
+        v2RenderDeck(job); v2RenderRoiReal();
+        // The bold-claim beat cites library medians. Fetched after the first
+        // paint so a slow/unavailable library never delays the deck — that beat
+        // shows its motif until the numbers land, then repaints with them.
+        v2LoadBenchmarks().then(function () { if (_V2_BENCH) v2PaintSlide(); });
+      }
       const tasks = job.tasks || {};
 
       // ── DIAGNOSTIC — remove after debugging ─────────────────────────────

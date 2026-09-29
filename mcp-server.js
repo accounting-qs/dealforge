@@ -920,7 +920,9 @@ const TOOLS = [
       'inputs, per-variant calendar copy (A/B/C), brand colours and the three image slots. ' +
       'Pass an empty string to clear a field back to the AI value. Setting tam_total or recommended_outreach ' +
       'automatically clears a now-stale full_market_cycle. slide_N_headline / slide_N_sub (N = 1-9) override the ' +
-      'nine-beat webinar deck — use these to replace a beat that came back badged GENERIC.',
+      'nine-beat webinar deck — use these to replace a beat that came back badged GENERIC. '  +
+      'fig_* replace a computed number on a deck chart; proof_* fill the Proof beat, which stays hidden ' +
+      'from the prospect until proof_client and proof_result are both set.',
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
       type: 'object', required: ['job_id'],
@@ -950,7 +952,34 @@ const TOOLS = [
         slide_8_headline: { type: 'string' }, slide_8_sub: { type: 'string' },
         slide_9_headline: { type: 'string' }, slide_9_sub: { type: 'string' },
         webinar_hero_image_url:  { type: 'string' },
-        webinar_headshot_url:    { type: 'string' }
+        webinar_headshot_url:    { type: 'string' },
+        // Rep-corrected chart figures on the deck. Every number drawn on a beat
+        // is computed from this job's ROI forecast or the case-study library
+        // medians; these replace one when the rep disagrees. Empty string
+        // restores the calculated value.
+        fig_claim_value:      { type: 'string', description: 'Beat 1 hero, e.g. "1 in 10". Text, not a number.' },
+        fig_claim_label:      { type: 'string', description: 'Caption under the beat 1 hero.' },
+        fig_funnel_invites:   { type: ['number', 'string'] },
+        fig_funnel_attendees: { type: ['number', 'string'] },
+        fig_funnel_booked:    { type: ['number', 'string'] },
+        fig_funnel_held:      { type: ['number', 'string'] },
+        fig_funnel_clients:   { type: ['number', 'string'], description: 'The emphasised figure on beat 5.' },
+        fig_year1_revenue:    { type: ['number', 'string'], description: 'Ramp-weighted year-one revenue. Shown on beats 4 and 9.' },
+        fig_hours_steady:     { type: ['number', 'string'], description: 'Steady-state hours per week, beat 7.' },
+        // The Proof beat. Hidden from the prospect until proof_client and
+        // proof_result are both set — these were on the server allow-list but
+        // missing here, so a bot could not fill the one beat that has no usable
+        // fallback.
+        proof_client: { type: 'string' }, proof_result: { type: 'string' },
+        proof_before: { type: 'string' }, proof_after:  { type: 'string' },
+        // Rep-chosen case studies per surface: arrays of airtable_record_id in
+        // display order. Empty array falls back to the automatic match.
+        cs_pin_lead_list: { type: 'array', items: { type: 'string' } },
+        cs_pin_invite:    { type: 'array', items: { type: 'string' } },
+        cs_pin_webinar:   { type: 'array', items: { type: 'string' } },
+        cs_pin_roi:       { type: 'array', items: { type: 'string' } },
+        cs_default_invite:  { type: 'string', description: '"yours" or an airtable_record_id.' },
+        cs_default_webinar: { type: 'string', description: '"yours" or an airtable_record_id.' }
       }
     },
     async run(args) {
