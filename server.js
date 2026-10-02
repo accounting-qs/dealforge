@@ -690,6 +690,121 @@ const V2_FIGURE_KEYS = [
   'fig_year1_revenue', 'fig_hours_steady'
 ];
 
+// The /overrides allow-list. Module-level because two routes now write through
+// it — the rep's own edit-mode saves, and the natural-language deck tweak,
+// which must never be able to write a key the rep's own UI could not. One list
+// is the only way that stays true.
+const OVERRIDE_ALLOWED_KEYS = [
+  'tam_total','recommended_outreach','full_market_cycle','webinar_title','roi_ltv','roi_show_rate','roi_close_rate',
+  'webinar_logo_url','webinar_hero_image_url','webinar_headshot_url',
+  // Per-variant calendar copy overrides (A/B/C). Set in rep edit mode from
+  // the Calendar Invite tab. Empty string clears the override (falls back
+  // to the AI-generated copy).
+  'webinar_title_0','webinar_title_1','webinar_title_2',
+  'webinar_desc_0','webinar_desc_1','webinar_desc_2',
+  // Brand colors — rep can override the scraped values from the Brand
+  // Assets gallery. Affect the hero gradient, accents, and (in slides
+  // that pull from CSS vars) anything tied to --prospect-primary etc.
+  // Empty string clears the override.
+  'webinar_primary_color','webinar_secondary_color','webinar_accent_color',
+  // Per-beat deck overrides. composeWebinarSlides() reads these
+  // (slide_1_headline … slide_9_sub); without them on this allow-list the
+  // read path was dead — nobody could write the value the renderer looks
+  // for, so a GENERIC beat could never be replaced.
+  ...Array.from({ length: 9 }, (_, i) => [`slide_${i + 1}_headline`, `slide_${i + 1}_sub`]).flat(),
+  // Rep-chosen case studies per surface — arrays of airtable_record_id, in
+  // display order. Alex wanted the match automatic; reps want the final
+  // say, so auto-match is the default and a pin overrides it. An empty
+  // array means "pin nothing", which falls back to automatic.
+  'cs_pin_lead_list', 'cs_pin_invite', 'cs_pin_webinar', 'cs_pin_roi',
+  // Which panel the tab OPENS on. 'yours' (the prospect's own) or an
+  // airtable_record_id. Without this the prospect always landed on their
+  // own invite and the rep had no way to lead with a client's instead.
+  'cs_default_invite', 'cs_default_webinar',
+  // The Proof beat, filled in by the rep. The call often gives no client
+  // result, and this beat is the one a generic fallback cannot carry — so
+  // it stays hidden from the prospect until these are written.
+  'proof_client', 'proof_result', 'proof_before', 'proof_after',
+  // Rep-corrected chart figures. Every number drawn on a deck chart is
+  // computed (from this job's ROI forecast or the library medians) and
+  // then passed through this override, so a rep who disagrees with a
+  // figure can fix it on the slide instead of talking around it.
+  // Enumerated rather than a `fig_*` wildcard: this list is a security
+  // boundary — it is what stops arbitrary keys being written into
+  // extracted_data._overrides.
+  ...V2_FIGURE_KEYS,
+];
+// What each editable key actually MEANS. The tweak route sends this to the
+// model instead of a bare list of identifiers.
+//
+// This exists because of a real failure: asked to set "35% of attendees book a
+// call", the model picked roi_close_rate — which is the rate at which a HELD
+// call becomes a client. It would have silently rewritten the revenue forecast
+// across the deck and the ROI tab. A list of names with no semantics invites
+// exactly that; a wrong field written confidently is worse than a refusal.
+const OVERRIDE_KEY_DOCS = {
+  tam_total:            'Total addressable market — how many people are in the prospect\'s market.',
+  recommended_outreach: 'Invites sent per month.',
+  full_market_cycle:    'Months to work through the whole market once. Usually derived; rarely set by hand.',
+  roi_ltv:              'Year-one revenue per new client, in dollars. (Legacy name — it is NOT lifetime value.)',
+  roi_show_rate:        'Percent of BOOKED calls that are actually attended. 0-100.',
+  roi_close_rate:       'Percent of HELD calls that become a client. 0-100. NOT the attendee-to-booking rate.',
+  webinar_title:        'The webinar\'s headline title.',
+  fig_claim_value:      'Beat 1 hero figure, free text such as "1 in 10".',
+  fig_claim_label:      'The caption under the beat 1 hero figure.',
+  fig_funnel_invites:   'Invites per month shown on the beat 5 cascade.',
+  fig_funnel_attendees: 'Attendees per month shown on the beat 5 cascade.',
+  fig_funnel_booked:    'Calls BOOKED per month on the beat 5 cascade (a count, not a rate).',
+  fig_funnel_held:      'Calls HELD per month on the beat 5 cascade (a count, not a rate).',
+  fig_funnel_clients:   'New clients per month on the beat 5 cascade (a count, not a rate).',
+  fig_year1_revenue:    'Total year-one revenue in dollars, shown on beats 4 and 9.',
+  fig_hours_steady:     'Hours per week the client spends once it is running, beat 7.',
+  proof_client:         'Beat 6: who the client was. One of the PROSPECT\'S clients, never one of ours.',
+  proof_result:         'Beat 6: what measurably changed for them.',
+  proof_before:         'Beat 6: where they started.',
+  proof_after:          'Beat 6: where they ended up.',
+  cs_default_invite:    'Which panel the Calendar Invite tab opens on: "yours" or an airtable_record_id.',
+  cs_default_webinar:   'Which panel the Webinar tab opens on: "yours" or an airtable_record_id.'
+};
+
+// Concepts reps ask for that look editable but are not. Naming them explicitly
+// stops the model reaching for the nearest-sounding key instead of saying no.
+const OVERRIDE_NOT_EDITABLE = [
+  'The attendee-to-booking rate (what share of attendees book a call) is a fixed model constant, not an editable field. You can change the resulting COUNTS (fig_funnel_booked) but not the rate itself.',
+  'The invite-to-registration and registration-to-attendance rates are likewise fixed.',
+  'Slide layout, chart type, fonts, images and slide order cannot be changed here.',
+  'Beats cannot be added, removed or reordered — the deck is always the same nine.'
+];
+
+// Merge a validated override patch into a job and persist it. Shared by the
+// rep's own edit-mode saves and by the natural-language deck tweak, so the
+// stale-full_market_cycle rule below can never apply to one and not the other.
+// Callers MUST have filtered the patch through OVERRIDE_ALLOWED_KEYS first —
+// this writes whatever it is handed.
+async function applyOverrides(jobId, safeOverrides) {
+  const job = await getJob(jobId);
+  if (!job) return { ok: false, status: 404, error: 'Job not found' };
+  const existingData      = job.extracted_data || {};
+  const existingOverrides = existingData._overrides || {};
+  const before = {};
+  for (const k of Object.keys(safeOverrides)) {
+    before[k] = Object.prototype.hasOwnProperty.call(existingOverrides, k) ? existingOverrides[k] : null;
+  }
+  const mergedOverrides = { ...existingOverrides, ...safeOverrides, _updated_at: new Date().toISOString() };
+  // Full Market Cycle is a function of TAM / outreach. If either is edited, a
+  // previously-set cycle override is now stale — drop it so the card recomputes
+  // (unless the cycle is being set in this same call).
+  if ((('tam_total' in safeOverrides) || ('recommended_outreach' in safeOverrides)) && !('full_market_cycle' in safeOverrides)) {
+    delete mergedOverrides.full_market_cycle;
+  }
+  const r = await supabaseRequest('PATCH', `/rest/v1/jobs?id=eq.${jobId}`,
+    { extracted_data: { ...existingData, _overrides: mergedOverrides }, updated_at: new Date().toISOString() },
+    { 'Prefer': 'return=minimal' }
+  );
+  if (r.status >= 400) return { ok: false, status: 500, error: `Supabase PATCH failed: ${r.status}` };
+  return { ok: true, before, overrides: mergedOverrides };
+}
+
 // ── Library benchmarks — the numbers the webinar deck is allowed to claim ────
 //
 // The deck used to carry unlabelled schematic motifs precisely because nobody
@@ -7337,6 +7452,182 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // ── POST /api/jobs/:id/webinar/tweak — rep edits the deck in plain English ──
+  //
+  // The rep types what they want changed and the model turns it into a patch of
+  // override keys. It does NOT write slides directly: it may only emit keys from
+  // OVERRIDE_ALLOWED_KEYS, exactly the set the rep's own edit-mode UI can write,
+  // and every key is re-checked here afterwards. A model that hallucinates a key
+  // changes nothing.
+  //
+  // The hard rule in the prompt is no invented evidence. This deck is shown to a
+  // prospect's real audience, so the model may rewrite wording freely but may
+  // only set a number or a client result that the rep actually stated. When it
+  // cannot comply it says so in `reply` and emits no change — a refusal the rep
+  // can read beats a confident fabrication on a slide.
+  if (req.method === 'POST' && urlPath.startsWith('/api/jobs/') && urlPath.endsWith('/webinar/tweak')) {
+    setCors(res);
+    const jobId = urlPath.slice('/api/jobs/'.length, -'/webinar/tweak'.length);
+    try {
+      const body = await parseBody(req);
+      const instruction = String(body.instruction || '').trim().slice(0, 1000);
+      if (!instruction) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Tell me what to change.' }));
+        return;
+      }
+      const job = await getJob(jobId);
+      if (!job) { res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'Job not found' })); return; }
+
+      const slides  = composeWebinarSlides(job);
+      // The figures are computed in the browser (v2Forecast reads the live ROI
+      // inputs), so the client sends what it is actually displaying. Context
+      // only — nothing here is written back unless the model emits a change.
+      const figures = (body.figures && typeof body.figures === 'object') ? body.figures : {};
+      const current = Number.isFinite(Number(body.slide_index)) ? Number(body.slide_index) : null;
+
+      const deckText = slides.map((sl, i) => {
+        const n = i + 1;
+        return [
+          `SLIDE ${n}${current === n ? '   <-- the rep is looking at this one' : ''}`,
+          `  step:     ${sl.step}`,
+          `  headline: ${sl.headline || ''}   [key: slide_${n}_headline]`,
+          `  sub:      ${sl.sub || ''}   [key: slide_${n}_sub]`,
+          sl.line ? `  line:     ${sl.line}` : null,
+          `  source:   ${sl.source}`
+        ].filter(Boolean).join('\n');
+      }).join('\n\n');
+
+      const figText = Object.keys(figures).length
+        ? Object.entries(figures).map(([k, v]) => `  ${k} = ${v}`).join('\n')
+        : '  (none reported by the browser)';
+
+      const systemPrompt = [
+        'You turn a sales rep\'s plain-English request into a precise patch for a webinar slide deck.',
+        '',
+        'THE DECK IS SHOWN TO A PROSPECT\'S REAL AUDIENCE. These rules are absolute:',
+        '1. NEVER invent a statistic, client name, company, case study or result. If the rep asks for',
+        '   proof, a number or a claim you have not been given, make NO change for it and say so in "reply".',
+        '2. A fig_* key may only be changed to a number the rep stated explicitly in their request.',
+        '   Never "improve" a figure on your own — those numbers come from this job\'s ROI model and the',
+        '   case-study library, and a changed one is the rep\'s assertion, not yours.',
+        '3. Copy must be finished and prospect-ready. No placeholders, no square brackets, no "TBD",',
+        '   no "[client name]". If you cannot write it without a placeholder, make no change and say why.',
+        '4. Only emit keys from ALLOWED KEYS. Anything else is discarded and the rep\'s request silently',
+        '   fails, so if the thing they want is not expressible as one of these keys, say that in "reply".',
+        '',
+        'STYLE: headlines are short and declarative (aim under ~60 characters), subs are one clause',
+        '(under ~110). Match the voice already in the deck. Change only what the rep asked for — do not',
+        'tidy neighbouring slides they did not mention.',
+        '',
+        'If the rep says "this slide" or "here", they mean the slide marked as the one they are looking at.',
+        '',
+        'ALLOWED KEYS — use the one whose MEANING matches the request, not the one whose',
+        'name sounds closest. If none of them means what the rep asked for, change nothing',
+        'and say so:',
+        OVERRIDE_ALLOWED_KEYS.map(k => '  ' + k + (OVERRIDE_KEY_DOCS[k] ? ' — ' + OVERRIDE_KEY_DOCS[k] : '')).join('\n'),
+        '',
+        'NOT EDITABLE — if the rep asks for one of these, say so plainly and change nothing:',
+        OVERRIDE_NOT_EDITABLE.map(x => '  - ' + x).join('\n'),
+        '',
+        'Reply with JSON only, no prose and no code fence:',
+        '{"reply":"one short sentence to the rep, in plain English","changes":[{"key":"slide_3_headline","value":"...","reason":"..."}]}',
+        'An empty changes array is a valid, correct answer when you cannot comply.',
+        '',
+        '"reply" is ONE sentence, 25 words or fewer, saying what you changed or why you did not.',
+        'Never ask the rep a question and never offer them options — you have already acted, and',
+        'they are reading this mid-edit, not having a conversation.'
+      ].join('\n');
+
+      const userPrompt = [
+        `Prospect: ${job.prospect_company || 'unknown'}`,
+        '',
+        'CURRENT DECK:',
+        deckText,
+        '',
+        'FIGURES CURRENTLY SHOWN ON THE CHARTS:',
+        figText,
+        '',
+        'REP REQUEST:',
+        instruction
+      ].join('\n');
+
+      const anthropic = makeAnthropic();
+      const message = await claudeMessage(anthropic, {
+        model: 'claude-sonnet-4-6', max_tokens: 2000, temperature: 0.4,
+        system: systemPrompt,
+        messages: [{ role: 'user', content: userPrompt }]
+      }, 'webinar_tweak');
+
+      const raw = (message.content || []).filter(c => c.type === 'text').map(c => c.text).join('').trim();
+      // Models wrap JSON in a fence often enough that not handling it would make
+      // this fail intermittently for no reason the rep could act on.
+      const jsonText = (raw.match(/```(?:json)?\s*([\s\S]*?)```/) || [null, raw])[1].trim();
+      let parsed;
+      try { parsed = JSON.parse(jsonText); }
+      catch (e) {
+        console.error('[webinar_tweak] unparseable model output:', raw.slice(0, 400));
+        res.writeHead(502, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'The model did not return usable changes. Try rewording the request.' }));
+        return;
+      }
+
+      // Re-validate server-side. The model is untrusted input: it proposes, this
+      // decides. A rejected change is reported, never silently dropped.
+      const COLOR_FIELDS = ['webinar_primary_color', 'webinar_secondary_color', 'webinar_accent_color'];
+      const patch = {}, accepted = [], rejected = [];
+      for (const c of (Array.isArray(parsed.changes) ? parsed.changes : []).slice(0, 20)) {
+        const key = String((c && c.key) || '');
+        if (!OVERRIDE_ALLOWED_KEYS.includes(key)) { rejected.push({ key, why: 'not an editable field' }); continue; }
+        let value = c.value;
+        if (value === null || value === undefined) value = '';
+        if (Array.isArray(value)) value = value.map(v => String(v));
+        else value = String(value);
+        if (typeof value === 'string' && value.length > 600) { rejected.push({ key, why: 'too long' }); continue; }
+        if (COLOR_FIELDS.includes(key) && value !== '' && !/^#[0-9a-f]{6}$/i.test(value)) {
+          rejected.push({ key, why: 'not a hex colour' }); continue;
+        }
+        // A figure that is not a number would render as blank or NaN on a slide.
+        if (/^fig_/.test(key) && key !== 'fig_claim_value' && key !== 'fig_claim_label' &&
+            value !== '' && parseHumanNumber(value) == null) {
+          rejected.push({ key, why: 'not a number' }); continue;
+        }
+        // Unfinished copy is the most likely bad output and the most damaging —
+        // it reaches the prospect looking like a mistake rather than a claim.
+        if (typeof value === 'string' && /\[[^\]]*\]|\bTBD\b|\bXX+\b/i.test(value)) {
+          rejected.push({ key, why: 'contains a placeholder' }); continue;
+        }
+        patch[key] = value;
+        accepted.push({ key, value, reason: String((c && c.reason) || '').slice(0, 200) });
+      }
+
+      let before = {};
+      if (Object.keys(patch).length) {
+        const w = await applyOverrides(jobId, patch);
+        if (!w.ok) { res.writeHead(w.status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: w.error })); return; }
+        before = w.before;
+      }
+      console.log(`[webinar_tweak] job=${jobId} applied=${accepted.length} rejected=${rejected.length} instruction="${instruction.slice(0, 80)}"`);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        ok: true,
+        reply: String(parsed.reply || '').slice(0, 400),
+        applied: accepted,
+        rejected,
+        // Previous values, so the rep can undo the whole patch in one click.
+        before
+      }));
+    } catch (e) {
+      console.error('[POST /api/jobs/webinar/tweak]', e.message);
+      // classifyClaudeError takes the error object, and turns "credit balance
+      // too low" into something the rep can act on instead of a raw 400.
+      const friendly = classifyClaudeError(e);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: (friendly && friendly.message) || e.message }));
+    }
+    return;
+  }
+
   // ── GET /api/case-studies/benchmarks — medians the deck charts cite ───────
   if (req.method === 'GET' && urlPath === '/api/case-studies/benchmarks') {
     setCors(res);
@@ -8862,46 +9153,7 @@ const server = http.createServer(async (req, res) => {
     const jobId = urlPath.slice('/api/jobs/'.length, -'/overrides'.length);
     try {
       const body = await parseBody(req);
-      const ALLOWED = [
-        'tam_total','recommended_outreach','full_market_cycle','webinar_title','roi_ltv','roi_show_rate','roi_close_rate',
-        'webinar_logo_url','webinar_hero_image_url','webinar_headshot_url',
-        // Per-variant calendar copy overrides (A/B/C). Set in rep edit mode from
-        // the Calendar Invite tab. Empty string clears the override (falls back
-        // to the AI-generated copy).
-        'webinar_title_0','webinar_title_1','webinar_title_2',
-        'webinar_desc_0','webinar_desc_1','webinar_desc_2',
-        // Brand colors — rep can override the scraped values from the Brand
-        // Assets gallery. Affect the hero gradient, accents, and (in slides
-        // that pull from CSS vars) anything tied to --prospect-primary etc.
-        // Empty string clears the override.
-        'webinar_primary_color','webinar_secondary_color','webinar_accent_color',
-        // Per-beat deck overrides. composeWebinarSlides() reads these
-        // (slide_1_headline … slide_9_sub); without them on this allow-list the
-        // read path was dead — nobody could write the value the renderer looks
-        // for, so a GENERIC beat could never be replaced.
-        ...Array.from({ length: 9 }, (_, i) => [`slide_${i + 1}_headline`, `slide_${i + 1}_sub`]).flat(),
-        // Rep-chosen case studies per surface — arrays of airtable_record_id, in
-        // display order. Alex wanted the match automatic; reps want the final
-        // say, so auto-match is the default and a pin overrides it. An empty
-        // array means "pin nothing", which falls back to automatic.
-        'cs_pin_lead_list', 'cs_pin_invite', 'cs_pin_webinar', 'cs_pin_roi',
-        // Which panel the tab OPENS on. 'yours' (the prospect's own) or an
-        // airtable_record_id. Without this the prospect always landed on their
-        // own invite and the rep had no way to lead with a client's instead.
-        'cs_default_invite', 'cs_default_webinar',
-        // The Proof beat, filled in by the rep. The call often gives no client
-        // result, and this beat is the one a generic fallback cannot carry — so
-        // it stays hidden from the prospect until these are written.
-        'proof_client', 'proof_result', 'proof_before', 'proof_after',
-        // Rep-corrected chart figures. Every number drawn on a deck chart is
-        // computed (from this job's ROI forecast or the library medians) and
-        // then passed through this override, so a rep who disagrees with a
-        // figure can fix it on the slide instead of talking around it.
-        // Enumerated rather than a `fig_*` wildcard: this list is a security
-        // boundary — it is what stops arbitrary keys being written into
-        // extracted_data._overrides.
-        ...V2_FIGURE_KEYS,
-      ];
+      const ALLOWED = OVERRIDE_ALLOWED_KEYS;
       const safeOverrides = {};
       // Color override values are inlined into onclick="..." attributes in
       // populateBrandGallery's color-row template, so the value must be a
@@ -8929,27 +9181,15 @@ const server = http.createServer(async (req, res) => {
         res.end(JSON.stringify({ error: `No valid override fields. Allowed: ${ALLOWED.join(', ')}` }));
         return;
       }
-      // Fetch current job to merge overrides
-      const job = await getJob(jobId);
-      if (!job) { res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'Job not found' })); return; }
-      const existingData = job.extracted_data || {};
-      const existingOverrides = existingData._overrides || {};
-      const mergedOverrides = { ...existingOverrides, ...safeOverrides, _updated_at: new Date().toISOString() };
-      // Full Market Cycle is a function of TAM ÷ outreach. If the rep edits either
-      // of those, a previously-set cycle override is now stale — drop it so the
-      // card recomputes (unless the rep is setting the cycle in this same call).
-      if ((('tam_total' in safeOverrides) || ('recommended_outreach' in safeOverrides)) && !('full_market_cycle' in safeOverrides)) {
-        delete mergedOverrides.full_market_cycle;
+      const w = await applyOverrides(jobId, safeOverrides);
+      if (!w.ok) {
+        res.writeHead(w.status, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: w.error }));
+        return;
       }
-      const updatedData = { ...existingData, _overrides: mergedOverrides };
-      const r = await supabaseRequest('PATCH', `/rest/v1/jobs?id=eq.${jobId}`,
-        { extracted_data: updatedData, updated_at: new Date().toISOString() },
-        { 'Prefer': 'return=minimal' }
-      );
-      if (r.status >= 400) throw new Error(`Supabase PATCH failed: ${r.status}`);
       console.log(`[PATCH /api/jobs/${jobId}/overrides] Saved:`, safeOverrides);
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, overrides: mergedOverrides }));
+      res.end(JSON.stringify({ ok: true, overrides: w.overrides }));
     } catch(e) {
       console.error('[PATCH /api/jobs/overrides]', e.message);
       res.writeHead(500, { 'Content-Type': 'application/json' });

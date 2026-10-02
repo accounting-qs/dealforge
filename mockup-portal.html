@@ -2960,6 +2960,15 @@ function v2RenderDeck(job) {
     nav.className = 'v2-deck-nav';
     nav.id = 'v2-deck-nav';
     area.appendChild(nav);
+    // Rep instruction bar. Deliberately NOT in the webinar's Live Chat panel —
+    // that panel is the simulated attendee chat the prospect sees, and a rep
+    // control in it would read as part of the show. Edit mode only.
+    if (IS_EDIT_MODE) {
+      const bar = document.createElement('div');
+      bar.id = 'v2-tweak-bar';
+      bar.innerHTML = V2_TWEAK_BAR_HTML;
+      area.appendChild(bar);
+    }
   }
   v2PaintSlide();
 }
@@ -3215,6 +3224,129 @@ async function v2OpenMatches() {
 // a generic fallback cannot carry — a rep would have to talk over it. So it is
 // hidden from the prospect until the rep fills these in, at which point the
 // slide generates and becomes visible.
+// ── V2: tweak the deck in plain English ─────────────────────────────────────
+// The rep types what they want changed; the server turns it into a patch of the
+// same override keys their own edit controls write, and nothing else. Styled to
+// match the Calendar Invite tab's rep bar so there is one pattern to learn, and
+// placed under the deck nav rather than in the Live Chat panel, which is the
+// simulated attendee chat the prospect sees.
+const V2_TWEAK_BAR_HTML =
+  '<div style="margin-top:12px;padding:10px 12px;background:rgba(139,92,246,0.06);border:1px solid rgba(139,92,246,0.25);border-radius:8px;font-family:inherit;">' +
+    '<div style="display:flex;align-items:center;gap:8px;">' +
+      '<span style="font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#a78bfa;flex-shrink:0;">Tweak the slides</span>' +
+      '<input id="v2-tweak-input" type="text" maxlength="1000" ' +
+        'placeholder="What should change? e.g. &quot;make slide 3 punchier&quot; or &quot;say 4 new clients a month, not 2&quot;" ' +
+        'style="flex:1;background:rgba(0,0,0,0.3);border:1px solid rgba(255,255,255,0.08);border-radius:6px;padding:7px 10px;font-size:12px;color:#e2e8f0;outline:none;font-family:inherit;">' +
+      '<button id="v2-tweak-send" onclick="v2SendTweak()" ' +
+        'style="font-size:11px;font-weight:700;padding:6px 14px;border-radius:6px;border:1px solid rgba(139,92,246,0.4);background:rgba(139,92,246,0.14);color:#c4b5fd;cursor:pointer;font-family:inherit;flex-shrink:0;">Send</button>' +
+    '</div>' +
+    '<div id="v2-tweak-log" style="margin-top:8px;font-size:11px;line-height:1.6;color:#a1a1aa;display:none;"></div>' +
+  '</div>';
+
+// Last applied patch, so one click puts it back. Reps try a phrasing, dislike
+// it, and need the previous wording returned without retyping it.
+let _v2TweakUndo = null;
+
+// Enter sends. A rep tweaking a deck between calls should not have to aim for
+// the button. Bound on the document because the bar is created by v2RenderDeck,
+// so it does not exist when this script first runs.
+document.addEventListener('keydown', function (e) {
+  if (e.key !== 'Enter' || !e.target || e.target.id !== 'v2-tweak-input') return;
+  e.preventDefault();
+  v2SendTweak();
+});
+
+function _v2TweakLog(html) {
+  const el = document.getElementById('v2-tweak-log');
+  if (!el) return;
+  el.innerHTML = html;
+  el.style.display = html ? 'block' : 'none';
+}
+
+async function v2SendTweak() {
+  const input = document.getElementById('v2-tweak-input');
+  const btn   = document.getElementById('v2-tweak-send');
+  if (!input) return;
+  const instruction = input.value.trim();
+  if (!instruction) { _v2TweakLog('<span style="color:#fbbf24;">Type what you want changed first.</span>'); return; }
+  if (btn) { btn.disabled = true; btn.textContent = 'Working…'; }
+  _v2TweakLog('<span style="color:#71717a;">Reading the deck and working out the edit…</span>');
+  try {
+    // Send the figures the browser is actually displaying — they are computed
+    // here from the live ROI inputs, so the server cannot derive them.
+    const figures = {};
+    try {
+      Object.keys(V2_FIGURES).forEach(function (id) {
+        const v = v2Fig(id);
+        if (v != null && v !== '') figures[id] = v;
+      });
+    } catch (e) {}
+    const r = await fetch('/api/jobs/' + encodeURIComponent(window.__JOB_ID) + '/webinar/tweak', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ instruction: instruction, slide_index: _v2SlideIdx, figures: figures })
+    });
+    const d = await r.json();
+    if (!r.ok || d.error) throw new Error(d.error || ('HTTP ' + r.status));
+
+    const applied = d.applied || [];
+    if (applied.length) {
+      _v2TweakUndo = d.before || null;
+      // Re-read so the deck repaints from stored truth, not from the response —
+      // the server's allow-list is what decides which keys actually landed.
+      const fresh = await fetch('/api/jobs/' + encodeURIComponent(window.__JOB_ID));
+      window.__V2_JOB = await fresh.json();
+      v2RenderDeck(window.__V2_JOB);
+      input.value = '';
+    }
+
+    const lines = [];
+    if (d.reply) lines.push('<span style="color:#e4e4e7;">' + v2Esc(d.reply) + '</span>');
+    if (applied.length) {
+      lines.push('<span style="color:#4ade80;">Changed ' + applied.length + ':</span> ' +
+        applied.map(a => '<code style="color:#c4b5fd;">' + v2Esc(a.key) + '</code>').join(', ') +
+        ' &nbsp;<a href="#" onclick="v2UndoTweak();return false;" style="color:#a78bfa;">Undo</a>');
+    } else {
+      lines.push('<span style="color:#fbbf24;">Nothing changed.</span>');
+    }
+    // Surfaced, not swallowed: if the model proposed something this server threw
+    // out, the rep needs to know their request only partly landed.
+    (d.rejected || []).forEach(function (x) {
+      lines.push('<span style="color:#f87171;">Skipped <code>' + v2Esc(x.key || '?') + '</code> — ' + v2Esc(x.why || '') + '</span>');
+    });
+    _v2TweakLog(lines.join('<br>'));
+  } catch (e) {
+    _v2TweakLog('<span style="color:#f87171;">' + v2Esc(e.message || 'Could not apply that.') + '</span>');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Send'; }
+  }
+}
+
+async function v2UndoTweak() {
+  if (!_v2TweakUndo) return;
+  // before[] holds null for a key that had no override — writing '' restores
+  // "no override", which is what v2Fig and composeWebinarSlides both treat as
+  // "fall back to the calculated/generated value".
+  const patch = {};
+  Object.keys(_v2TweakUndo).forEach(function (k) {
+    const v = _v2TweakUndo[k];
+    patch[k] = (v === null || v === undefined) ? '' : v;
+  });
+  _v2TweakLog('<span style="color:#71717a;">Putting it back…</span>');
+  try {
+    const r = await fetch('/api/jobs/' + encodeURIComponent(window.__JOB_ID) + '/overrides', {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch)
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const fresh = await fetch('/api/jobs/' + encodeURIComponent(window.__JOB_ID));
+    window.__V2_JOB = await fresh.json();
+    v2RenderDeck(window.__V2_JOB);
+    _v2TweakUndo = null;
+    _v2TweakLog('<span style="color:#4ade80;">Put back.</span>');
+  } catch (e) {
+    _v2TweakLog('<span style="color:#f87171;">Could not undo: ' + v2Esc(e.message) + '</span>');
+  }
+}
+
 // ── V2: correcting a figure on a slide ──────────────────────────────────────
 // Every number on a deck chart is computed, and a rep who knows the prospect
 // may well disagree with one. Rather than have them talk around a figure they
