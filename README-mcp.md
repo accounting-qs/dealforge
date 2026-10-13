@@ -81,16 +81,21 @@ Add `"allowed_tools": ["list_jobs", "get_job", "create_job", …]` to narrow wha
 |---|---|
 | `list_jobs` | Recent jobs, newest first. Filter by `status`, `rep`, `query`, `limit`. |
 | `get_job` | One job: identity, task statuses, headline TAM/outreach/lead numbers, links. Heavy sections opt-in via `include`. |
-| `get_job_status` | Lightweight poll — task statuses plus background rerun progress. Use this in loops, not `get_job`. |
+| `get_progress` | **Where a job is and how long is left**, as one sentence to send the closer (`message_for_rep`), plus `eta_seconds`, per-step status, anything failed or stuck, and `next_check_in_seconds`. ETA = median real step durations + the worker queue ahead. |
+| `get_job_status` | Raw task statuses, for debugging. |
 | `get_portal_links` | Every URL for a job, and which are safe to send a prospect. |
 | `list_sales_reps` | Rep slugs, names, active flags, job counts. Slugs feed `create_job` / `assign_rep`. |
+| `list_case_studies` | The QS client library, with the `id` that `set_case_studies` takes. |
+| `get_editable_fields` | **Everything a rep can change**, with its value and the path that edits it. `sections` keeps it small. |
 | `worker_status` | Pipeline worker health. Check first if jobs are stuck in pending. |
 
 ### Create and edit — no spend
 
 | Tool | What it does |
 |---|---|
-| `create_job` | Creates a job and starts the pipeline. **Only `email` is required.** |
+| `edit_fields` | **Change any fields in one call** — `{ changes: { path: value } }`. Same rules as the rep's editors; rejections come back with the reason. |
+| `set_case_studies` | Pick the examples a tab shows: ids, `"none"` or `"auto"`, plus which one the tab opens on. |
+| `create_job` | Creates a job and starts the pipeline. **Only `email` is required.** `portal_version: "v2"` for the deck closers present. |
 | `assign_rep` | Assign or clear the rep (`slug: null` to unassign). |
 | `update_brief` | Prospect record + any brief section. Merges; triggers no reruns. |
 | `update_icp` | Apollo targeting filters. Saves only — call `rerun_apollo` to re-fetch. |
@@ -110,6 +115,7 @@ All require `confirm: true`.
 | `reveal_lead` | **Exactly 1 Apollo credit.** Idempotent — an already-revealed lead costs nothing. |
 | `prefetch_prospect` | May spend an Apollo people/match credit. |
 | `extract_brief` | Claude tokens. |
+| `tweak_webinar_deck` | Claude tokens. The portal's "Tweak the slides" box, with the same guards. |
 | `delete_job` | **Unrecoverable.** Also needs "Can delete jobs" on for the calling connector. |
 
 ---
@@ -129,7 +135,7 @@ The `extract` task searches Fireflies and Zoom for the Call 1 transcript by emai
 Then poll:
 
 ```json
-{ "name": "get_job_status", "arguments": { "job_id": "…" } }
+{ "name": "get_progress", "arguments": { "job_id": "…" } }
 ```
 
 `prefetch_prospect` → `extract_brief` → `create_job` exists if you want to review a brief before committing, but it is not the normal path — and its progress lives in memory on one instance, so it is lost on redeploy and expires after ~10 minutes.
@@ -144,6 +150,35 @@ Then poll:
 It also returns the ROI calculator in rep and prospect views, the calendar asset, and an `asset_readiness` map so you can check an asset exists before sharing.
 
 ### Editing like a rep
+
+Read once, write once:
+
+```json
+{ "name": "get_editable_fields", "arguments": { "job_id": "…", "sections": ["invite", "numbers"] } }
+{ "name": "edit_fields", "arguments": { "job_id": "…", "changes": {
+    "webinar.title": "Cut Freight Cost Without Renegotiating",
+    "invite.b.title": "…",
+    "override.tam_total": "1.2M",
+    "deck.3.headline": "…",
+    "brief.angle.pain": "…",
+    "icp.apollo_titles": ["VP Supply Chain"],
+    "case_studies.invite": ["rec…"],
+    "job.portal_version": "v2"
+} } }
+```
+
+| Path | Writes |
+|---|---|
+| `job.portal_version` / `job.rep` / `job.tam_method` | V1/V2, the assigned rep, the TAM method (then `rerun_tam`) |
+| `prospect.<email\|name\|company\|website\|linkedin_url>` | The prospect record |
+| `brief.<section>.<field>` | Any brief field — prospect, icp, metrics, angle, verbatim, situation, context, titles, webinar beats |
+| `icp.<apollo filter>` | Apollo filters (then `rerun_apollo`); clears stale TAM overrides like the Lead List editor does |
+| `override.<key>` (or the bare key) | Any portal edit-mode value — see `override_meanings` in `get_editable_fields` |
+| `webinar.title`, `invite.<a\|b\|c>.<title\|description>`, `deck.<1-9>.<headline\|sub>`, `case_studies.<surface>[.opens_on]` | Friendly aliases for the overrides above |
+
+`edit_fields` spends nothing and reruns nothing; its `next` list says what to run when a change needs it. `before` holds the previous override values, for undo. `webinar.title` is the one title for the whole webinar; a per-variant `invite.x.title` still beats it for that variant. Invite edits re-render the shareable calendar page straight away.
+
+**Regenerating clears invite title/description edits.** `regenerate_webinar_titles` and `start_or_continue_pipeline` return what they cleared in `cleared_overrides` — otherwise the old edit kept masking the new copy.
 
 `set_overrides` writes the same values the portal's edit mode does. They beat AI-generated values everywhere and survive pipeline reruns. Pass `""` to clear a field back to the AI value.
 
@@ -266,6 +301,7 @@ One audit line per tool call. Argument **keys** only — values carry prospect P
 ## Known limits
 
 - **The rest of `/api/*` has no authentication.** Bearer auth on `/mcp` is real, but anyone with the URL can already create or delete jobs directly. The MCP token is not the weakest link — locking down `/api/*` is separate work needing a login step in the dashboard and portal.
+- **Not exposed yet:** Apollo filter typeahead (`/api/apollo/suggest`) and transcript title search. Thin additions if Grokbot needs them.
 - **Binary upload is not exposed.** `POST /api/jobs/:id/upload-asset` takes a raw image body, which doesn't fit JSON tool arguments. Point `set_overrides` at an existing image URL instead.
 - **Not exposed:** copy-brain CRUD, prompt editing, Zoom/SOP config, rep creation, calls and notifications. All are thin additions if wanted. Prompt editing is deliberately excluded — it would let an agent rewrite the production Claude prompts that drive its own pipeline.
 - **There is no per-task rerun** in Deal Forge for anyone. `start_or_continue_pipeline` maps to the portal's "Regenerate" button, which resets `brand_scrape`, `prospect_research`, `webinar_titles` and `calendar_visual` only.

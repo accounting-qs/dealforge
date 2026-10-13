@@ -606,7 +606,10 @@ async function storageUpload(storagePath, content, contentType = 'text/html') {
         'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`,
         'Content-Type': contentType,
         'Content-Length': payload.length,
-        'x-upsert': 'true'
+        'x-upsert': 'true',
+        // These files are overwritten in place on every re-render; a cached copy
+        // is exactly the "stuck on the old title" a rep reports.
+        'cache-control': contentType.startsWith('text/html') ? 'no-cache' : 'max-age=3600'
       }
     };
     const req = https.request(options, res => {
@@ -776,15 +779,15 @@ const OVERRIDE_NOT_EDITABLE = [
   'Beats cannot be added, removed or reordered — the deck is always the same nine.'
 ];
 
-// Merge a validated override patch into a job and persist it. Shared by the
-// rep's own edit-mode saves and by the natural-language deck tweak, so the
-// stale-full_market_cycle rule below can never apply to one and not the other.
-// Callers MUST have filtered the patch through OVERRIDE_ALLOWED_KEYS first —
-// this writes whatever it is handed.
-async function applyOverrides(jobId, safeOverrides) {
-  const job = await getJob(jobId);
-  if (!job) return { ok: false, status: 404, error: 'Job not found' };
-  const existingData      = job.extracted_data || {};
+// Merge a validated override patch into a brief, in memory. Callers MUST have
+// filtered the patch through OVERRIDE_ALLOWED_KEYS first — this keeps whatever
+// it is handed. Returns the new brief and each key's previous value (for undo).
+function mergeOverridePatch(existingData, safeOverrides) {
+  // Every writer comes through here, so this is where rich-text descriptions
+  // are made safe — including ones that never saw the portal's editor.
+  for (const k of ['webinar_desc_0', 'webinar_desc_1', 'webinar_desc_2']) {
+    if (typeof safeOverrides[k] === 'string') safeOverrides[k] = sanitizeRichHtml(safeOverrides[k]);
+  }
   const existingOverrides = existingData._overrides || {};
   const before = {};
   for (const k of Object.keys(safeOverrides)) {
@@ -797,12 +800,649 @@ async function applyOverrides(jobId, safeOverrides) {
   if ((('tam_total' in safeOverrides) || ('recommended_outreach' in safeOverrides)) && !('full_market_cycle' in safeOverrides)) {
     delete mergedOverrides.full_market_cycle;
   }
+  return { data: { ...existingData, _overrides: mergedOverrides }, before, overrides: mergedOverrides };
+}
+
+// The shareable calendar page is a stored file, not a live render — rebuild it
+// so the link the rep sends shows the title they just set.
+function refreshCalendarIfInviteEdited(jobId, keys) {
+  if (keys.some(k => INVITE_COPY_OVERRIDE_KEYS.includes(k))) {
+    refreshCalendarVisualAsset(jobId).catch(e => console.warn(`[calendar_visual] refresh after edit failed for ${jobId}: ${e.message}`));
+  }
+}
+
+// Merge a validated override patch into a job and persist it. Shared by the
+// rep's own edit-mode saves and by the natural-language deck tweak, so the
+// stale-full_market_cycle rule can never apply to one and not the other.
+async function applyOverrides(jobId, safeOverrides) {
+  const job = await getJob(jobId);
+  if (!job) return { ok: false, status: 404, error: 'Job not found' };
+  const m = mergeOverridePatch(job.extracted_data || {}, safeOverrides);
   const r = await supabaseRequest('PATCH', `/rest/v1/jobs?id=eq.${jobId}`,
-    { extracted_data: { ...existingData, _overrides: mergedOverrides }, updated_at: new Date().toISOString() },
+    { extracted_data: m.data, updated_at: new Date().toISOString() },
     { 'Prefer': 'return=minimal' }
   );
   if (r.status >= 400) return { ok: false, status: 500, error: `Supabase PATCH failed: ${r.status}` };
-  return { ok: true, before, overrides: mergedOverrides };
+  refreshCalendarIfInviteEdited(jobId, Object.keys(safeOverrides));
+  return { ok: true, before: m.before, overrides: m.overrides };
+}
+
+// The rep's title/description edits on the invite. Regenerating means "give me
+// new copy", but these beat AI copy everywhere, so the new titles never showed
+// and the invite looked stuck on the old one. Both regenerate routes clear them
+// and report what they cleared, so nothing is lost silently.
+const INVITE_COPY_OVERRIDE_KEYS = ['webinar_title',
+  'webinar_title_0', 'webinar_title_1', 'webinar_title_2',
+  'webinar_desc_0', 'webinar_desc_1', 'webinar_desc_2'];
+
+async function clearInviteCopyOverrides(jobId, { dropMirror = false } = {}) {
+  const job = await getJob(jobId);
+  if (!job) return {};
+  const ext = job.extracted_data || {};
+  const ov  = { ...(ext._overrides || {}) };
+  const cleared = {};
+  for (const k of INVITE_COPY_OVERRIDE_KEYS) {
+    if (ov[k] != null && ov[k] !== '') cleared[k] = ov[k];
+    delete ov[k];
+  }
+  const gen = { ...(ext._generated || {}) };
+  // The mirror is what the portal falls back to while the task is pending —
+  // left in place it shows the previous titles during a regenerate.
+  if (dropMirror) delete gen.webinarTitles;
+  if (!Object.keys(cleared).length && !dropMirror) return cleared;
+  await supabaseRequest('PATCH', `/rest/v1/jobs?id=eq.${jobId}`,
+    { extracted_data: { ...ext, _overrides: ov, _generated: gen }, updated_at: new Date().toISOString() },
+    { 'Prefer': 'return=minimal' });
+  return cleared;
+}
+
+// Strip what could run script from rep/agent-written rich text. The invite
+// description override is rendered as HTML on the prospect-facing page, and the
+// browser editor's sanitiser never sees values written through the API.
+function sanitizeRichHtml(html) {
+  return String(html == null ? '' : html)
+    .replace(/<\s*(script|style|iframe|object|embed|link|meta|base|form)\b[\s\S]*?(<\s*\/\s*\1\s*>|$)/gi, '')
+    .replace(/<\s*(script|style|iframe|object|embed|link|meta|base|form)\b[^>]*\/?>/gi, '')
+    .replace(/\son[a-z]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '')
+    .replace(/(href|src|action|formaction|xlink:href)\s*=\s*("|')?\s*(javascript|vbscript|data):[^"'>\s]*("|')?/gi, '$1="#"');
+}
+
+// Which invite the shareable calendar page shows, with the rep's edits applied
+// — the same precedence the portal uses: per-variant edit, then the webinar's
+// headline title, then the AI copy.
+function effectiveInviteVariant(job, webinarTitlesOutput) {
+  const out = webinarTitlesOutput || {};
+  const list = out.variants || out.calendar_blockers || out.titles || [];
+  const rec = Number.isInteger(out._recommended_index) ? out._recommended_index : 0;
+  const idx = list[rec] ? rec : 0;
+  const variant = list[idx];
+  if (!variant) return null;
+  const ov = ((job && job.extracted_data) || {})._overrides || {};
+  const title = String(ov[`webinar_title_${idx}`] || '').trim()
+             || String(ov.webinar_title || '').trim()
+             || variant.title || '';
+  const descHtml = String(ov[`webinar_desc_${idx}`] || '').trim() || null;
+  return { idx, variant, title, descHtml };
+}
+
+// Apply an Apollo-filter patch to a brief. Shared by the Lead List filter
+// editor (PATCH /icp) and the field API, so both clear stale TAM overrides and
+// keep the display mirrors in step the same way.
+const ICP_FIELDS = ['apollo_titles', 'apollo_keyword', 'apollo_geography', 'apollo_employee_ranges', 'person_seniorities', 'apollo_person_locations', 'apollo_revenue_range', 'target_audience_type'];
+
+function applyIcpPatch(existingData, body) {
+  // One "CEO, CFO, COO" entry (portal chip, MCP update_icp, edit_fields) is
+  // three titles, not one.
+  if (body.apollo_titles !== undefined) body = { ...body, apollo_titles: splitTitleList(body.apollo_titles) };
+  const existingIcp = existingData.icp || {};
+  const updatedIcp = { ...existingIcp };
+  // Track whether the rep actually changed something so we can clear stale
+  // TAM overrides only on real edits (not on a no-op Save Filters click).
+  let anyIcpFieldChanged = false;
+  for (const k of ICP_FIELDS) {
+    if (body[k] !== undefined) {
+      if (JSON.stringify(existingIcp[k]) !== JSON.stringify(body[k])) {
+        anyIcpFieldChanged = true;
+      }
+      updatedIcp[k] = body[k];
+    }
+  }
+  // Mirror apollo_keyword → icp.industry so legacy display callers
+  // (calendar header, case-studies filter, ROI templates) stay in sync
+  // with the rep's chip state. apollo_keyword can be an array (multi-tag
+  // OR) or a legacy string; either way we collapse to a comma-joined
+  // string for the singular display field. Without the mirror, clearing
+  // the chips leaves icp.industry pointing at the original extracted
+  // value and every downstream surface that reads `icp.industry`
+  // re-shows it.
+  if (body.apollo_keyword !== undefined) {
+    let mirrored = '';
+    if (Array.isArray(body.apollo_keyword)) {
+      mirrored = body.apollo_keyword.map(s => String(s || '').trim()).filter(Boolean).join(', ');
+    } else if (typeof body.apollo_keyword === 'string' && body.apollo_keyword.trim()) {
+      mirrored = body.apollo_keyword.trim();
+    }
+    updatedIcp.industry = mirrored;
+  }
+  // Same mirror for locations. Without it a rep can set real Apollo chips and
+  // still see the old extracted narrative under Company Location.
+  if (body.apollo_geography !== undefined) {
+    updatedIcp.geography = geoDisplayFromIcp({ apollo_geography: body.apollo_geography }) || null;
+    if (updatedIcp.geography) delete updatedIcp.geography_note;
+  }
+  // Rep edits invalidate any pre-baked translator payload. Without this,
+  // a stored apollo_payload (which fetchLeadsFromApollo prefers over the
+  // legacy-build path) would silently re-inject filters the rep removed.
+  delete updatedIcp.apollo_payload;
+  const updatedData = { ...existingData, icp: updatedIcp };
+  // When ICP filters actually change, the rep's manual TAM override (and
+  // the derived monthly outreach) becomes stale — they reflect a pool that
+  // no longer matches the filter set. Clear those two overrides so the
+  // next rerun-apollo surfaces fresh Apollo-derived numbers. Other
+  // overrides (LTV, show rate, close rate, webinar title) are independent
+  // of the filter set and stay put.
+  if (anyIcpFieldChanged && updatedData._overrides) {
+    const { tam_total, recommended_outreach, full_market_cycle, ...keptOverrides } = updatedData._overrides;
+    if (Object.keys(keptOverrides).length > 0) {
+      updatedData._overrides = keptOverrides;
+    } else {
+      delete updatedData._overrides;
+    }
+  }
+  return { updatedData, updatedIcp, anyIcpFieldChanged };
+}
+
+// ── Field API — everything a rep can edit, by path ──────────────────────────
+// GET  /api/jobs/:id/fields   one catalog of every rep-editable field, its
+//                             current value and the path that writes it.
+// PATCH /api/jobs/:id/fields  { changes: { "<path>": value, … } }
+//
+// Built for Grokbot: closers were asking it for "the fields to paste into Deal
+// Forge" and pasting them by hand, because the API only covered some screens
+// and each edit took several calls. One read, one write, no copy-paste. Every
+// write goes through the same rules as the rep's own editors — the override
+// allow-list, the ICP mirrors and stale-TAM clearing, the brief's field-level
+// merge — so an agent can never store something the UI could not.
+//
+// Paths:
+//   job.portal_version   'v1' | 'v2'          job.rep   rep slug | null
+//   job.tam_method       'apollo' | 'llm' | 'llm_pure' (then rerun TAM)
+//   prospect.<email|name|company|website|linkedin_url>
+//   brief.<section>.<field>   sections: BRIEF_SECTIONS
+//   icp.<apollo filter>       ICP_FIELDS (then rerun Apollo)
+//   override.<key>            OVERRIDE_ALLOWED_KEYS — a bare key works too
+// Friendly aliases: webinar.title, invite.<a|b|c>.<title|description>,
+// deck.<1-9>.<headline|sub>, case_studies.<surface>, case_studies.<surface>.opens_on
+
+const PROSPECT_COLUMNS = { email: 'prospect_email', name: 'prospect_name', company: 'prospect_company', website: 'prospect_website', linkedin_url: 'prospect_linkedin_url' };
+const CS_SURFACES = { lead_list: 'cs_pin_lead_list', invite: 'cs_pin_invite', webinar: 'cs_pin_webinar', roi: 'cs_pin_roi' };
+const CS_PIN_NONE = '__none__';   // mockup-portal.html V2_PIN_NONE
+
+function normaliseFieldPath(path) {
+  const p = String(path || '').trim();
+  let m;
+  if (p === 'webinar.title') return 'override.webinar_title';
+  if ((m = p.match(/^invite\.([abc])\.(title|description)$/i))) {
+    const i = 'abc'.indexOf(m[1].toLowerCase());
+    return `override.${m[2].toLowerCase() === 'title' ? 'webinar_title' : 'webinar_desc'}_${i}`;
+  }
+  if ((m = p.match(/^deck\.([1-9])\.(headline|sub)$/))) return `override.slide_${m[1]}_${m[2]}`;
+  if ((m = p.match(/^case_studies\.(\w+)\.opens_on$/)) && (m[1] === 'invite' || m[1] === 'webinar')) return `override.cs_default_${m[1]}`;
+  if ((m = p.match(/^case_studies\.(\w+)$/)) && CS_SURFACES[m[1]]) return `override.${CS_SURFACES[m[1]]}`;
+  if (OVERRIDE_ALLOWED_KEYS.includes(p)) return 'override.' + p;
+  // Apollo filters live in the brief but carry side effects; route them through the ICP rules.
+  if ((m = p.match(/^brief\.icp\.(\w+)$/)) && ICP_FIELDS.includes(m[1])) return 'icp.' + m[1];
+  return p;
+}
+
+const UNFINISHED_COPY_RE = /\[[^\]]*\]|\bTBD\b|\bXX+\b/i;
+
+/** Validates one override value the way the portal's editors would accept it. */
+function validateOverrideValue(key, value) {
+  if (value === null || value === undefined) value = '';
+  if (/^cs_pin_/.test(key)) {
+    // '' / 'auto' = automatic pick; [] / 'none' = show none; [ids] = exactly these.
+    if (value === '' || value === 'auto') return { value: '' };
+    if (value === 'none') return { value: [CS_PIN_NONE] };
+    if (!Array.isArray(value)) return { why: 'expects an array of airtable_record_id, "auto" or "none"' };
+    const ids = value.map(v => String(v || '').trim()).filter(Boolean);
+    return { value: ids.length ? ids : [CS_PIN_NONE] };
+  }
+  if (Array.isArray(value) || typeof value === 'object') return { why: 'expects text or a number' };
+  if (['webinar_primary_color', 'webinar_secondary_color', 'webinar_accent_color'].includes(key)) {
+    const v = String(value).trim().toLowerCase();
+    if (v !== '' && !/^#[0-9a-f]{6}$/.test(v)) return { why: 'expects a 6-digit hex colour like "#1a2b3c", or "" to clear' };
+    return { value: v };
+  }
+  if (['tam_total', 'recommended_outreach', 'full_market_cycle', 'roi_ltv', 'roi_show_rate', 'roi_close_rate'].includes(key)) {
+    if (value === '') return { value: '' };
+    // The ROI calculator only seeds from a real number, so "$40k" / "35%" are
+    // stored as 40000 / 35 rather than as text it would ignore.
+    const n = typeof value === 'number' ? value : parseHumanNumber(String(value).replace(/%\s*$/, ''));
+    if (n == null || !Number.isFinite(n)) {
+      return /^roi_/.test(key) ? { why: 'expects a number (e.g. 40000, "$40k", "35%")' } : { value: String(value) };
+    }
+    return { value: n };
+  }
+  if (/^fig_/.test(key) && key !== 'fig_claim_value' && key !== 'fig_claim_label' && value !== '' && parseHumanNumber(value) == null) {
+    return { why: 'expects a number' };
+  }
+  const str = String(value);
+  if (str.length > (/^webinar_desc_/.test(key) ? 20000 : 2000)) return { why: 'too long' };
+  if (/^(slide_|proof_|webinar_title|fig_claim_)/.test(key) && UNFINISHED_COPY_RE.test(str)) {
+    return { why: 'contains a placeholder like [client name] or TBD — prospect-facing copy must be finished' };
+  }
+  return { value: str };
+}
+
+function _setPath(obj, parts, value) {
+  let cur = obj;
+  for (let i = 0; i < parts.length - 1; i++) {
+    if (cur[parts[i]] == null || typeof cur[parts[i]] !== 'object' || Array.isArray(cur[parts[i]])) cur[parts[i]] = {};
+    cur = cur[parts[i]];
+  }
+  cur[parts[parts.length - 1]] = value;
+}
+function _getPath(obj, parts) {
+  return parts.reduce((acc, k) => (acc == null ? undefined : acc[k]), obj);
+}
+
+/**
+ * Applies a set of field changes to one job in a single write. Rejected paths
+ * are reported, never silently dropped; nothing is written if every path is
+ * rejected.
+ */
+async function applyFieldChanges(jobId, changes) {
+  const job = await getJob(jobId);
+  if (!job) return { ok: false, status: 404, error: 'Job not found' };
+  if (!changes || typeof changes !== 'object' || Array.isArray(changes) || !Object.keys(changes).length) {
+    return { ok: false, status: 400, error: 'Send { "changes": { "<path>": value } }. GET /api/jobs/:id/fields lists every path.' };
+  }
+
+  let data = JSON.parse(JSON.stringify(job.extracted_data || {}));
+  const columns = {}, overridePatch = {}, icpPatch = {};
+  const applied = [], rejected = [];
+  const touched = new Set();
+
+  for (const [rawPath, value] of Object.entries(changes)) {
+    const path = normaliseFieldPath(rawPath);
+    const parts = path.split('.');
+    const reject = why => rejected.push({ path: rawPath, why });
+
+    if (parts[0] === 'job' && parts.length === 2) {
+      if (parts[1] === 'portal_version') {
+        if (value !== 'v1' && value !== 'v2') { reject('expects "v1" or "v2"'); continue; }
+        columns.portal_version = value;
+      } else if (parts[1] === 'rep') {
+        const slug = value == null ? '' : String(value).trim().toLowerCase();
+        if (slug && !(await getRepBySlug(slug))) { reject(`unknown rep slug "${slug}" — see list_sales_reps`); continue; }
+        columns.rep_name = slug || null;
+      } else if (parts[1] === 'tam_method') {
+        if (!['apollo', 'llm', 'llm_pure'].includes(value)) { reject('expects "apollo", "llm" or "llm_pure"'); continue; }
+        data.tam_method = value;
+        touched.add('tam_method');
+      } else { reject('unknown job field — use portal_version, rep or tam_method'); continue; }
+      applied.push({ path: rawPath, value }); continue;
+    }
+
+    if (parts[0] === 'prospect' && parts.length === 2 && PROSPECT_COLUMNS[parts[1]]) {
+      let v = value == null ? null : String(value).trim();
+      if (parts[1] === 'website' && v) v = v.replace(/^https?:\/\//, '').split('/')[0].toLowerCase();
+      columns[PROSPECT_COLUMNS[parts[1]]] = v || null;
+      // The portal mirrors these two into the brief; do the same.
+      if (parts[1] === 'company') _setPath(data, ['prospect', 'company'], v || null);
+      if (parts[1] === 'name')    _setPath(data, ['prospect', 'contact_name'], v || null);
+      applied.push({ path: rawPath, value: v || null }); continue;
+    }
+
+    if (parts[0] === 'icp' && parts.length === 2) {
+      if (!ICP_FIELDS.includes(parts[1])) { reject(`not an Apollo filter — use one of ${ICP_FIELDS.join(', ')}, or brief.icp.${parts[1]} for display fields`); continue; }
+      icpPatch[parts[1]] = value;
+      applied.push({ path: rawPath, value }); continue;
+    }
+
+    if (parts[0] === 'brief' && parts.length >= 3 && BRIEF_SECTIONS.includes(parts[1])) {
+      const v = (typeof value === 'string' && value.trim() === '') ? null : value;
+      _setPath(data, parts.slice(1), v);
+      touched.add('brief');
+      applied.push({ path: rawPath, value: v }); continue;
+    }
+
+    if (parts[0] === 'override' && parts.length === 2) {
+      if (!OVERRIDE_ALLOWED_KEYS.includes(parts[1])) { reject('not an editable override'); continue; }
+      const r = validateOverrideValue(parts[1], value);
+      if (r.why) { reject(r.why); continue; }
+      overridePatch[parts[1]] = r.value;
+      applied.push({ path: rawPath, value: r.value }); continue;
+    }
+
+    reject('unknown path — GET /api/jobs/:id/fields lists every editable path');
+  }
+
+  if (!applied.length) return { ok: false, status: 400, error: 'No change could be applied.', rejected };
+
+  let icpChanged = false;
+  if (Object.keys(icpPatch).length) {
+    const r = applyIcpPatch(data, icpPatch);
+    data = r.updatedData; icpChanged = r.anyIcpFieldChanged;
+  }
+  let before = {};
+  if (Object.keys(overridePatch).length) {
+    const m = mergeOverridePatch(data, overridePatch);
+    data = m.data; before = m.before;
+  }
+
+  const patch = { ...columns, extracted_data: data, updated_at: new Date().toISOString() };
+  const w = await supabaseRequest('PATCH', `/rest/v1/jobs?id=eq.${jobId}`, patch, { 'Prefer': 'return=minimal' });
+  if (w.status >= 400) return { ok: false, status: 500, error: `Supabase PATCH failed: ${w.status}` };
+  refreshCalendarIfInviteEdited(jobId, Object.keys(overridePatch));
+
+  // What the change does NOT do by itself, so the caller can decide to spend.
+  const next = [];
+  if (icpChanged) next.push('Apollo filters changed: rerun_apollo refreshes the lead list and TAM (spends Apollo credits).');
+  if (touched.has('tam_method')) next.push('TAM method changed: rerun_tam recomputes the headline TAM.');
+  if (touched.has('brief')) next.push('Brief changed: copy already generated from it is not rewritten — regenerate_webinar_titles for new invite copy, or start_or_continue_pipeline to rebuild everything.');
+  if (columns.prospect_website || columns.prospect_linkedin_url) next.push('Website/LinkedIn changed: start_or_continue_pipeline rebuilds brand and host research from them.');
+
+  console.log(`[fields] job=${jobId} applied=${applied.map(a => a.path).join(',')} rejected=${rejected.length}`);
+  return { ok: true, applied, rejected, before, next };
+}
+
+/** The catalog: every rep-editable field with its value, compact enough to read in one call. */
+async function readEditableFields(job, tasks) {
+  const ext = job.extracted_data || {};
+  const ov  = ext._overrides || {};
+  const gen = ext._generated || {};
+  const byType = {};
+  (tasks || []).forEach(t => { byType[t.task_type] = t; });
+
+  const brief = {};
+  const notDiscussed = [];
+  for (const sec of BRIEF_SECTIONS) {
+    const v = ext[sec];
+    brief[sec] = v && typeof v === 'object' ? { ...v } : (v ?? null);
+    if (brief[sec] && typeof brief[sec] === 'object' && !Array.isArray(brief[sec])) {
+      delete brief[sec]._filter_validation; delete brief[sec].apollo_payload;
+      if (sec !== 'webinar' && sec !== 'titles') {
+        for (const [k, val] of Object.entries(brief[sec])) {
+          if (val == null || val === '' || (Array.isArray(val) && !val.length)) notDiscussed.push(`brief.${sec}.${k}`);
+        }
+      }
+    }
+  }
+
+  const wtOut = (byType.webinar_titles && byType.webinar_titles.output_data) || gen.webinarTitles || null;
+  const variants = (wtOut && (wtOut.variants || wtOut.calendar_blockers || wtOut.titles)) || [];
+  const rec = wtOut && Number.isInteger(wtOut._recommended_index) ? wtOut._recommended_index : 0;
+  const invite = [0, 1, 2].map(i => {
+    const v = variants[i] || {};
+    const titleOv = ov[`webinar_title_${i}`] || '';
+    return {
+      variant: 'ABC'[i],
+      ai_title: v.title || null,
+      title: titleOv || ov.webinar_title || v.title || null,
+      title_source: titleOv ? 'override' : ov.webinar_title ? 'headline_override' : v.title ? 'ai' : 'not_generated',
+      description_overridden: !!ov[`webinar_desc_${i}`],
+      recommended: i === rec,
+      write: { title: `invite.${'abc'[i]}.title`, description: `invite.${'abc'[i]}.description` }
+    };
+  });
+
+  const tamTask = byType.tam_estimate && byType.tam_estimate.output_data;
+  const leadOut = byType.lead_list && byType.lead_list.output_data;
+  const aiTam   = (tamTask && tamTask.tam_total) || gen.tam_total || (leadOut && leadOut.total) || null;
+  const aiOut   = (tamTask && tamTask.recommendedOutreach) || gen.recommendedOutreach || (leadOut && leadOut.recommendedOutreach) || null;
+  const seed = resolveRoiSeed(job);
+  const num = (key, ai) => ({ value: ov[key] ?? ai ?? null, ai: ai ?? null, overridden: ov[key] != null && ov[key] !== '', write: `override.${key}` });
+
+  const pins = key => {
+    const v = ov[key];
+    if (!Array.isArray(v) || !v.length) return { mode: 'auto', chosen: [] };
+    const ids = v.filter(x => x && x !== CS_PIN_NONE);
+    return { mode: 'chosen', chosen: ids };
+  };
+
+  return {
+    job_id: job.id,
+    job: {
+      portal_version: job.portal_version || 'v1',
+      rep: job.rep_name || null,
+      tam_method: ext.tam_method || 'apollo',
+      status: job.status
+    },
+    prospect: {
+      email: job.prospect_email, name: job.prospect_name, company: job.prospect_company,
+      website: job.prospect_website, linkedin_url: job.prospect_linkedin_url
+    },
+    brief,
+    not_discussed: notDiscussed,
+    transcript_found: !!(ext._meta && ext._meta.transcript && ext._meta.transcript.found),
+    headline_title: { value: ov.webinar_title || null, write: 'webinar.title' },
+    invite,
+    deck: composeWebinarSlides(job).map(sl => ({
+      n: sl.n, step: sl.step, headline: sl.headline, sub: sl.sub, source: sl.source,
+      write: { headline: `deck.${sl.n}.headline`, sub: `deck.${sl.n}.sub` }
+    })),
+    numbers: {
+      tam_total: num('tam_total', aiTam),
+      recommended_outreach: num('recommended_outreach', aiOut),
+      full_market_cycle: num('full_market_cycle', null),
+      roi_ltv: { ...num('roi_ltv', null), value: seed.ltv === '' ? null : Number(seed.ltv), source: seed.sources.ltv },
+      roi_show_rate: { ...num('roi_show_rate', null), value: Number(seed.show), source: seed.sources.show },
+      roi_close_rate: { ...num('roi_close_rate', null), value: Number(seed.close), source: seed.sources.close }
+    },
+    figures: Object.fromEntries(V2_FIGURE_KEYS.map(k => [k, ov[k] ?? null])),
+    proof: { client: ov.proof_client || null, result: ov.proof_result || null, before: ov.proof_before || null, after: ov.proof_after || null },
+    brand: {
+      primary_color: ov.webinar_primary_color || null, secondary_color: ov.webinar_secondary_color || null,
+      accent_color: ov.webinar_accent_color || null, logo_url: ov.webinar_logo_url || null,
+      hero_image_url: ov.webinar_hero_image_url || null, headshot_url: ov.webinar_headshot_url || null
+    },
+    case_studies: {
+      lead_list: pins('cs_pin_lead_list'),
+      invite:    { ...pins('cs_pin_invite'),  opens_on: ov.cs_default_invite  || 'yours' },
+      webinar:   { ...pins('cs_pin_webinar'), opens_on: ov.cs_default_webinar || 'yours' },
+      roi:       pins('cs_pin_roi'),
+      write: 'case_studies.<surface> = [airtable_record_id, …] | "auto" | "none"; case_studies.<invite|webinar>.opens_on = "yours" | id'
+    },
+    override_meanings: OVERRIDE_KEY_DOCS,
+    how_to_write: 'PATCH /api/jobs/:id/fields {"changes":{"<path>":value}} — paths: job.portal_version|rep|tam_method, prospect.<field>, brief.<section>.<field>, icp.<apollo filter>, override.<key> (or the write paths shown above). "" or null clears an override back to the AI value.'
+  };
+}
+
+// ── Progress + ETA — "where is it, and how long is left?" ───────────────────
+// Lets Grokbot keep a closer posted while a job (or a regenerate) runs, instead
+// of going quiet for minutes. GET /api/jobs/:id/progress.
+//
+// THE WORKER IS ONE QUEUE. processNextTask runs one task at a time, oldest
+// first, across every job — so the honest ETA for this job includes the steps
+// of other jobs queued ahead of it. The estimate walks that queue using each
+// step's median real duration from recent history (TASK_DEFAULT_SECONDS until
+// there is enough of it). Stage 2/3 steps that do not exist yet go on the end,
+// which is where they will land once extract finishes.
+
+const TASK_LABELS = {
+  extract:           'Reading the call transcript',
+  prospect_research: 'Researching the host on LinkedIn',
+  lead_list:         'Building the lead list',
+  brand_scrape:      'Pulling the brand (logo, colours)',
+  webinar_titles:    'Writing the invite copy',
+  roi_model:         'Building the ROI model',
+  tam_estimate:      'Sizing the market (TAM)',
+  calendar_visual:   'Building the shareable calendar page'
+};
+// Short names, for "<name> failed" / "<name> needs input".
+const TASK_NAMES = {
+  extract: 'Brief', prospect_research: 'Host research', lead_list: 'Lead list', brand_scrape: 'Brand',
+  webinar_titles: 'Invite copy', roi_model: 'ROI model', tam_estimate: 'TAM estimate', calendar_visual: 'Calendar page'
+};
+const TASK_DEFAULT_SECONDS = {
+  extract: 45, prospect_research: 40, lead_list: 120, brand_scrape: 45,
+  webinar_titles: 90, roi_model: 10, tam_estimate: 45, calendar_visual: 30
+};
+const WORKER_TICK_SECONDS = 3;   // processNextTask interval
+
+let _taskSecondsCache = { at: 0, value: null };
+async function typicalTaskSeconds() {
+  if (_taskSecondsCache.value && Date.now() - _taskSecondsCache.at < 10 * 60 * 1000) return _taskSecondsCache.value;
+  const med = { ...TASK_DEFAULT_SECONDS };
+  try {
+    const r = await supabaseRequest('GET',
+      '/rest/v1/tasks?status=eq.completed&select=task_type,started_at,completed_at&order=completed_at.desc&limit=400');
+    const by = {};
+    for (const t of (Array.isArray(r.body) ? r.body : [])) {
+      const sec = (Date.parse(t.completed_at) - Date.parse(t.started_at)) / 1000;
+      // Outside 1s–15min is a recovery reset or an inline write, not a run.
+      if (!Number.isFinite(sec) || sec < 1 || sec > 900) continue;
+      (by[t.task_type] = by[t.task_type] || []).push(sec);
+    }
+    for (const [type, arr] of Object.entries(by)) {
+      if (arr.length < 3) continue;
+      arr.sort((a, b) => a - b);
+      med[type] = Math.round(arr[Math.floor(arr.length / 2)]);
+    }
+  } catch (e) { console.warn('[progress] task history unavailable:', e.message); }
+  _taskSecondsCache = { at: Date.now(), value: med };
+  return med;
+}
+
+function etaText(sec) {
+  if (sec == null) return null;
+  if (sec < 45) return 'under a minute';
+  return `about ${Math.max(1, Math.round(sec / 60))} min`;
+}
+
+async function jobProgress(job, tasks) {
+  const typical = await typicalTaskSeconds();
+  const now = Date.now();
+  const ext = job.extracted_data || {};
+  const gen = ext._generated || {};
+  const byType = {};
+  (tasks || []).forEach(t => { byType[t.task_type] = t; });
+
+  const expected = ['extract', 'prospect_research', 'lead_list', 'brand_scrape', 'webinar_titles', 'roi_model'];
+  if ((ext.tam_method || 'llm') !== 'apollo' || byType.tam_estimate) expected.push('tam_estimate');
+  expected.push('calendar_visual');
+  Object.keys(byType).forEach(t => { if (!expected.includes(t)) expected.push(t); });
+
+  // Walk the worker's queue: the running task first, then pending oldest-first.
+  let queue = [];
+  try {
+    const r = await supabaseRequest('GET',
+      '/rest/v1/tasks?status=in.(pending,processing)&select=id,job_id,task_type,status,created_at,started_at&order=created_at.asc&limit=300');
+    queue = Array.isArray(r.body) ? r.body : [];
+  } catch (e) { console.warn('[progress] queue unavailable:', e.message); }
+  queue.sort((a, b) => (a.status === 'processing' ? 0 : 1) - (b.status === 'processing' ? 0 : 1)
+                    || Date.parse(a.created_at) - Date.parse(b.created_at));
+  let clock = 0, reachedOwn = false;
+  const finishAt = {}, jobsAhead = new Set();
+  for (const t of queue) {
+    const typ = typical[t.task_type] || 45;
+    const elapsed = t.status === 'processing' && t.started_at ? (now - Date.parse(t.started_at)) / 1000 : 0;
+    clock += t.status === 'processing' ? Math.max(typ - elapsed, 5) : typ + WORKER_TICK_SECONDS;
+    if (t.job_id === job.id) { finishAt[t.task_type] = clock; reachedOwn = true; }
+    else if (!reachedOwn) jobsAhead.add(t.job_id);
+  }
+  for (const type of expected) {
+    if (!byType[type]) { clock += (typical[type] || 45) + WORKER_TICK_SECONDS; finishAt[type] = clock; }
+  }
+
+  const TERMINAL = ['completed', 'failed', 'needs_input', 'skipped'];
+  let weightDone = 0, weightAll = 0;
+  const steps = [], attention = [], current = [];
+  for (const type of expected) {
+    const t = byType[type];
+    const typ = typical[type] || 45;
+    const label = TASK_LABELS[type] || type;
+    const name  = TASK_NAMES[type] || type;
+    weightAll += typ;
+    const raw = t ? t.status : 'not_started';
+    const step = { step: type, label, status: raw === 'not_started' ? 'waiting' : raw === 'pending' ? 'queued' : raw === 'processing' ? 'running' : raw === 'completed' ? 'done' : raw };
+    if (t && TERMINAL.includes(t.status)) {
+      weightDone += typ;
+      if (t.status === 'failed' || t.status === 'needs_input') {
+        step.error = String(t.error_message || '').slice(0, 200) || null;
+        attention.push(`${name} ${t.status === 'failed' ? 'failed' : 'needs input'}${step.error ? ': ' + step.error : ''}`);
+      }
+    } else {
+      step.seconds_left = Math.round(finishAt[type] || typ);
+      if (t && t.status === 'processing') {
+        const elapsed = t.started_at ? (now - Date.parse(t.started_at)) / 1000 : 0;
+        weightDone += Math.min(elapsed, typ * 0.9);
+        current.push(label);
+        if (elapsed > Math.max(typ * 3, 300)) {
+          step.stuck = true;
+          attention.push(`${name} is taking much longer than usual (${Math.round(elapsed / 60)} min so far)`);
+        }
+      }
+      if (t && t.status === 'pending' && t.attempt_count > 0 && t.error_message) step.retrying = String(t.error_message).slice(0, 160);
+    }
+    steps.push(step);
+  }
+
+  // Reruns started from the portal or Grokbot run outside the queue.
+  const background = [];
+  for (const [key, kind, label, name, typType] of [
+    ['webinar_rerun', 'invite_copy', 'Rewriting the invite copy', 'Invite copy rewrite', 'webinar_titles'],
+    ['apollo_rerun', 'lead_search', 'Re-running the lead search', 'Lead search rerun', 'lead_list']
+  ]) {
+    const r = gen[key];
+    if (!r || !r.status) continue;
+    const age = r.updated_at ? (now - Date.parse(r.updated_at)) / 1000 : 0;
+    if (r.status === 'running' && age > 300) {
+      background.push({ kind, label, status: 'stalled', message: r.message || null });
+      attention.push(`${name} stopped reporting progress ${Math.round(age / 60)} min ago, so start it again`);
+    } else if (r.status === 'running') {
+      const left = Math.max(5, Math.round((typical[typType] || 60) * (1 - (Number(r.progress) || 0) / 100)));
+      background.push({ kind, label, status: 'running', progress: r.progress || 0, message: r.message || null, seconds_left: left });
+      current.push(label);
+    } else if (r.status === 'failed') {
+      background.push({ kind, label, status: 'failed', message: r.message || null });
+      if (age < 3600) attention.push(`${name} failed: ${r.message || 'no reason given'}`);
+    }
+  }
+
+  const running = steps.filter(s => s.seconds_left != null);
+  const runningBg = background.filter(b => b.status === 'running');
+  const etaSeconds = (running.length || runningBg.length)
+    ? Math.max(0, ...running.map(s => s.seconds_left), ...runningBg.map(b => b.seconds_left))
+    : 0;
+  const done = !running.length && !runningBg.length;
+  const doneCount = steps.filter(s => s.status === 'done' || s.status === 'skipped').length;
+  const company = job.prospect_company || job.prospect_email || 'This job';
+  const base = (process.env.PUBLIC_BASE_URL || 'https://deal-forge-angel.onrender.com').replace(/\/+$/, '');
+  const prospectUrl = `${base}/${job.id}/how-it-works`;
+
+  let message;
+  if (!done) {
+    const now1 = current.length ? current.join(' and ') : (steps.find(s => s.status === 'queued' || s.status === 'waiting') || {}).label || 'Working';
+    message = `${company}: ${now1}. ${doneCount} of ${steps.length} steps done, ${etaText(etaSeconds)} left.`;
+    if (jobsAhead.size && !current.length) message += ` ${jobsAhead.size} other job${jobsAhead.size > 1 ? 's are' : ' is'} ahead in the queue.`;
+  } else if (attention.length) {
+    message = `${company} finished, but ${attention.length === 1 ? 'one thing needs' : attention.length + ' things need'} a look: ${attention.join('; ')}. Everything else is ready: ${prospectUrl}`;
+  } else {
+    message = `${company} is ready. Prospect link: ${prospectUrl}`;
+  }
+  if (!done && attention.length) message += ` Heads-up: ${attention.join('; ')}.`;
+
+  return {
+    job_id: job.id,
+    state: done ? (attention.length ? 'done_with_issues' : 'done') : 'running',
+    percent: done ? 100 : Math.min(99, Math.round((weightDone / Math.max(weightAll, 1)) * 100)),
+    steps_done: doneCount,
+    steps_total: steps.length,
+    eta_seconds: done ? 0 : etaSeconds,
+    eta_text: done ? null : etaText(etaSeconds),
+    jobs_ahead_in_queue: jobsAhead.size,
+    current,
+    steps,
+    background,
+    attention,
+    message_for_rep: message,
+    // Slower checks for long waits — every check is a Grokbot step that costs tokens.
+    next_check_in_seconds: done ? null : etaSeconds > 240 ? 60 : etaSeconds > 90 ? 30 : 20,
+    estimated_from: 'median real durations of recent runs, and the worker queue (one step at a time, oldest first)'
+  };
 }
 
 // ── Library benchmarks — the numbers the webinar deck is allowed to claim ────
@@ -1238,6 +1878,23 @@ function mergeBrief(existing, fresh) {
     } else if (isPlainObj(ev) && isPlainObj(fv)) {
       out[key] = mergeBrief(ev, fv);
     } // else: existing scalar/array wins — keep it
+  }
+  return out;
+}
+
+// The brief sections a rep (or an agent) may edit, and the merge they share.
+// `webinar` holds the nine extracted deck beats.
+const BRIEF_SECTIONS = ['prospect', 'icp', 'metrics', 'angle', 'context', 'situation', 'verbatim', 'titles', 'webinar'];
+
+function mergeBriefSections(existingBrief, patchBrief) {
+  const out = { ...(existingBrief || {}) };   // keeps _meta, _overrides, _generated
+  for (const sec of BRIEF_SECTIONS) {
+    const v = patchBrief && patchBrief[sec];
+    if (v === undefined) continue;
+    const cur = out[sec];
+    out[sec] = (v && typeof v === 'object' && !Array.isArray(v) && cur && typeof cur === 'object' && !Array.isArray(cur))
+      ? { ...cur, ...v }
+      : v;
   }
   return out;
 }
@@ -1827,6 +2484,33 @@ function _annotateTranscript(sentences, attendees, repEmailSet) {
     });
   const labeled = (rep + prospect) > 0;
   return { text: lines.join('\n'), labeled, counts: { rep, prospect, unknown } };
+}
+
+// The one way a transcript becomes Claude context for the brief. Both the
+// rep's New Job flow (/api/extract-brief) and the pipeline's `extract` task go
+// through here, so a brief made by Grokbot (which creates the job and lets the
+// pipeline extract) reads the same words as one made by hand. Before this the
+// pipeline sent only Fireflies' summary of the call: unlabelled, so the rep's
+// pitch read as the prospect's business, and short, so half the brief came
+// back empty.
+function buildTranscriptContext(detail, repEmails, { verbatimChars = 12000, summaryChars = 2000 } = {}) {
+  const d = detail || {};
+  const s = d.summary || {};
+  const annotated = _annotateTranscript(d.sentences || [], d.meeting_attendees || [], repEmails);
+  const rawSentences = annotated.text || (d.sentences || [])
+    .filter(x => x.text && x.text.trim().length > 0)
+    .map(x => `${x.speaker_name || 'Speaker'}: ${x.text.trim()}`)
+    .join('\n');
+  const summaryParts = [s.shorthand_bullet, s.overview, s.short_summary, s.action_items].filter(Boolean).join('\n\n');
+  const labelLegend = annotated.labeled
+    ? `SPEAKER LABELS — turns are tagged: [REP]=Quantum Scaling sales rep (the seller), [PROSPECT]=the buyer being pitched, [SPEAKER]=unknown role.\n` +
+      `Rep emails matched: ${[...(repEmails || [])].slice(0, 4).join(', ') || '(none in env)'}; counts → rep:${annotated.counts.rep} prospect:${annotated.counts.prospect} unknown:${annotated.counts.unknown}.\n` +
+      `STRICT RULE: extract prospect-side fields (offer_description, angle.*, verbatim.*, icp.*, situation.*) ONLY from [PROSPECT] turns. Treat [REP] turns as PITCH CONTEXT only — never use them as the source of what the prospect's business does, who its customers are, or what its results are. If a field can only be supported by [REP] turns, return null with _provenance "missing".\n\n`
+    : '';
+  const text = rawSentences
+    ? `${labelLegend}VERBATIM TRANSCRIPT:\n${truncateChars(rawSentences, verbatimChars)}\n\nSUMMARY NOTES:\n${truncateChars(summaryParts, summaryChars)}`
+    : truncateChars(summaryParts, verbatimChars + summaryChars);
+  return { text, labeled: annotated.labeled, counts: annotated.counts, verbatimChars: rawSentences.length };
 }
 
 function invalidateRepCache() { _repCache = { rows: null, fetchedAt: 0 }; }
@@ -5016,8 +5700,13 @@ async function generateWebinarTitles(extracted, companyName, job = null, customI
   const role = icp.role || 'business owners', industry = icp.industry || 'B2B';
   const size = icp.company_size || '', geo = icp.geography;
   // Brief schema uses angle.pain/result; spec schema uses customer_pain/result_delivered — support both
-  const pain   = extracted.customer_pain   || extracted.angle?.pain   || 'unpredictable client acquisition';
-  const result = extracted.result_delivered || extracted.angle?.result || 'predictable revenue growth';
+  // When the call never covered these, say so rather than fill the gap. The old
+  // defaults ('unpredictable client acquisition' / 'predictable revenue growth')
+  // were Quantum Scaling's own pitch, so a half-empty brief produced invite copy
+  // selling QS to the prospect's customers.
+  const NOT_DISCUSSED = 'not discussed on the call — work only from what the host sells (offer description / website) and do not invent a pain or result';
+  const pain   = extracted.customer_pain   || extracted.angle?.pain   || NOT_DISCUSSED;
+  const result = extracted.result_delivered || extracted.angle?.result || NOT_DISCUSSED;
   // Bridge angle.proof → case_study so the variant schema's proof_story field
   // can populate even when the brief only filled angle.proof (which is the
   // normal extractor output — case_study itself is never written upstream).
@@ -5490,14 +6179,50 @@ async function handleExtract(task, job) {
   };
   console.log(`[extract] Processing job ${job.id} for ${email}`);
 
-  // Step 1: transcript source. Honor a rep-picked Zoom call first (stamped on
-  // brief._source at job creation), then approved DB calls, then live Fireflies.
-  // Fireflies picks keep using the search path below — it re-finds the call and
-  // also aggregates any related calls for the same prospect.
-  let transcripts = [];
+  const existingBrief = job.extracted_data || null;
+  const pick   = existingBrief && existingBrief._source;
+  const pickId = pick ? (pick.id || pick.fireflies_transcript_id || null) : null;
+  const repEmails = await getRepEmails();
+
+  // The New Job flow already extracted this exact call (/api/extract-brief) and
+  // the rep confirmed the result. Running Claude over it a second time cost
+  // ~30s before Stage 2 could start, and its only effect was to refill fields
+  // the rep had deliberately left empty — from a weaker read of the call.
+  const prior = existingBrief && existingBrief._extracted;
+  if (prior && pickId && prior.transcript_id === pickId) {
+    const kept = { ...existingBrief };
+    kept._meta = {
+      transcript: {
+        id: pickId, title: prior.title || null, date: prior.date || null, found: true,
+        source: prior.source === 'zoom' ? 'live_zoom' : 'live_fireflies', count: 1,
+        transcripts: [{ id: pickId, title: prior.title || '(untitled)', date: prior.date || null, duration: prior.duration || 0 }]
+      },
+      website: { domain: defaultDomain, title: prior.website_title || null, scraped: !!prior.website_scraped }
+    };
+    try {
+      if (kept.icp) kept.icp = { ...kept.icp, _filter_validation: await validateExtractedFilters(kept.icp) };
+    } catch (e) {
+      console.warn('[extract] filter validation skipped:', e.message);
+    }
+    const keptCompany = kept.prospect?.company || contactInfo.company || defaultDomain;
+    await supabaseRequest('PATCH', `/rest/v1/jobs?id=eq.${job.id}`, {
+      prospect_company: keptCompany,
+      prospect_name:    kept.prospect?.contact_name || contactInfo.name || null,
+      updated_at:       new Date().toISOString()
+    });
+    await updateJobExtractedData(job.id, kept);
+    console.log(`[extract] Job ${job.id}: brief already extracted from ${pickId} in the New Job flow — kept as confirmed`);
+    return { extracted: kept, transcriptFound: true, transcriptSource: kept._meta.transcript.source, websiteScraped: !!prior.website_scraped, company: keptCompany, reused: true };
+  }
+
+  // Step 1: transcript source. The call the rep (or Grokbot) picked wins — Zoom
+  // or Fireflies — then approved DB calls, then a live Fireflies search. Every
+  // call is read as its full speaker-labelled transcript, the same as the New
+  // Job flow; Fireflies' summary alone describes the rep's pitch as much as the
+  // prospect's business, and is too short to fill the brief.
+  let transcripts = [];          // { id, title, duration, dateString, detail }
   let transcriptSource = 'none';
 
-  const pick = job.extracted_data && job.extracted_data._source;
   if (pick && pick.source === 'zoom' && pick.id) {
     // Prefer the download URL stamped at creation (no extra scope); fall back to
     // re-fetching by uuid (needs list_recording_files scope) if it's missing.
@@ -5508,20 +6233,26 @@ async function handleExtract(task, job) {
     }
     if (!zt || !(zt.sentences || []).length) zt = await fetchZoomTranscriptDetail(pick.id);
     if (zt && (zt.sentences || []).length) {
-      const repEmails = await getRepEmails();
-      const annotated = _annotateTranscript(zt.sentences, zt.meeting_attendees || [], repEmails);
       transcripts = [{
         id:         zt.id,
         title:      zt.title || 'Zoom call',
         duration:   zt.duration || 0,
         dateString: zt.date ? new Date(zt.date).toLocaleDateString('en-US') : '',
-        // Zoom has no Fireflies-style summary; feed the labeled transcript text.
-        summary:    { short_summary: truncateChars(annotated.text || '', 14000) }
+        detail:     { ...zt, summary: {} }
       }];
       transcriptSource = 'live_zoom';
       console.log(`[extract] Using rep-picked Zoom transcript ${pick.id} (${zt.sentences.length} lines)`);
     } else {
       console.warn(`[extract] Zoom transcript ${pick.id} unavailable — falling back to search`);
+    }
+  } else if (pickId) {
+    const detail = await fetchTranscriptDetail(pickId);
+    if (detail) {
+      transcripts = [{ id: detail.id, title: detail.title, duration: detail.duration || 0, dateString: detail.dateString || '', detail }];
+      transcriptSource = 'live_fireflies';
+      console.log(`[extract] Using picked Fireflies transcript ${pickId} (${(detail.sentences || []).length} lines)`);
+    } else {
+      console.warn(`[extract] Picked Fireflies transcript ${pickId} unavailable — falling back to search`);
     }
   }
 
@@ -5536,6 +6267,11 @@ async function handleExtract(task, job) {
       transcriptSource = transcripts.length > 0 ? 'live_fireflies' : 'none';
       console.log(`[extract] DB approved: 0 — falling back to live Fireflies (${transcripts.length} found)`);
     }
+    // Search hits carry only metadata and the summary. Load the sentences for
+    // the strongest match and up to two related calls; the rest stay summary-only.
+    await Promise.all(transcripts.slice(0, 3).map(async t => {
+      if (!t.detail && t.id) t.detail = await fetchTranscriptDetail(t.id);
+    }));
   }
 
   const transcriptFound = transcripts.length > 0;
@@ -5543,22 +6279,32 @@ async function handleExtract(task, job) {
   // Step 2: Website
   const website = await scrapeWebsite(defaultDomain);
 
-  // Step 3: Build extraction content — aggregate ALL call summaries into one block
+  // Step 3: Build extraction content. The first call gets the same budget the
+  // New Job flow uses; related calls get a smaller labelled excerpt so a
+  // follow-up can still inform the ICP without crowding out Call 1.
   const parts = [];
 
-  if (transcripts.length) {
-    transcripts.forEach((transcript, idx) => {
-      const s = transcript.summary || {};
-      const label = transcripts.length > 1 ? `CALL ${idx + 1} OF ${transcripts.length}` : 'CALL';
-      parts.push([
-        `${label}: ${transcript.title} (${(transcript.duration || 0).toFixed(0)} min)`,
-        s.shorthand_bullet ? `DETAILED NOTES:\n${s.shorthand_bullet}` : '',
-        s.overview         ? `METRICS OVERVIEW:\n${s.overview}` : '',
-        s.short_summary    ? `SUMMARY:\n${s.short_summary}` : '',
-        s.action_items     ? `ACTION ITEMS:\n${s.action_items}` : ''
-      ].filter(Boolean).join('\n\n'));
-    });
-  }
+  transcripts.forEach((transcript, idx) => {
+    const label = transcripts.length > 1 ? `CALL ${idx + 1} OF ${transcripts.length}` : 'CALL';
+    const head  = `${label}: ${transcript.title} (${(transcript.duration || 0).toFixed(0)} min)`;
+    if (transcript.detail && (transcript.detail.sentences || []).length) {
+      const ctx = buildTranscriptContext(
+        { ...transcript.detail, summary: transcript.detail.summary || transcript.summary || {} },
+        repEmails,
+        idx === 0 ? {} : { verbatimChars: 3000, summaryChars: 600 });
+      console.log(`[extract] ${label}: ${ctx.verbatimChars} verbatim chars, labeled=${ctx.labeled} rep:${ctx.counts.rep} prospect:${ctx.counts.prospect}`);
+      parts.push(`${head}\n\n${ctx.text}`);
+      return;
+    }
+    const s = transcript.summary || {};
+    parts.push([
+      head,
+      s.shorthand_bullet ? `DETAILED NOTES:\n${s.shorthand_bullet}` : '',
+      s.overview         ? `METRICS OVERVIEW:\n${s.overview}` : '',
+      s.short_summary    ? `SUMMARY:\n${s.short_summary}` : '',
+      s.action_items     ? `ACTION ITEMS:\n${s.action_items}` : ''
+    ].filter(Boolean).join('\n\n'));
+  });
 
   if (website.bodyText || website.title) {
     parts.push([
@@ -5635,7 +6381,6 @@ async function handleExtract(task, job) {
   // for contact_title / offer_description / ICP / metrics / etc. silently
   // clobbers values the rep just confirmed (B6 fix — Prospect Infos was
   // showing blank Contact title because this re-extract overwrote it).
-  const existingBrief = job.extracted_data || null;
   const merged        = mergeBrief(existingBrief, extracted);
 
   // Update prospect_company on the job row. Use merged values so the row
@@ -6562,39 +7307,53 @@ async function handleCalendarVisual(task, job) {
   if (!webinarTitlesTask || webinarTitlesTask.status !== 'completed') {
     throw new Error('DEPS_PENDING: calendar_visual waiting for webinar_titles');
   }
+  return renderCalendarVisualAsset(job, webinarTitlesTask.output_data);
+}
+
+/**
+ * Builds and uploads the shareable calendar page. Shared by the pipeline task
+ * and by refreshCalendarVisualAsset, which re-renders it after a rep edit
+ * reusing the stored reminder emails and date — so an edit costs no Claude call.
+ */
+async function renderCalendarVisualAsset(job, webinarTitlesOutput, reuse = {}) {
   // calendar_blockers is the most common drift wrapper-key the model returned before
   // the generator-side normalizer landed. Old jobs still have output_data shaped that
-  // way; accept it here so they recover on next worker tick without a full rerun.
-  const titles = webinarTitlesTask.output_data?.variants
-              || webinarTitlesTask.output_data?.calendar_blockers
-              || webinarTitlesTask.output_data?.titles
-              || [];
-  const recIdx = Number.isInteger(webinarTitlesTask.output_data?._recommended_index)
-    ? webinarTitlesTask.output_data._recommended_index
-    : 0;
-  const variant = titles[recIdx] || titles[0];
-  if (!variant) throw new Error('calendar_visual: no title variant found');
+  // way; effectiveInviteVariant accepts it so they recover without a full rerun.
+  // It also applies the rep's title/description edits: this page ignored them,
+  // so the link a rep sent kept the AI title after they had fixed it.
+  const eff = effectiveInviteVariant(job, webinarTitlesOutput);
+  if (!eff) throw new Error('calendar_visual: no title variant found');
+  const variant = eff.variant;
 
   const extracted = job.extracted_data || {};
   const hostName  = job.research_data?.host?.name || extracted.prospect?.name || job.prospect_company || 'Your Host';
-  const hostBio   = job.research_data?.host?.bio  || `${hostName} helps businesses grow through proven webinar strategies.`;
-
   const prospectCompany = extracted.prospect?.company || job.prospect_company || '';
+  // Fall back to what the prospect sells, never to a line about webinars — that
+  // one described Quantum Scaling, not the host.
+  const hostBio   = job.research_data?.host?.bio
+                 || extracted.prospect?.offer_description
+                 || (prospectCompany && prospectCompany !== hostName ? `${hostName}, ${prospectCompany}.` : '');
 
   // Generate reminder emails via AI prompt
-  const emailsResult = await generateReminderEmails(
-    variant.title, hostName,
-    extracted.result_delivered || extracted.angle?.result,
-    extracted.customer_pain   || extracted.angle?.pain,
-    prospectCompany
-  ).catch(e => { console.warn('[calendar_visual] email gen failed:', e.message); return null; });
-  const emails = emailsResult?.emails || [];
+  let emails = reuse.emails;
+  if (!emails) {
+    const emailsResult = await generateReminderEmails(
+      eff.title, hostName,
+      extracted.result_delivered || extracted.angle?.result,
+      extracted.customer_pain   || extracted.angle?.pain,
+      prospectCompany
+    ).catch(e => { console.warn('[calendar_visual] email gen failed:', e.message); return null; });
+    emails = emailsResult?.emails || [];
+  }
 
   // Next Tuesday ~3 weeks from now
-  const eventDate = new Date();
-  eventDate.setDate(eventDate.getDate() + 21);
-  while (eventDate.getDay() !== 2) eventDate.setDate(eventDate.getDate() + 1);
-  const dateStr = eventDate.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' }) + ' · 7:00 – 8:00pm';
+  let dateStr = reuse.dateStr;
+  if (!dateStr) {
+    const eventDate = new Date();
+    eventDate.setDate(eventDate.getDate() + 21);
+    while (eventDate.getDay() !== 2) eventDate.setDate(eventDate.getDate() + 1);
+    dateStr = eventDate.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' }) + ' · 7:00 – 8:00pm';
+  }
 
   if (!CALENDAR_VISUAL_TEMPLATE) CALENDAR_VISUAL_TEMPLATE = ensureTemplate('calendar_visual.html');
   if (!CALENDAR_VISUAL_TEMPLATE) throw new Error('calendar_visual.html template not loaded');
@@ -6606,24 +7365,34 @@ async function handleCalendarVisual(task, job) {
   // variant.hook+bullets+for_line` fallback was deleted along with the old
   // 4-field schema — any variant reaching here must have the 12-field shape
   // (enforced by the per-variant guard in generateWebinarTitles).
-  const bullets = Array.isArray(variant.bullets) ? variant.bullets : [];
-  const description = [
-    variant.conditional_opener,
-    variant.proof_story,
-    variant.contrast_frame,
-    variant.session_promise,
-    variant.rsvp_block,
-    bullets.join('\n'),
-    variant.reframe_line,
-    variant.urgency_close,
-    variant.ps_replay,
-    variant.for_line ? `For: ${variant.for_line}` : null,
-  ].filter(Boolean).join('\n\n');
+  // A rep-written description is rich HTML from the portal's editor; it is
+  // sanitised again here because API writes never pass through that editor.
+  let descriptionHtml;
+  if (eff.descHtml) {
+    descriptionHtml = /<[a-zA-Z][^>]*>/.test(eff.descHtml)
+      ? sanitizeRichHtml(eff.descHtml)
+      : eff.descHtml.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>');
+  } else {
+    const bullets = Array.isArray(variant.bullets) ? variant.bullets : [];
+    const description = [
+      variant.conditional_opener,
+      variant.proof_story,
+      variant.contrast_frame,
+      variant.session_promise,
+      variant.rsvp_block,
+      bullets.join('\n'),
+      variant.reframe_line,
+      variant.urgency_close,
+      variant.ps_replay,
+      variant.for_line ? `For: ${variant.for_line}` : null,
+    ].filter(Boolean).join('\n\n');
+    descriptionHtml = description.replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>');
+  }
 
   const htmlContent = interpolate(CALENDAR_VISUAL_TEMPLATE, {
-    EVENT_TITLE:       (variant.title || '').replace(/</g, '&lt;').replace(/>/g, '&gt;'),
+    EVENT_TITLE:       (eff.title || '').replace(/</g, '&lt;').replace(/>/g, '&gt;'),
     EVENT_DATE:        dateStr,
-    EVENT_DESCRIPTION: description.replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>'),
+    EVENT_DESCRIPTION: descriptionHtml,
     HOST_NAME:         (hostName || '').replace(/</g, '&lt;'),
     HOST_BIO:          (hostBio  || '').replace(/</g, '&lt;').replace(/>/g, '&gt;'),
     EMAILS_JSON:       JSON.stringify(emails)
@@ -6637,11 +7406,29 @@ async function handleCalendarVisual(task, job) {
   // `hook`/`bullets`/`for_line` keys removed with the 4-field schema cleanup.
   return {
     url:        publicUrl,
-    title:      variant.title,
+    title:      eff.title,
     host_name:  hostName,
     event_date: dateStr,
     emails:     emails,
   };
+}
+
+// Re-render the shareable calendar page after the rep (or an agent) edits the
+// invite title or description. Best-effort and free: it reuses the stored
+// emails and date. Does nothing until the pipeline has built the page once.
+async function refreshCalendarVisualAsset(jobId) {
+  const [job, tasks] = await Promise.all([getJob(jobId), getTasksByJobId(jobId)]);
+  if (!job) return null;
+  const wt = tasks.find(t => t.task_type === 'webinar_titles');
+  const cv = tasks.find(t => t.task_type === 'calendar_visual');
+  if (!wt || wt.status !== 'completed' || !cv || cv.status !== 'completed' || !cv.output_data) return null;
+  const out = await renderCalendarVisualAsset(job, wt.output_data,
+    { emails: cv.output_data.emails || [], dateStr: cv.output_data.event_date || null });
+  await supabaseRequest('PATCH', `/rest/v1/tasks?id=eq.${cv.id}`,
+    { output_data: out, asset_url: out.url, updated_at: new Date().toISOString() },
+    { 'Prefer': 'return=minimal' });
+  console.log(`[calendar_visual] Re-rendered for job ${jobId} after an invite edit: "${out.title}"`);
+  return out;
 }
 
 // ── Stage orchestration — spawn new tasks when dependencies are met ───────────
@@ -6655,7 +7442,10 @@ async function checkAndSpawnStageTasks(jobId) {
   const byType = {};
   tasks.forEach(t => { byType[t.task_type] = t; });
 
-  const isTerminal = s => ['completed', 'failed', 'needs_input'].includes(s);
+  // 'skipped' is what Rerun TAM → Apollo Exact writes on tam_estimate. Leaving
+  // it out meant such a job could never reach completed, and its portal polled
+  // (and repainted) every 3s forever.
+  const isTerminal = s => ['completed', 'failed', 'needs_input', 'skipped'].includes(s);
 
   // Stage 2: spawn when extract is completed
   const extractDone = byType['extract']?.status === 'completed';
@@ -8410,35 +9200,31 @@ const server = http.createServer(async (req, res) => {
 
             setProgress(id, { progress: 20, step: 'Loading transcript detail…' });
             const detail = preloadedDetail || await fetchTranscriptDetail(transcriptId);
-            const s = (detail?.summary || candidate.summary) || {};
             // Tag each transcript turn as [REP] (QS rep speaking) vs [PROSPECT]
             // (the buyer speaking) so the extractor can source prospect-side
             // fields (offer_description, angle.pain, angle.result, verbatim
             // quotes, ICP) ONLY from [PROSPECT] turns — otherwise the rep's
             // pitch contaminates the brief and the downstream webinar copy
             // ends up describing QS's offer instead of the prospect's.
-            const sentencesRaw = ((detail || candidate).sentences || []);
-            const attendees = (detail || candidate).meeting_attendees || [];
             const repEmails = await getRepEmails();
-            const annotated = _annotateTranscript(sentencesRaw, attendees, repEmails);
-            const rawSentences = annotated.text || sentencesRaw
-              .filter(x => x.text && x.text.trim().length > 0)
-              .map(x => `${x.speaker_name || 'Speaker'}: ${x.text.trim()}`)
-              .join('\n');
-            const summaryParts = [s.shorthand_bullet, s.overview, s.short_summary, s.action_items].filter(Boolean).join('\n\n');
-            const labelLegend = annotated.labeled
-              ? `SPEAKER LABELS — turns are tagged: [REP]=Quantum Scaling sales rep (the seller), [PROSPECT]=the buyer being pitched, [SPEAKER]=unknown role.\n` +
-                `Rep emails matched: ${[...repEmails].slice(0, 4).join(', ') || '(none in env)'}; counts → rep:${annotated.counts.rep} prospect:${annotated.counts.prospect} unknown:${annotated.counts.unknown}.\n` +
-                `STRICT RULE: extract prospect-side fields (offer_description, angle.*, verbatim.*, icp.*, situation.*) ONLY from [PROSPECT] turns. Treat [REP] turns as PITCH CONTEXT only — never use them as the source of what the prospect's business does, who its customers are, or what its results are. If a field can only be supported by [REP] turns, return null with _provenance "missing".\n\n`
-              : '';
-            const txContent = rawSentences
-              ? `${labelLegend}VERBATIM TRANSCRIPT:\n${truncateChars(rawSentences, 12000)}\n\nSUMMARY NOTES:\n${truncateChars(summaryParts, 2000)}`
-              : truncateChars(summaryParts, 14000);
+            const ctx = buildTranscriptContext(
+              { ...(detail || candidate), summary: (detail?.summary || candidate.summary) || {} }, repEmails);
+            const txContent = ctx.text;
 
             setProgress(id, { progress: 50, step: 'Extracting brief with Claude…' });
-            console.log(`[extract-brief ${id.slice(0,8)}] Claude context: ${txContent.length} chars (${rawSentences.length} verbatim, labeled=${annotated.labeled} rep:${annotated.counts.rep} prospect:${annotated.counts.prospect})`);
+            console.log(`[extract-brief ${id.slice(0,8)}] Claude context: ${txContent.length} chars (${ctx.verbatimChars} verbatim, labeled=${ctx.labeled} rep:${ctx.counts.rep} prospect:${ctx.counts.prospect})`);
             brief = await extractBriefFromTranscript(txContent, webBody, contactInfo);
             transcriptFound = true;
+            // Lets the pipeline's extract task recognise this brief as already
+            // extracted from this exact call, and skip a second, worse pass.
+            if (brief && typeof brief === 'object') {
+              brief._extracted = {
+                transcript_id: transcriptId, source: isZoom ? 'zoom' : 'fireflies', labeled: ctx.labeled,
+                title: transcriptTitle, date: transcriptDate, duration: candidate.duration || 0,
+                website_title: website?.title || null, website_scraped: !!webBody,
+                at: new Date().toISOString()
+              };
+            }
 
             // Persist the Zoom transcript's download URL on the brief so the
             // pipeline's extract can re-read the same VTT without needing the
@@ -8786,18 +9572,12 @@ const server = http.createServer(async (req, res) => {
       if (body.brief && typeof body.brief === 'object') {
         const existing = await getJob(jobId);
         const existingBrief = (existing && existing.extracted_data) || {};
-        const newBrief = body.brief;
-        patch.extracted_data = {
-          ...existingBrief,                 // start from existing (preserves _meta, _overrides, _generated)
-          prospect:  newBrief.prospect  ?? existingBrief.prospect,
-          icp:       newBrief.icp       ?? existingBrief.icp,
-          metrics:   newBrief.metrics   ?? existingBrief.metrics,
-          angle:     newBrief.angle     ?? existingBrief.angle,
-          context:   newBrief.context   ?? existingBrief.context,
-          situation: newBrief.situation ?? existingBrief.situation,
-          verbatim:  newBrief.verbatim  ?? existingBrief.verbatim,
-          titles:    newBrief.titles    ?? existingBrief.titles
-        };
+        // Field-level merge. A section used to be replaced whole, so the portal
+        // form (which shows only some fields) silently deleted the rest —
+        // offer_description, business_model, kpis, employee ranges — and an
+        // agent updating one field blanked its siblings. A key sent as null
+        // still clears; a key not sent is left alone.
+        patch.extracted_data = mergeBriefSections(existingBrief, body.brief);
       }
       const r = await supabaseRequest('PATCH', `/rest/v1/jobs?id=eq.${jobId}`, patch, { 'Prefer': 'return=representation' });
       if (r.status >= 400) throw new Error(`Supabase ${r.status}: ${JSON.stringify(r.body)}`);
@@ -8826,6 +9606,7 @@ const server = http.createServer(async (req, res) => {
         res.writeHead(404, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Job not found' })); return;
       }
+      const clearedOverrides = await clearInviteCopyOverrides(jobId, { dropMirror: true });
       // Clear cached personalization data on the job record
       await supabaseRequest('PATCH', `/rest/v1/jobs?id=eq.${jobId}`, {
         brand_data:    null,
@@ -8853,7 +9634,7 @@ const server = http.createServer(async (req, res) => {
       }
       console.log(`[POST /api/jobs/${jobId}/regenerate] Reset tasks: ${resetIds.join(', ')}`);
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, reset: resetIds }));
+      res.end(JSON.stringify({ ok: true, reset: resetIds, cleared_overrides: clearedOverrides }));
     } catch(e) {
       console.error('[POST /api/jobs/:id/regenerate]', e.message);
       res.writeHead(500, { 'Content-Type': 'application/json' });
@@ -8906,6 +9687,8 @@ const server = http.createServer(async (req, res) => {
             { 'Prefer': 'return=minimal' });
         }
         const leadTotal = tasks.find(t => t.task_type === 'lead_list')?.output_data?.total ?? null;
+        // Re-evaluate the job's status now that this task is terminal.
+        await checkAndSpawnStageTasks(jobId).catch(e => console.warn(`[rerun-tam] status check: ${e.message}`));
         console.log(`[rerun-tam] ${jobId} → apollo (skipped tam_estimate; lead_list total ${leadTotal})`);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true, tam_method: 'apollo', output: { tam_total: leadTotal, tam_source: 'apollo_api_live' } }));
@@ -9012,8 +9795,9 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     try {
-      const storageUrl = `${SUPABASE_URL}/storage/v1/object/public/sales-assets/${encodeURIComponent(jobId)}/${filename}`;
-      const upstream = await fetch(storageUrl, { signal: AbortSignal.timeout(10000) });
+      // The query string sidesteps a CDN copy cached before the file was re-rendered.
+      const storageUrl = `${SUPABASE_URL}/storage/v1/object/public/sales-assets/${encodeURIComponent(jobId)}/${filename}?v=${Date.now()}`;
+      const upstream = await fetch(storageUrl, { signal: AbortSignal.timeout(10000), cache: 'no-store' });
       if (!upstream.ok) {
         res.writeHead(upstream.status, { 'Content-Type': 'text/plain' });
         res.end(`Asset fetch failed (storage HTTP ${upstream.status}). The task may not have completed yet.`);
@@ -9148,6 +9932,52 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // ── GET /api/jobs/:id/progress — where the job is and how long is left ────
+  // Plain-English status + ETA for Grokbot to relay to the closer (jobProgress).
+  if (req.method === 'GET' && /^\/api\/jobs\/[^/]+\/progress$/.test(urlPath)) {
+    setCors(res);
+    const jobId = urlPath.split('/')[3];
+    try {
+      const job = await getJob(jobId);
+      if (!job) { res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'Job not found' })); return; }
+      const tasks = await getTasksByJobId(jobId);
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(JSON.stringify(await jobProgress(job, tasks)));
+    } catch (e) {
+      console.error('[GET /api/jobs/:id/progress]', e.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  // ── GET / PATCH /api/jobs/:id/fields — every rep-editable field, by path ──
+  // See readEditableFields / applyFieldChanges. The Grokbot surface: one read,
+  // one write, the same rules as the rep's own editors.
+  if ((req.method === 'GET' || req.method === 'PATCH') && /^\/api\/jobs\/[^/]+\/fields$/.test(urlPath)) {
+    setCors(res);
+    const jobId = urlPath.split('/')[3];
+    try {
+      if (req.method === 'GET') {
+        const job = await getJob(jobId);
+        if (!job) { res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'Job not found' })); return; }
+        const tasks = await getTasksByJobId(jobId);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(await readEditableFields(job, tasks)));
+        return;
+      }
+      const body = await parseBody(req);
+      const r = await applyFieldChanges(jobId, body && body.changes);
+      res.writeHead(r.ok ? 200 : r.status, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(r.ok ? r : { error: r.error, rejected: r.rejected || [] }));
+    } catch (e) {
+      console.error(`[${req.method} /api/jobs/:id/fields]`, e.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
   if (req.method === 'PATCH' && urlPath.startsWith('/api/jobs/') && urlPath.endsWith('/overrides')) {
     setCors(res);
     const jobId = urlPath.slice('/api/jobs/'.length, -'/overrides'.length);
@@ -9207,65 +10037,7 @@ const server = http.createServer(async (req, res) => {
       const job = await getJob(jobId);
       if (!job) { res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'Job not found' })); return; }
       const existingData = job.extracted_data || {};
-      const existingIcp = existingData.icp || {};
-      const ICP_FIELDS = ['apollo_titles', 'apollo_keyword', 'apollo_geography', 'apollo_employee_ranges', 'person_seniorities', 'apollo_person_locations', 'apollo_revenue_range', 'target_audience_type'];
-      const updatedIcp = { ...existingIcp };
-      // One "CEO, CFO, COO" entry (portal chip, MCP update_icp, Grokbot) is
-      // three titles, not one.
-      if (body.apollo_titles !== undefined) body.apollo_titles = splitTitleList(body.apollo_titles);
-      // Track whether the rep actually changed something so we can clear stale
-      // TAM overrides only on real edits (not on a no-op Save Filters click).
-      let anyIcpFieldChanged = false;
-      for (const k of ICP_FIELDS) {
-        if (body[k] !== undefined) {
-          if (JSON.stringify(existingIcp[k]) !== JSON.stringify(body[k])) {
-            anyIcpFieldChanged = true;
-          }
-          updatedIcp[k] = body[k];
-        }
-      }
-      // Mirror apollo_keyword → icp.industry so legacy display callers
-      // (calendar header, case-studies filter, ROI templates) stay in sync
-      // with the rep's chip state. apollo_keyword can be an array (multi-tag
-      // OR) or a legacy string; either way we collapse to a comma-joined
-      // string for the singular display field. Without the mirror, clearing
-      // the chips leaves icp.industry pointing at the original extracted
-      // value and every downstream surface that reads `icp.industry`
-      // re-shows it.
-      if (body.apollo_keyword !== undefined) {
-        let mirrored = '';
-        if (Array.isArray(body.apollo_keyword)) {
-          mirrored = body.apollo_keyword.map(s => String(s || '').trim()).filter(Boolean).join(', ');
-        } else if (typeof body.apollo_keyword === 'string' && body.apollo_keyword.trim()) {
-          mirrored = body.apollo_keyword.trim();
-        }
-        updatedIcp.industry = mirrored;
-      }
-      // Same mirror for locations. Without it a rep can set real Apollo chips and
-      // still see the old extracted narrative under Company Location.
-      if (body.apollo_geography !== undefined) {
-        updatedIcp.geography = geoDisplayFromIcp({ apollo_geography: body.apollo_geography }) || null;
-        if (updatedIcp.geography) delete updatedIcp.geography_note;
-      }
-      // Rep edits invalidate any pre-baked translator payload. Without this,
-      // a stored apollo_payload (which fetchLeadsFromApollo prefers over the
-      // legacy-build path) would silently re-inject filters the rep removed.
-      delete updatedIcp.apollo_payload;
-      const updatedData = { ...existingData, icp: updatedIcp };
-      // When ICP filters actually change, the rep's manual TAM override (and
-      // the derived monthly outreach) becomes stale — they reflect a pool that
-      // no longer matches the filter set. Clear those two overrides so the
-      // next rerun-apollo surfaces fresh Apollo-derived numbers. Other
-      // overrides (LTV, show rate, close rate, webinar title) are independent
-      // of the filter set and stay put.
-      if (anyIcpFieldChanged && updatedData._overrides) {
-        const { tam_total, recommended_outreach, full_market_cycle, ...keptOverrides } = updatedData._overrides;
-        if (Object.keys(keptOverrides).length > 0) {
-          updatedData._overrides = keptOverrides;
-        } else {
-          delete updatedData._overrides;
-        }
-      }
+      const { updatedData, updatedIcp, anyIcpFieldChanged } = applyIcpPatch(existingData, body);
       const r = await supabaseRequest('PATCH', `/rest/v1/jobs?id=eq.${jobId}`,
         { extracted_data: updatedData, updated_at: new Date().toISOString() },
         { 'Prefer': 'return=minimal' }
@@ -10311,8 +11083,9 @@ const server = http.createServer(async (req, res) => {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Job has no extracted_data — run extract first' })); return;
       }
+      const clearedOverrides = await clearInviteCopyOverrides(jobId);
       res.writeHead(202, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, message: 'Regeneration started — poll job for progress' }));
+      res.end(JSON.stringify({ ok: true, message: 'Regeneration started — poll job for progress', cleared_overrides: clearedOverrides }));
 
       (async () => {
         const writeRerun = async (snapshot) => {

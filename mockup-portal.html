@@ -1111,7 +1111,7 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
         <!-- PLACEHOLDER badge — hidden when LLM output is applied. Lets us still demo to clients with hardcoded sample copy and never confuse it for real generation. -->
         <div id="cal-placeholder-badge" style="background:rgba(245,158,11,0.12);border:1px solid rgba(245,158,11,0.4);color:#92400e;font-size:11px;font-weight:600;letter-spacing:0.04em;padding:6px 12px;border-radius:8px;margin-bottom:12px;display:flex;align-items:center;gap:8px;">
           <span>📋</span>
-          <span>PLACEHOLDER COPY · sample content for layout preview</span>
+          <span id="cal-placeholder-label">PLACEHOLDER COPY · sample content for layout preview</span>
           <span style="margin-left:auto;font-weight:500;color:#a16207;">click ↻ Regenerate to write real copy from Copy Brain</span>
         </div>
         <!-- Variant selector + Regenerate -->
@@ -2090,6 +2090,8 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
   }
   .pi-input:focus, .pi-textarea:focus { border-color:#3f3f46; }
   .pi-textarea { min-height:64px; resize:vertical; line-height:1.5; }
+  /* An empty brief field says why it is empty, so it cannot pass for a bug. */
+  .pi-input.pi-nd::placeholder, .pi-textarea.pi-nd::placeholder { color:#b45309; font-style:italic; opacity:1; }
 </style>
 <!-- V2 Proof-beat modal (Webinar Experience). The call often gives no client
      result, and Proof is the one beat a generic fallback cannot carry — so the
@@ -2187,12 +2189,30 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
         <div class="pi-section-title">Prospect</div>
         <div class="pi-section-sub">Identity. Website feeds <code>brand_scrape</code>. LinkedIn URL feeds <code>prospect_research</code> (host name, title, headshot).</div>
         <div class="pi-grid">
-          <label class="pi-label"><span>Email</span><input id="pi-email" class="pi-input" type="email" data-col="prospect_email" placeholder="jake@4fp.co"></label>
+          <label class="pi-label"><span>Email</span><input id="pi-email" data-optional="1" class="pi-input" type="email" data-col="prospect_email" placeholder="jake@4fp.co"></label>
           <label class="pi-label"><span>Contact name</span><input id="pi-name" class="pi-input" type="text" data-col="prospect_name" data-brief="prospect.contact_name" placeholder="Jake Wagner"></label>
           <label class="pi-label"><span>Contact title</span><input id="pi-contact-title" class="pi-input" type="text" data-brief="prospect.contact_title" placeholder="Founder / CEO"></label>
           <label class="pi-label"><span>Company</span><input id="pi-company" class="pi-input" type="text" data-col="prospect_company" data-brief="prospect.company" placeholder="Laraby"></label>
-          <label class="pi-label"><span>Website (no protocol)</span><input id="pi-website" class="pi-input" type="text" data-col="prospect_website" placeholder="4fp.co"></label>
-          <label class="pi-label"><span>LinkedIn URL</span><input id="pi-linkedin" class="pi-input" type="url" data-col="prospect_linkedin_url" placeholder="https://www.linkedin.com/in/jake-wagner"></label>
+          <label class="pi-label"><span>Website (no protocol)</span><input id="pi-website" data-optional="1" class="pi-input" type="text" data-col="prospect_website" placeholder="4fp.co"></label>
+          <label class="pi-label"><span>LinkedIn URL</span><input id="pi-linkedin" data-optional="1" class="pi-input" type="url" data-col="prospect_linkedin_url" placeholder="https://www.linkedin.com/in/jake-wagner"></label>
+          <label class="pi-label"><span>Offering name</span><input id="pi-offering-name" class="pi-input" type="text" data-brief="prospect.offering_name" placeholder="Fiddle Link AI"></label>
+          <label class="pi-label"><span>Business model</span>
+            <select id="pi-business-model" class="pi-input" data-brief="prospect.business_model" data-optional="1">
+              <option value="">—</option>
+              <option value="consulting">Consulting</option>
+              <option value="coaching">Coaching</option>
+              <option value="agency">Agency (done with you)</option>
+              <option value="managed_service">Managed service (done for you)</option>
+              <option value="lead_gen">Lead gen (pay per lead)</option>
+              <option value="saas">SaaS</option>
+              <option value="platform">Platform</option>
+              <option value="product">Product</option>
+              <option value="unknown">Unknown</option>
+            </select>
+          </label>
+          <!-- What the prospect sells. Feeds the invite copy directly, so this is
+               where the rep catches the call's pitch being mistaken for theirs. -->
+          <label class="pi-label" style="grid-column:1/-1;"><span>What they sell (1–3 sentences)</span><textarea id="pi-offer" class="pi-textarea" data-brief="prospect.offer_description" rows="2" placeholder="Who they help, what they deliver, the headline outcome"></textarea></label>
           <!-- Sales rep — auto-filled from GHL assignedTo via /api/prefetch, but
                rep-editable here when GHL has the wrong owner. PATCHes the
                job row (column: rep_name) via /api/jobs/:id/rep. -->
@@ -2299,8 +2319,8 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
         <div class="pi-section-title">Webinar title seeds</div>
         <div class="pi-section-sub">Optional starting points for <code>webinar_titles</code>. Leave blank to let the AI generate from scratch.</div>
         <div class="pi-grid">
-          <label class="pi-label"><span>Variant A seed</span><input id="pi-title-a" class="pi-input" type="text" data-brief="titles.a" placeholder="(optional)"></label>
-          <label class="pi-label"><span>Variant B seed</span><input id="pi-title-b" class="pi-input" type="text" data-brief="titles.b" placeholder="(optional)"></label>
+          <label class="pi-label"><span>Variant A seed</span><input id="pi-title-a" data-optional="1" class="pi-input" type="text" data-brief="titles.a" placeholder="(optional)"></label>
+          <label class="pi-label"><span>Variant B seed</span><input id="pi-title-b" data-optional="1" class="pi-input" type="text" data-brief="titles.b" placeholder="(optional)"></label>
         </div>
       </div>
 
@@ -3025,8 +3045,8 @@ async function v2RenderRoiReal() {
   // right example for a prospect in that client's vertical, and that call is
   // the rep's. With nothing pinned, the floor picks for them.
   const allRoi = rows.slice();
-  const roiPins = v2Pinned('roi');
-  rows = roiPins.length ? v2ApplyPins('roi', rows) : rows.filter(c => !c.below_booked_floor);
+  const roiAuto = rows.filter(c => !c.below_booked_floor);
+  rows = v2PinMode('roi') === 'chosen' ? v2ApplyPins('roi', rows) : roiAuto;
   if (tam) rows.sort((a, b) => Math.abs((a.tam || 0) - tam) - Math.abs((b.tam || 0) - tam));
 
   const intro = document.getElementById('roi-real-intro');
@@ -3041,7 +3061,7 @@ async function v2RenderRoiReal() {
       // deliberate choice, not a surprise mid-call.
       return c.attend_to_booked_pct + '% booked' +
         (c.below_booked_floor ? ' <span style="color:#f87171;">· below ' + (c.booked_floor_pct || 5) + '% bar</span>' : '');
-    }) + rows.map(function (c, i) {
+    }, roiAuto.map(c => c.airtable_record_id)) + rows.map(function (c, i) {
     const closest = (i === 0 && tam)
       ? '<span style="font-size:9px;font-weight:700;letter-spacing:.05em;color:#34b433;border:1px solid rgba(52,180,51,0.45);border-radius:4px;padding:2px 6px;margin-bottom:8px;display:inline-block;">CLOSEST MARKET TO YOURS</span>' : '';
     const basis = c.stats_basis
@@ -3177,23 +3197,38 @@ async function v2OpenMatches() {
   const sub   = document.getElementById('v2-match-sub');
   modal.style.display = 'flex';
   body.innerHTML = '<div style="color:#71717a;font-size:13px;">Loading…</div>';
-  let d = {};
+  let d = {}, all = [];
   try {
-    const r = await fetch('/api/case-studies?match=' + encodeURIComponent(window.__JOB_ID));
-    d = await r.json();
+    // The automatic pick (two best matches) and, for the rep's picker, every
+    // client cleared for this tab. The rep's choice wins — before, this modal
+    // ignored it and always showed the automatic pair.
+    const [mr, ar] = await Promise.all([
+      fetch('/api/case-studies?match=' + encodeURIComponent(window.__JOB_ID)),
+      fetch('/api/case-studies?tab=' + encodeURIComponent('Lead List / TAM'))
+    ]);
+    d = await mr.json();
+    all = ((await ar.json()).case_studies) || [];
   } catch (e) {
     body.innerHTML = '<div style="color:#f87171;font-size:13px;">Could not load matches.</div>';
     return;
   }
-  const m = d.matches || [];
-  sub.textContent = d.prospect && d.prospect.tam
-    ? 'Matched against your market of ' + Number(d.prospect.tam).toLocaleString() + '.'
-    : 'Matched on market and offering.';
+  const auto = d.matches || [];
+  const chosen = v2PinMode('lead_list') === 'chosen';
+  const m = chosen ? v2ApplyPins('lead_list', all) : auto;
+  sub.textContent = chosen
+    ? 'Chosen by your rep.'
+    : (d.prospect && d.prospect.tam
+        ? 'Matched against your market of ' + Number(d.prospect.tam).toLocaleString() + '.'
+        : 'Matched on market and offering.');
+  const picker = v2PickerHtml('lead_list', all, function (c) {
+    return c.tam ? 'market ' + Number(c.tam).toLocaleString() : '';
+  }, auto.map(c => c.airtable_record_id));
   if (!m.length) {
-    body.innerHTML = '<div style="color:#71717a;font-size:13px;">No cleared client is a close enough match yet.</div>';
+    body.innerHTML = picker + '<div style="color:#71717a;font-size:13px;">' +
+      (chosen ? 'No examples chosen for this tab.' : 'No cleared client is a close enough match yet.') + '</div>';
     return;
   }
-  body.innerHTML = m.map(function (c) {
+  body.innerHTML = picker + m.map(function (c) {
     const head = c.headshot_url
       ? '<img src="' + v2Esc(c.headshot_url) + '" alt="" style="width:44px;height:44px;border-radius:50%;object-fit:cover;flex:none;">'
       : '<div class="v2-proof-initials" style="width:44px;height:44px;">' + v2Esc(_v2Initials(c.client_name)) + '</div>';
@@ -3201,7 +3236,7 @@ async function v2OpenMatches() {
       '<div style="display:flex;align-items:center;gap:12px;margin-bottom:10px;">' + head +
         '<div style="flex:1;"><div style="font-size:15px;font-weight:600;color:#e4e4e7;">' + v2Esc(c.client_name) + '</div>' +
         '<div style="font-size:12px;color:#71717a;">' + v2Esc(v2CompanyName(c.company)) + '</div></div>' +
-        '<span style="font-size:9px;font-weight:700;letter-spacing:.05em;color:#34b433;border:1px solid rgba(52,180,51,0.4);border-radius:4px;padding:2px 6px;">' + v2Esc(c.axis_label || '') + '</span>' +
+        (c.axis_label ? '<span style="font-size:9px;font-weight:700;letter-spacing:.05em;color:#34b433;border:1px solid rgba(52,180,51,0.4);border-radius:4px;padding:2px 6px;">' + v2Esc(c.axis_label) + '</span>' : '') +
       '</div>' +
       (c.tam ? '<div style="font-size:12px;color:#a1a1aa;margin-bottom:8px;">Market of <strong style="color:#e4e4e7;">' + Number(c.tam).toLocaleString() + '</strong>' +
         (c.industries ? ' · ' + v2Esc(String(c.industries).split(';')[0]) : '') + '</div>' : '') +
@@ -3492,43 +3527,47 @@ function v2ClearProof() {
 // as arrays of airtable_record_id in display order, and the picker only renders
 // in edit mode — a prospect never sees the controls.
 const V2_PIN_KEYS = { lead_list: 'cs_pin_lead_list', invite: 'cs_pin_invite', webinar: 'cs_pin_webinar', roi: 'cs_pin_roi' };
+// Stored when the rep unticks every example. An empty array has always meant
+// "automatic", so it cannot also mean "none" — that ambiguity is why unticking
+// the last box brought every automatic pick straight back.
+const V2_PIN_NONE = '__none__';
+
+function _v2PinRaw(surface) {
+  const ov = ((window.__V2_JOB || {}).extracted_data || {})._overrides || {};
+  return ov[V2_PIN_KEYS[surface]];
+}
+
+// 'auto' until the rep (or Grokbot) makes a choice; then 'chosen', even if the
+// choice is nothing.
+function v2PinMode(surface) {
+  const v = _v2PinRaw(surface);
+  return Array.isArray(v) && v.length ? 'chosen' : 'auto';
+}
 
 function v2Pinned(surface) {
-  const ov = ((window.__V2_JOB || {}).extracted_data || {})._overrides || {};
-  const v = ov[V2_PIN_KEYS[surface]];
-  return Array.isArray(v) ? v.filter(Boolean) : [];
+  const v = _v2PinRaw(surface);
+  return Array.isArray(v) ? v.filter(id => id && id !== V2_PIN_NONE) : [];
 }
 
-// Pinned ids first, in the rep's order; everything else follows so the picker
-// can still offer it. Callers take what they need off the front.
+// In 'chosen' mode exactly the picked rows, in the rep's order — never a quiet
+// fall-back to the automatic list. In 'auto' mode the rows unchanged.
 function v2ApplyPins(surface, rows) {
-  const pins = v2Pinned(surface);
-  if (!pins.length) return rows;
+  if (v2PinMode(surface) === 'auto') return rows;
   const byId = {};
   rows.forEach(r => { byId[r.airtable_record_id] = r; });
-  const picked = pins.map(id => byId[id]).filter(Boolean);
-  return picked.length ? picked : rows;
+  return v2Pinned(surface).map(id => byId[id]).filter(Boolean);
 }
 
-// Every id currently offered per surface, so a first deselect can mean
-// "all of them except this one" rather than "only this one".
+// Every id currently offered per surface, and which of them the automatic
+// mode shows, so a first deselect can mean "what you see minus this one".
 const _v2PickerAll = {};
+const _v2PickerAuto = {};
 
-async function v2TogglePin(surface, recordId) {
-  let pins = v2Pinned(surface).slice();
-  if (!pins.length) {
-    // Auto mode: the boxes are all ticked but nothing is pinned, so the click
-    // that just happened was a DESELECT. Pin everything except it. Without this
-    // the click fell through to the push below and made it the only selection.
-    pins = (_v2PickerAll[surface] || []).filter(id => id !== recordId);
-  } else {
-    const i = pins.indexOf(recordId);
-    if (i >= 0) pins.splice(i, 1); else pins.push(recordId);
-  }
+async function v2WritePins(surface, value) {
   try {
     const r = await fetch('/api/jobs/' + encodeURIComponent(window.__JOB_ID) + '/overrides', {
       method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ [V2_PIN_KEYS[surface]]: pins })
+      body: JSON.stringify({ [V2_PIN_KEYS[surface]]: value })
     });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     // Re-read so the in-page copy matches what was stored, then repaint.
@@ -3536,15 +3575,36 @@ async function v2TogglePin(surface, recordId) {
     window.__V2_JOB = await fresh.json();
     v2RepaintSurface(surface);
   } catch (e) {
-    console.warn('[v2] could not save pin:', e.message);
+    console.warn('[v2] could not save case-study choice:', e.message);
+    alert('Could not save that choice: ' + e.message);
   }
 }
+
+function v2TogglePin(surface, recordId) {
+  let pins;
+  if (v2PinMode(surface) === 'auto') {
+    // Automatic: the ticked boxes are what is showing. Start from those.
+    const shown = _v2PickerAuto[surface] || _v2PickerAll[surface] || [];
+    pins = shown.indexOf(recordId) >= 0 ? shown.filter(id => id !== recordId) : shown.concat([recordId]);
+  } else {
+    pins = v2Pinned(surface).slice();
+    const i = pins.indexOf(recordId);
+    if (i >= 0) pins.splice(i, 1); else pins.push(recordId);
+  }
+  return v2WritePins(surface, pins.length ? pins : [V2_PIN_NONE]);
+}
+
+function v2PinAll(surface)  { return v2WritePins(surface, (_v2PickerAll[surface] || []).slice()); }
+function v2PinNone(surface) { return v2WritePins(surface, [V2_PIN_NONE]); }
 
 function v2RepaintSurface(surface) {
   if (surface === 'invite')    v2RenderInviteSwap();
   if (surface === 'webinar')   v2RenderWebinarSwap();
   if (surface === 'roi')       v2RenderRoiReal();
-  if (surface === 'lead_list') { /* modal reads pins on open */ }
+  if (surface === 'lead_list') {
+    const m = document.getElementById('v2-match-modal');
+    if (m && m.style.display !== 'none') v2OpenMatches();
+  }
 }
 
 const V2_DEFAULT_KEYS = { invite: 'cs_default_invite', webinar: 'cs_default_webinar' };
@@ -3585,18 +3645,22 @@ async function v2SetDefault(surface, value) {
  * include, a radio to make it the default. Rendered only in edit mode — the
  * prospect never sees any of it.
  */
-function v2PickerHtml(surface, all, metricFn) {
+function v2PickerHtml(surface, all, metricFn, autoIds) {
   if (!IS_EDIT_MODE || !all.length) return '';
   const pins = v2Pinned(surface);
   const def  = v2DefaultFor(surface);
-  const auto = !pins.length;
+  const auto = v2PinMode(surface) === 'auto';
   _v2PickerAll[surface] = all.map(c => c.airtable_record_id);
+  // What automatic mode actually shows — not always everything on offer (the
+  // ROI floor, the Lead List's two best matches).
+  _v2PickerAuto[surface] = Array.isArray(autoIds) ? autoIds.slice() : _v2PickerAll[surface].slice();
   // ROI shows every chosen client side by side, so there is nothing to "open
   // on" — the radio column only makes sense for the swap surfaces.
   const hasDefault = !!V2_DEFAULT_KEYS[surface];
 
   const row = function (c) {
-    const on  = auto || pins.indexOf(c.airtable_record_id) >= 0;
+    const on  = auto ? _v2PickerAuto[surface].indexOf(c.airtable_record_id) >= 0
+                     : pins.indexOf(c.airtable_record_id) >= 0;
     const ord = auto ? '' : String(pins.indexOf(c.airtable_record_id) + 1);
     const isDef = def === c.airtable_record_id;
     return '<div><input type="checkbox" ' + (on ? 'checked' : '') +
@@ -3614,7 +3678,8 @@ function v2PickerHtml(surface, all, metricFn) {
 
   return '<div class="v2-pick">' +
       '<div class="v2-pick-head"><b>Which examples to show</b><span>REP ONLY</span>' +
-        '<span class="v2-pick-hint">' + (auto ? 'Showing all — tick to choose' : pins.length + ' chosen, in order') + '</span></div>' +
+        '<span class="v2-pick-hint">' + (auto ? 'Picked automatically — tick or untick to choose yourself'
+                                              : (pins.length ? pins.length + ' chosen by you, in order' : 'None shown — you unticked them all')) + '</span></div>' +
       '<div class="v2-pick-grid">' +
         '<div class="hdr">Show</div><div class="hdr">#</div><div class="hdr">Client</div><div class="hdr"></div><div class="hdr">' + (hasDefault ? 'Opens' : '') + '</div>' +
         (hasDefault
@@ -3627,7 +3692,9 @@ function v2PickerHtml(surface, all, metricFn) {
         all.map(row).join('') +
       '</div>' +
       '<div class="v2-pick-foot">' +
-        (auto ? '' : '<button class="v2-pick-reset" onclick="v2ClearPins(\'' + surface + '\')">Show all again</button>') +
+        '<button class="v2-pick-reset" onclick="v2PinAll(\'' + surface + '\')">Tick all</button>' +
+        '<button class="v2-pick-reset" onclick="v2PinNone(\'' + surface + '\')">Untick all</button>' +
+        (auto ? '' : '<button class="v2-pick-reset" onclick="v2ClearPins(\'' + surface + '\')">Back to automatic</button>') +
         (def !== 'yours' ? '<button class="v2-pick-reset" onclick="v2SetDefault(\'' + surface + '\',\'yours\')">Open on yours</button>' : '') +
         '<span style="font-size:11px;color:#52525b;">' +
           (hasDefault ? 'The prospect sees only the ticked examples, opening on whichever row is set to Opens.'
@@ -3636,17 +3703,9 @@ function v2PickerHtml(surface, all, metricFn) {
     '</div>';
 }
 
-async function v2ClearPins(surface) {
-  try {
-    await fetch('/api/jobs/' + encodeURIComponent(window.__JOB_ID) + '/overrides', {
-      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ [V2_PIN_KEYS[surface]]: [] })
-    });
-    const fresh = await fetch('/api/jobs/' + encodeURIComponent(window.__JOB_ID));
-    window.__V2_JOB = await fresh.json();
-    v2RepaintSurface(surface);
-  } catch (e) { console.warn('[v2] could not clear pins:', e.message); }
-}
+// Back to automatic. '' clears the override; [] is kept meaning the same for
+// jobs saved before V2_PIN_NONE existed.
+function v2ClearPins(surface) { return v2WritePins(surface, ''); }
 
 var _v2Webinars = [];
 var _v2WebinarAll = [];
@@ -3958,7 +4017,11 @@ function switchVariant(i) {
   const overrides = (typeof SESSION !== 'undefined' && SESSION?.extracted?._overrides) || {};
   const titleOv = overrides['webinar_title_' + i];
   const descOv  = overrides['webinar_desc_' + i];
-  const effectiveTitle = (titleOv && String(titleOv).trim()) || variants[i].title;
+  // webinar_title is the one title for the whole webinar (Grokbot and the deck
+  // tweak write it). It was stored but never read, so setting it changed
+  // nothing on screen. A per-variant edit still beats it for that variant.
+  const headOv  = overrides.webinar_title;
+  const effectiveTitle = (titleOv && String(titleOv).trim()) || (headOv && String(headOv).trim()) || variants[i].title;
   document.getElementById('var-tag').textContent = variants[i].tag;
   document.getElementById('cal-title').textContent = effectiveTitle;
   if (descOv && String(descOv).trim()) {
@@ -5063,6 +5126,7 @@ if (document.readyState === 'loading') {
   var extractApplied = false;
   var assetsChecked  = {};
 
+  let _lastPortalVersion = null, _lastDeckSig = null, _lastTitlesSig;
   async function pollJob() {
     try {
       const res = await fetch('/api/jobs/' + encodeURIComponent(jobId));
@@ -5073,9 +5137,18 @@ if (document.readyState === 'loading') {
       const job = await res.json();
       // Pin the flow for the rest of the render. V2 features check IS_V2().
       window.PORTAL_VERSION = (job && job.portal_version) === 'v2' ? 'v2' : 'v1';
-      applyPortalVersion();
       window.__V2_JOB = job;
-      if (window.IS_V2 && window.IS_V2()) {
+      // Repaint only what changed. This poll runs every 3s while anything is
+      // still generating, and repainting unconditionally threw a closer back to
+      // the title slide, and off a client's recording, mid-presentation.
+      if (window.PORTAL_VERSION !== _lastPortalVersion) {
+        _lastPortalVersion = window.PORTAL_VERSION;
+        applyPortalVersion();
+      }
+      const ext0 = job.extracted_data || {};
+      const deckSig = JSON.stringify([job.webinar_slides, ext0._overrides || null, (ext0._generated || {}).tam_total || null]);
+      if (window.IS_V2 && window.IS_V2() && deckSig !== _lastDeckSig) {
+        _lastDeckSig = deckSig;
         v2RenderDeck(job); v2RenderRoiReal();
         // The bold-claim beat cites library medians. Fetched after the first
         // paint so a slow/unavailable library never delays the deck — that beat
@@ -5133,6 +5206,23 @@ if (document.readyState === 'loading') {
               '</td>';
           }
           console.log('[Deal Forge] Lead list ' + llStatus);
+        }
+      }
+
+      // ── Phase 3: invite copy finished (or was regenerated) after first paint.
+      // Without this the page kept whatever it showed on load — the built-in
+      // sample copy, or the previous titles — until the rep reloaded it.
+      const wt = tasks.webinar_titles;
+      const titlesSig = wt && wt.status === 'completed' ? JSON.stringify(wt.output || null) : null;
+      if (_lastTitlesSig === undefined) {
+        _lastTitlesSig = titlesSig;            // first poll: Phase 1 already painted these
+      } else if (titlesSig !== _lastTitlesSig) {
+        _lastTitlesSig = titlesSig;
+        if (titlesSig) {
+          const session3 = buildCompatSession(job);
+          window.SESSION = session3;
+          runPersonalization(session3);
+          if (typeof _wapRenderSlots === 'function') _wapRenderSlots();
         }
       }
 
@@ -6233,14 +6323,30 @@ function runPersonalization(session) {
         }
       }
 
-      // Re-apply with generated data
+      // Re-apply with generated data. switchVariant also sets the slide 1
+      // title, with the rep's title edits applied; writing gtv[0].title over it
+      // here was one way an edited title "didn't stick".
       switchVariant(0);
 
-      // Sync slide 1 title with generated variant A
-      var slideTitleEl2 = document.getElementById('slide-title');
-      if (slideTitleEl2) slideTitleEl2.textContent = gtv[0].title;
-
       console.log('[Deal Forge] Webinar titles applied — Variant A:', gtv[0].title);
+    } else if (window.__JOB_ID) {
+      // A real job whose copy is not ready, or failed. The built-in variants are
+      // Quantum Scaling's own webinar — the demo page's sample — and showing
+      // them here put QS's pitch on a prospect's invite. Say what is happening
+      // instead, in the prospect's name.
+      const wtStatus = ((window._latestJobTasks || {}).webinar_titles || {}).status || 'pending';
+      const stuck = wtStatus === 'failed' || wtStatus === 'needs_input';
+      const who = prospect.company || companyName || 'this prospect';
+      const pendingTitle = stuck ? 'Invite copy for ' + who + ' needs a regenerate' : 'Invite copy for ' + who + ' is being written…';
+      const pendingDesc = '<div class="cal-desc-hook">' + v2Esc(stuck
+        ? 'Generation did not finish. Click ↻ Regenerate to write it again.'
+        : 'This fills in by itself in a minute or two — no need to reload.') + '</div>';
+      variants[0] = { tag: 'Curiosity-first', title: pendingTitle, desc: pendingDesc };
+      variants[1] = { tag: 'Outcome-first',   title: pendingTitle, desc: pendingDesc };
+      variants[2] = { tag: 'Mechanism-first', title: pendingTitle, desc: pendingDesc };
+      const phLabel = document.getElementById('cal-placeholder-label');
+      if (phLabel) phLabel.textContent = stuck ? 'INVITE COPY NOT GENERATED' : 'INVITE COPY STILL GENERATING';
+      switchVariant(0);
     }
     }); // ← end _safe('webinar-variants')
 
@@ -7599,6 +7705,7 @@ function _initProspectInfoTab(session) {
   if (tabBtn) tabBtn.style.display = '';
   const info  = (session && session.prospectInfo) || {};
   const brief = (session && session.extracted)    || {};
+  const transcriptFound = !!(brief._meta && brief._meta.transcript && brief._meta.transcript.found);
   if (typeof _piInitTamMethod === 'function') _piInitTamMethod(brief);
   const repSlug = (session && session.job && session.job.rep_name)
                || (window._latestJob && window._latestJob.rep_name)
@@ -7629,6 +7736,16 @@ function _initProspectInfoTab(session) {
       else if (raw != null) v = String(raw);
     }
     el.value = v;
+    // Say why a field is empty. Display only — the stored value stays null, so
+    // this wording can never flow into prospect-facing copy.
+    if (!v && el.dataset.optional !== '1') {
+      el.placeholder = transcriptFound
+        ? 'The closer didn\'t talk about this on the call'
+        : 'No call transcript was found — add this by hand';
+      el.classList.add('pi-nd');
+    } else {
+      el.classList.remove('pi-nd');
+    }
   });
 
   _renderTabReadinessPanel();
@@ -7747,14 +7864,8 @@ function _piCollectFields() {
       if (el.dataset.mirror) _piSetByPath(out.brief, el.dataset.mirror, v);
     }
   });
-  // Drop empty top-level brief sections so we don't blow away preserved fields
-  Object.keys(out.brief).forEach(k => {
-    const v = out.brief[k];
-    if (v && typeof v === 'object' && !Array.isArray(v)) {
-      const hasAny = Object.values(v).some(x => x != null && x !== '');
-      if (!hasAny) delete out.brief[k];
-    }
-  });
+  // Every section is sent as-is: the server merges field by field, so fields
+  // this form does not show are kept and a field the rep emptied is cleared.
   return out;
 }
 

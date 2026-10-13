@@ -182,6 +182,8 @@
   .nj-seg-btn { font-size: 12px; font-weight: 600; color: #a1a1aa; background: none; border: none; border-radius: 7px; padding: 6px 14px; cursor: pointer; transition: all 120ms; font-family: inherit; }
   .nj-seg-btn:hover { color: #e4e4e7; }
   .nj-seg-btn.active { color: #fff; background: linear-gradient(135deg, #34b433, #1a8c19); }
+  /* An empty brief field says why it is empty (njPopulateStep2). */
+  .nj-nd::placeholder { color:#b45309; font-style:italic; opacity:1; }
 </style>
 </head>
 <body class="text-zinc-100 min-h-screen">
@@ -1596,6 +1598,23 @@ function njPopulateStep2(extract) {
   setVal('bf-result-quote', verbatim.result_quote);
   setVal('bf-goal-quote',   verbatim.goal_quote);
 
+  // Say why an empty field is empty, so a gap cannot pass for a bug. Display
+  // only: the placeholder never becomes the stored value.
+  var njTranscriptFound = !!(extract && extract.transcript_found);
+  ['bf-company','bf-contact-name','bf-contact-title','bf-offer','bf-apollo-titles','bf-industry',
+   'bf-company-size','bf-geography','bf-ltv','bf-close-rate','bf-show-rate','bf-pain','bf-result',
+   'bf-methodology','bf-proof','bf-goals','bf-why','bf-lead-gen','bf-revenue','bf-team-size',
+   'bf-challenge','bf-pain-quote','bf-result-quote','bf-goal-quote'].forEach(function(id) {
+    var el = document.getElementById(id);
+    if (!el) return;
+    if (!el.dataset.example) el.dataset.example = el.getAttribute('placeholder') || '';
+    if (el.value) { el.placeholder = el.dataset.example; el.classList.remove('nj-nd'); return; }
+    el.placeholder = njTranscriptFound
+      ? "The closer didn't talk about this on the call"
+      : 'No call transcript was picked — add this by hand';
+    el.classList.add('nj-nd');
+  });
+
   // Source badges — tag each pre-filled brief field with where its value came from
   // so reps can spot stale CRM values, inferred guesses, or missing data before
   // confirming the brief. contact_sources comes from phase-1 (prefetch); the brief
@@ -1749,8 +1768,9 @@ function njGenerate() {
   // Preserve fields Step 2 doesn't surface for direct editing (offering_name)
   // so downstream tasks still see them after a rep save.
   var njExtractedProspect = (_njExtractResult && _njExtractResult.brief && _njExtractResult.brief.prospect) || {};
+  var njExtractedIcp = (_njExtractResult && _njExtractResult.brief && _njExtractResult.brief.icp) || {};
 
-  var brief = {
+  var formBrief = {
     prospect: {
       company:           getVal('bf-company'),
       contact_name:      getVal('bf-contact-name'),
@@ -1773,10 +1793,12 @@ function njGenerate() {
         apollo_keyword:       apolloKeyword,
         industry:             apolloKeyword,
         company_size:         getVal('bf-company-size'),
-        apollo_employee_ranges: (_njPrefetchResult && _njPrefetchResult.brief && _njPrefetchResult.brief.icp) ? (_njPrefetchResult.brief.icp.apollo_employee_ranges || null) : null,
+        // Not on this form: carry the extracted values. These used to read the
+        // prefetch result, which has no brief, so they were always sent as null.
+        apollo_employee_ranges: njExtractedIcp.apollo_employee_ranges || null,
         geography:            geoRaw,
         apollo_geography:     apolloGeoArr,
-        person_seniorities:   (_njPrefetchResult && _njPrefetchResult.brief && _njPrefetchResult.brief.icp) ? (_njPrefetchResult.brief.icp.person_seniorities || null) : null,
+        person_seniorities:   njExtractedIcp.person_seniorities || null,
       };
     })(),
     metrics: {
@@ -1810,6 +1832,17 @@ function njGenerate() {
       goal_quote:   getVal('bf-goal-quote')
     }
   };
+
+  // Send the whole extracted brief with the rep's edits laid over it, not just
+  // the fields this form shows. Rebuilding it from the form dropped the nine
+  // webinar beats, business_model, kpis and provenance; the pipeline then
+  // refilled them from a weaker read of the call, which is where the rep's own
+  // pitch leaked into the prospect's copy. A field the rep cleared stays cleared.
+  var extractedBrief = (_njExtractResult && _njExtractResult.brief) || {};
+  var brief = Object.assign({}, extractedBrief);
+  Object.keys(formBrief).forEach(function(section) {
+    brief[section] = Object.assign({}, extractedBrief[section] || {}, formBrief[section]);
+  });
 
   btn.disabled = true;
   btn.innerHTML = '<span style="display:flex;align-items:center;justify-content:center;gap:8px;"><svg class="spinner" style="width:14px;height:14px;" fill="none" viewBox="0 0 24 24"><circle style="opacity:0.2" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3"></circle><path style="opacity:0.9" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg> Building lead list...</span>';

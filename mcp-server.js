@@ -482,9 +482,11 @@ function summariseJob(job, include) {
   const ovr  = ed._overrides || {};
   const leads = Array.isArray(gen.leads) ? gen.leads : null;
 
+  const tamTask = (job.tasks && job.tasks.tam_estimate && job.tasks.tam_estimate.output) || null;
   const out = {
     job_id:      job.job_id,
     status:      job.status,
+    portal_version: job.portal_version || 'v1',
     prospect: {
       name:     job.prospect_name,
       company:  job.prospect_company,
@@ -492,32 +494,49 @@ function summariseJob(job, include) {
       website:  job.prospect_website,
       linkedin: job.prospect_linkedin_url
     },
-    rep:         ed.rep_name || job.assigned_rep || null,
+    // The jobs.rep_name column is what assign_rep writes; the brief's copy can be stale.
+    rep:         job.assigned_rep || ed.rep_name || null,
     tam_method:  ed.tam_method || 'apollo',
     created_at:  job.created_at,
     updated_at:  job.updated_at,
     tasks:       taskStatuses(job.tasks),
     headline: {
-      tam_total:            ovr.tam_total ?? gen.tam_total ?? null,
-      tam_source:           gen.tam_source || null,
-      recommended_outreach: ovr.recommended_outreach ?? gen.recommendedOutreach ?? null,
+      // Same precedence as the portal: rep override, then the TAM estimate task
+      // (AI methods), then the Apollo count.
+      tam_total:            ovr.tam_total ?? (tamTask && tamTask.tam_total) ?? gen.tam_total ?? null,
+      tam_source:           (tamTask && tamTask.tam_source) || gen.tam_source || null,
+      recommended_outreach: ovr.recommended_outreach ?? (tamTask && tamTask.recommendedOutreach) ?? gen.recommendedOutreach ?? null,
       unique_companies:     gen.uniqueCompanies ?? null,
       lead_count:           leads ? leads.length : 0,
       lead_warning:         gen.lead_warning || null
     },
     override_count: Object.keys(ovr).filter(k => k !== '_updated_at').length,
     links: portalLinks(job.job_id),
-    available_include: ['brief', 'icp', 'overrides', 'leads', 'webinar', 'roi', 'brand', 'research', 'apollo_diagnostics']
+    available_include: ['brief', 'icp', 'overrides', 'leads', 'webinar', 'deck', 'roi', 'brand', 'research', 'apollo_diagnostics'],
+    edit_hint: 'To change anything a rep can change, use get_editable_fields then edit_fields.'
   };
 
   if (inc.has('brief')) {
-    const { _generated, _overrides, _meta, _uploads, _provenance, ...brief } = ed;
+    const { _generated, _overrides, _meta, _uploads, _provenance, _extracted, _source, ...brief } = ed;
     out.brief = brief;
+    // Empty fields are ones the call never covered — say so, so a gap is not
+    // mistaken for a failed extraction.
+    out.not_discussed = [];
+    for (const [sec, v] of Object.entries(brief)) {
+      if (!v || typeof v !== 'object' || Array.isArray(v) || sec === 'webinar' || sec === 'titles') continue;
+      for (const [k, val] of Object.entries(v)) {
+        if (k.startsWith('_')) continue;
+        if (val == null || val === '' || (Array.isArray(val) && !val.length)) out.not_discussed.push(`${sec}.${k}`);
+      }
+    }
+    out.not_discussed_note = 'The closer didn\'t talk about these on the call.';
   }
+  if (inc.has('deck')) out.deck = job.webinar_slides || null;
   if (inc.has('icp'))       out.icp = ed.icp || null;
   if (inc.has('overrides')) out.overrides = ovr;
   if (inc.has('leads'))     out.leads = leads || [];
-  if (inc.has('webinar'))   out.webinar = gen.webinarTitles || (job.tasks && job.tasks.webinar_titles && job.tasks.webinar_titles.output) || null;
+  // Task output first, as the portal reads it — the _generated copy goes stale after a regenerate.
+  if (inc.has('webinar'))   out.webinar = (job.tasks && job.tasks.webinar_titles && job.tasks.webinar_titles.output) || gen.webinarTitles || null;
   if (inc.has('roi'))       out.roi = (job.tasks && job.tasks.roi_model && job.tasks.roi_model.output) || null;
   if (inc.has('brand'))     out.brand = job.brand_data || null;
   if (inc.has('research'))  out.research = job.research_data || null;
@@ -562,7 +581,8 @@ const BRIEF_SECTIONS = {
   verbatim:  { type: 'object', additionalProperties: true, description: 'pain_quote, result_quote, goal_quote' },
   situation: { type: 'object', additionalProperties: true, description: 'current_lead_gen, revenue_range, team_size, biggest_challenge' },
   context:   { type: 'object', additionalProperties: true, description: 'goals, why_webinar' },
-  titles:    { type: 'object', additionalProperties: true, description: 'a, b — webinar title seeds' }
+  titles:    { type: 'object', additionalProperties: true, description: 'a, b — webinar title seeds' },
+  webinar:   { type: 'object', additionalProperties: true, description: 'The nine extracted deck beats: bold_claim, problem, cost_of_waiting, good_looks_like, case_study, how_it_goes, risks, close — each {headline, sub, line}' }
 };
 
 const TOOLS = [
@@ -618,8 +638,8 @@ const TOOLS = [
       required: ['job_id'],
       properties: {
         job_id: S.jobId,
-        include: { type: 'array', description: 'Extra sections to embed.',
-                   items: { type: 'string', enum: ['brief', 'icp', 'overrides', 'leads', 'webinar', 'roi', 'brand', 'research', 'apollo_diagnostics'] } }
+        include: { type: 'array', description: 'Extra sections to embed. deck = the nine composed webinar slides.',
+                   items: { type: 'string', enum: ['brief', 'icp', 'overrides', 'leads', 'webinar', 'deck', 'roi', 'brand', 'research', 'apollo_diagnostics'] } }
       }
     },
     async run(args) {
@@ -640,9 +660,8 @@ const TOOLS = [
     name: 'get_job_status',
     title: 'Get job status',
     description:
-      'Lightweight poll: job status, per-task status, and progress for the two background reruns ' +
-      '(Apollo lead search, webinar copy). Use this after create_job, start_or_continue_pipeline, ' +
-      'rerun_apollo or regenerate_webinar_titles instead of get_job — it stays small enough to poll repeatedly.',
+      'Raw task statuses, for debugging. To tell the closer where a job is and how long is left, use ' +
+      'get_progress instead — it adds the time estimate and a ready-to-send message.',
     annotations: { readOnlyHint: true, openWorldHint: false },
     inputSchema: { type: 'object', required: ['job_id'], properties: { job_id: S.jobId } },
     async run(args) {
@@ -657,6 +676,24 @@ const TOOLS = [
         async:  { apollo_rerun: gen.apollo_rerun || null, webinar_rerun: gen.webinar_rerun || null },
         updated_at: r.data.updated_at
       });
+    }
+  },
+  {
+    name: 'get_progress',
+    title: 'Progress and time left',
+    description:
+      'Where a job is and how long is left, written so you can pass it straight to the closer. Covers a new job ' +
+      'being built, a "Regenerate", a lead-search rerun and an invite-copy rewrite. Returns message_for_rep ' +
+      '(one plain sentence: what is happening, steps done, time left, or the prospect link when finished), ' +
+      'percent, eta_seconds / eta_text, each step\'s status, anything that needs attention (failed, stuck, needs ' +
+      'input), and next_check_in_seconds — wait that long before checking again. The time left is estimated ' +
+      'from how long each step really took on recent jobs, plus any other jobs queued ahead. Edits made with ' +
+      'edit_fields are instant and never need this.',
+    annotations: { readOnlyHint: true, openWorldHint: false },
+    inputSchema: { type: 'object', required: ['job_id'], properties: { job_id: S.jobId } },
+    async run(args) {
+      const id = jobId(args);
+      return fromApi(await callApi('GET', `/api/jobs/${id}/progress`));
     }
   },
   {
@@ -736,6 +773,8 @@ const TOOLS = [
         tab: { type: 'string', enum: ['Lead List / TAM', 'Calendar Invite', 'Webinar Experience', 'ROI Model'],
                description: 'Only clients cleared for this surface.' },
         job_id: { type: 'string', description: 'Return the auto-matched clients for this job instead of the full list.' },
+        include_below_floor: { type: 'boolean', default: false,
+                               description: 'Also return clients under the booking-rate floor — the ROI picker offers them, flagged.' },
         limit: { type: 'integer', minimum: 1, maximum: 100, default: 50 }
       }
     },
@@ -746,17 +785,21 @@ const TOOLS = [
       }
       const qs = new URLSearchParams();
       if (args.tab) qs.set('tab', args.tab);
+      if (args.include_below_floor) qs.set('floor', '0');
       qs.set('limit', String(args.limit || 50));
       const r = await callApi('GET', `/api/case-studies?${qs.toString()}`);
       if (!r.ok) return fromApi(r);
       // The full records carry long narrative fields; keep the list readable.
       const slim = (r.data.case_studies || []).map(c => ({
+        // The id set_case_studies and the case-study pins take.
+        id: c.airtable_record_id,
         client_name: c.client_name, company: c.company, tam: c.tam,
         webinar_title: c.webinar_title, has_invite_copy: !!c.event_description,
         recording_url: c.recording_url, key_quote: c.key_quote,
         cleared_for: c.use_on_tabs, stats_basis: c.stats_basis,
         total_attendees: c.total_attendees, total_booked_calls: c.total_booked_calls,
-        invite_to_reg_pct: c.invite_to_reg_pct
+        invite_to_reg_pct: c.invite_to_reg_pct,
+        below_booked_floor: c.below_booked_floor || undefined
       }));
       return okResult({ count: slim.length, case_studies: slim });
     }
@@ -783,7 +826,7 @@ const TOOLS = [
       'Creating with a bare email is the quick path for testing, not the recommended one: extract will search ' +
       'Fireflies/Zoom itself and take its best guess. ' +
       'Anything you pass in "brief" is treated as rep-confirmed and WINS over what extraction finds; blank fields get ' +
-      'filled in. Returns immediately — poll with get_job_status. Spends Claude tokens and Apollo search on the pipeline.',
+      'filled in. Returns immediately — follow it with get_progress. Spends Claude tokens and Apollo search on the pipeline.',
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     inputSchema: {
       type: 'object',
@@ -797,6 +840,8 @@ const TOOLS = [
                         description: 'apollo = exact Apollo count (default). llm = AI grounded in real Apollo probes. llm_pure = AI estimate, no probing.' },
         transcript_id:     { type: 'string', description: 'Specific transcript to use, instead of letting extract search.' },
         transcript_source: { type: 'string', enum: ['fireflies', 'zoom'], default: 'fireflies' },
+        portal_version:    { type: 'string', enum: ['v1', 'v2'], default: 'v1',
+                             description: 'v2 = the nine-beat webinar deck and case-study surfaces (the version closers present). Can be switched later with edit_fields job.portal_version.' },
         brief: { type: 'object', additionalProperties: true, properties: BRIEF_SECTIONS,
                  description: 'Optional rep-confirmed brief. Supplied non-empty values beat extracted ones.' }
       }
@@ -813,6 +858,7 @@ const TOOLS = [
         transcript_id:     args.transcript_id,
         transcript_source: args.transcript_source || 'fireflies',
         transcript_picked_by: 'rep',
+        portal_version:    args.portal_version || 'v1',
         brief:             args.brief || {}
       });
       if (!r.ok) return fromApi(r);
@@ -820,7 +866,7 @@ const TOOLS = [
       return okResult({
         job_id: id,
         ...(id ? portalLinks(id) : {}),
-        pipeline: 'Stage 1 started (extract, prospect_research, lead_list). Poll get_job_status.'
+        pipeline: 'Started. Call get_progress now for the first time estimate to give the closer, then again after its next_check_in_seconds.'
       });
     }
   },
@@ -843,7 +889,8 @@ const TOOLS = [
     title: 'Update prospect info and brief',
     description:
       'Edit the prospect record and any brief section — the same fields the portal\'s Prospect Infos tab saves. ' +
-      'Merges into the existing brief and preserves overrides and generated output. Triggers no reruns; ' +
+      'Merges field by field: only the fields you send change, and a field sent as null is cleared. ' +
+      'Preserves overrides and generated output. Triggers no reruns; ' +
       'follow with start_or_continue_pipeline if you want the assets rebuilt from the new brief.',
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
@@ -973,11 +1020,12 @@ const TOOLS = [
         proof_client: { type: 'string' }, proof_result: { type: 'string' },
         proof_before: { type: 'string' }, proof_after:  { type: 'string' },
         // Rep-chosen case studies per surface: arrays of airtable_record_id in
-        // display order. Empty array falls back to the automatic match.
-        cs_pin_lead_list: { type: 'array', items: { type: 'string' } },
-        cs_pin_invite:    { type: 'array', items: { type: 'string' } },
-        cs_pin_webinar:   { type: 'array', items: { type: 'string' } },
-        cs_pin_roi:       { type: 'array', items: { type: 'string' } },
+        // display order. "" = back to the automatic match; ["__none__"] = show
+        // none. Prefer set_case_studies, which takes "auto" / "none" directly.
+        cs_pin_lead_list: { type: ['array', 'string'], items: { type: 'string' } },
+        cs_pin_invite:    { type: ['array', 'string'], items: { type: 'string' } },
+        cs_pin_webinar:   { type: ['array', 'string'], items: { type: 'string' } },
+        cs_pin_roi:       { type: ['array', 'string'], items: { type: 'string' } },
         cs_default_invite:  { type: 'string', description: '"yours" or an airtable_record_id.' },
         cs_default_webinar: { type: 'string', description: '"yours" or an airtable_record_id.' }
       }
@@ -1007,6 +1055,126 @@ const TOOLS = [
     }
   },
 
+  {
+    name: 'get_editable_fields',
+    title: 'Read every editable field',
+    description:
+      'Everything a rep can change on a job, in one call: the brief (with not_discussed — fields the closer ' +
+      'didn\'t cover on the call), invite titles A/B/C, the webinar headline title, the nine deck slides, TAM and ' +
+      'ROI numbers, deck figures, the Proof beat, brand colours/images, case-study picks and the V1/V2 version. ' +
+      'Each item shows the path that edits it — pass those paths to edit_fields. Use "sections" to fetch only ' +
+      'what you need and keep the response small.',
+    annotations: { readOnlyHint: true, openWorldHint: false },
+    inputSchema: {
+      type: 'object', required: ['job_id'],
+      properties: {
+        job_id: S.jobId,
+        sections: { type: 'array', description: 'Only these parts. Omit for everything.',
+                    items: { type: 'string', enum: ['job', 'prospect', 'brief', 'not_discussed', 'headline_title', 'invite', 'deck',
+                                                    'numbers', 'figures', 'proof', 'brand', 'case_studies', 'override_meanings'] } }
+      }
+    },
+    async run(args) {
+      const id = jobId(args);
+      const r = await callApi('GET', `/api/jobs/${id}/fields`);
+      if (!r.ok) return fromApi(r);
+      if (!Array.isArray(args.sections) || !args.sections.length) return okResult(r.data);
+      const keep = new Set(['job_id', 'how_to_write', ...args.sections]);
+      if (keep.has('brief')) keep.add('transcript_found');
+      return okResult(Object.fromEntries(Object.entries(r.data).filter(([k]) => keep.has(k))));
+    }
+  },
+  {
+    name: 'edit_fields',
+    title: 'Edit any fields',
+    description:
+      'Change one or many fields in a single call — anything a rep can change in the Deal Forge UI. Pass ' +
+      '"changes" as { path: value }. Paths come from get_editable_fields, e.g. ' +
+      '{"invite.a.title": "…", "webinar.title": "…", "override.tam_total": "1.2M", "deck.3.headline": "…", ' +
+      '"brief.angle.pain": "…", "icp.apollo_titles": ["CFO"], "case_studies.invite": ["rec…"], ' +
+      '"job.portal_version": "v2", "job.rep": "ryan"}. The same rules as the rep\'s editors apply; anything ' +
+      'rejected comes back in "rejected" with the reason, and "before" holds previous override values for undo. ' +
+      'Spends nothing and triggers no reruns — "next" says what to run if the change needs it (e.g. rerun_apollo ' +
+      'after Apollo filters change). "" or null clears an override back to the AI value.',
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    inputSchema: {
+      type: 'object', required: ['job_id', 'changes'],
+      properties: {
+        job_id: S.jobId,
+        changes: { type: 'object', additionalProperties: true, description: '{ "<path>": value, … }' }
+      }
+    },
+    async run(args) {
+      const id = jobId(args);
+      if (!args.changes || typeof args.changes !== 'object' || Array.isArray(args.changes) || !Object.keys(args.changes).length) {
+        throw new ToolError('INVALID_ARGUMENT', 'changes must be an object of { "<path>": value } with at least one entry.');
+      }
+      const r = await callApi('PATCH', `/api/jobs/${id}/fields`, { changes: args.changes });
+      // A full rejection carries the per-path reasons; keep them.
+      if (!r.ok && r.data && r.data.rejected) return failResult('NOTHING_APPLIED', r.error, { rejected: r.data.rejected });
+      return fromApi(r);
+    }
+  },
+  {
+    name: 'tweak_webinar_deck',
+    title: 'Tweak the webinar deck in plain English',
+    description:
+      'The portal\'s "Tweak the slides" box: describe the change ("make slide 3 punchier", "say 4 new clients a ' +
+      'month, not 2") and it rewrites only the affected slides. Guarded the same as for a rep — it will not invent ' +
+      'statistics, clients or results, and refuses unfinished copy. Returns what it changed and the previous values ' +
+      '(pass them to edit_fields to undo). For an exact wording you already have, edit_fields deck.N.headline is ' +
+      'faster and free. Spends Claude tokens.',
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+    inputSchema: {
+      type: 'object', required: ['job_id', 'instruction', 'confirm'],
+      properties: {
+        job_id: S.jobId,
+        instruction: { type: 'string', description: 'What should change, in plain English. Max 1000 characters.' },
+        slide: { type: 'integer', minimum: 1, maximum: 9, description: 'The slide "this slide" refers to, if any.' },
+        confirm: S.confirm
+      }
+    },
+    async run(args) {
+      const id = jobId(args);
+      needConfirm(args, 'This spends Claude tokens to rewrite deck copy.');
+      const instruction = String(args.instruction || '').trim();
+      if (!instruction) throw new ToolError('INVALID_ARGUMENT', 'instruction is required.');
+      return fromApi(await callApi('POST', `/api/jobs/${id}/webinar/tweak`,
+        { instruction, slide_index: args.slide || null }, { timeoutMs: 90000 }));
+    }
+  },
+  {
+    name: 'set_case_studies',
+    title: 'Choose case studies for a tab',
+    description:
+      'Choose which Quantum Scaling client examples a tab shows, exactly as a rep ticks them: a list of ids from ' +
+      'list_case_studies (shown in that order), "none" to show no examples, or "auto" to go back to the automatic ' +
+      'pick. The choice is saved and the automatic picks do not come back. For the invite and webinar tabs, ' +
+      'opens_on sets which panel the tab opens on: "yours" (the prospect\'s own) or one of the chosen ids.',
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    inputSchema: {
+      type: 'object', required: ['job_id', 'surface', 'choose'],
+      properties: {
+        job_id: S.jobId,
+        surface: { type: 'string', enum: ['lead_list', 'invite', 'webinar', 'roi'],
+                   description: 'lead_list = Lead List matches, invite = Calendar Invite, webinar = Webinar Experience recordings, roi = ROI Model.' },
+        choose: { type: ['array', 'string'], items: { type: 'string' }, description: 'Ids in display order, "none" or "auto".' },
+        opens_on: { type: 'string', description: 'invite / webinar only: "yours" or a chosen id.' }
+      }
+    },
+    async run(args) {
+      const id = jobId(args);
+      const changes = { [`case_studies.${args.surface}`]: args.choose };
+      if (args.opens_on !== undefined) {
+        if (args.surface !== 'invite' && args.surface !== 'webinar') {
+          throw new ToolError('INVALID_ARGUMENT', 'opens_on only applies to the invite and webinar surfaces.');
+        }
+        changes[`case_studies.${args.surface}.opens_on`] = args.opens_on;
+      }
+      return fromApi(await callApi('PATCH', `/api/jobs/${id}/fields`, { changes }));
+    }
+  },
+
   // ── Pipeline actions (spend money / discard output) ────────────────────────
   {
     name: 'start_or_continue_pipeline',
@@ -1021,7 +1189,9 @@ const TOOLS = [
     async run(args) {
       const id = jobId(args);
       needConfirm(args, 'This discards existing brand, research, webinar and calendar output and re-runs them (Claude + scraping spend).');
-      return fromApi(await callApi('POST', `/api/jobs/${id}/regenerate`, {}));
+      const r = await callApi('POST', `/api/jobs/${id}/regenerate`, {});
+      if (!r.ok) return fromApi(r);
+      return okResult({ ...r.data, poll_with: 'get_progress' });
     }
   },
   {
@@ -1030,7 +1200,7 @@ const TOOLS = [
     description:
       'Re-run the Apollo lead search with the job\'s current ICP filters, refreshing the 25-lead list, TAM and ' +
       'recommended outreach. Requires at least one ICP filter to be set. Returns immediately; progress is stored on ' +
-      'the job and survives a restart — poll get_job_status. Spends Apollo enrichment credits.',
+      'the job and survives a restart — follow it with get_progress. Spends Apollo enrichment credits.',
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
     inputSchema: { type: 'object', required: ['job_id', 'confirm'], properties: { job_id: S.jobId, confirm: S.confirm } },
     async run(args) {
@@ -1038,7 +1208,7 @@ const TOOLS = [
       needConfirm(args, 'This spends Apollo credits and replaces the existing lead list.');
       const r = await callApi('POST', `/api/jobs/${id}/rerun-apollo`, {});
       if (!r.ok) return fromApi(r);
-      return okResult({ ...r.data, poll_with: 'get_job_status', progress_field: 'async.apollo_rerun' });
+      return okResult({ ...r.data, poll_with: 'get_progress' });
     }
   },
   {
@@ -1066,7 +1236,7 @@ const TOOLS = [
     description:
       'Re-run the webinar title / calendar copy generator against the current Copy Brain, optionally steered by a ' +
       'custom instruction. Overwrites the three A/B/C variants and resets calendar_visual so it rebuilds. ' +
-      'Returns immediately; progress is stored on the job — poll get_job_status. Spends Claude tokens.',
+      'Returns immediately; progress is stored on the job — follow it with get_progress. Spends Claude tokens.',
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
     inputSchema: {
       type: 'object', required: ['job_id', 'confirm'],
@@ -1081,7 +1251,7 @@ const TOOLS = [
       needConfirm(args, 'This overwrites the existing calendar copy variants and spends Claude tokens.');
       const r = await callApi('POST', `/api/jobs/${id}/regenerate/webinar-titles`, { prompt: args.prompt || '' });
       if (!r.ok) return fromApi(r);
-      return okResult({ ...r.data, poll_with: 'get_job_status', progress_field: 'async.webinar_rerun' });
+      return okResult({ ...r.data, poll_with: 'get_progress' });
     }
   },
   {
@@ -1314,9 +1484,14 @@ async function dispatch(msg, cfg) {
           version: process.env.RENDER_GIT_COMMIT ? String(process.env.RENDER_GIT_COMMIT).slice(0, 7) : 'dev'
         },
         instructions:
-          'Deal Forge sales-asset pipeline. Start with list_jobs or get_job. To create a job properly: ' +
+          'Deal Forge sales-asset pipeline. Start with list_jobs or get_job. To change anything a rep can change ' +
+          '(invite titles, webinar title, deck slides, TAM, ROI inputs, brief fields, case studies, V1/V2), call ' +
+          'get_editable_fields once, then edit_fields with every change in one call — no copy-paste. ' +
+          'While a job builds or copy regenerates, keep the closer posted with get_progress (send its ' +
+          'message_for_rep; wait next_check_in_seconds between checks). ' +
+          'To create a job properly: ' +
           'prefetch_prospect (pick the Business Evaluation / Call 1 transcript and note the GHL-resolved rep) → ' +
-          'create_job with that transcript_id and rep_name → update_icp with Apollo-valid tokens → rerun_apollo. ' +
+          'create_job with that transcript_id, rep_name and portal_version "v2" → update_icp with Apollo-valid tokens → rerun_apollo. ' +
           'create_job with a bare email works but lets extract guess the call, which is a common source of bad jobs. ' +
           'Use get_portal_links to get the prospect-facing link to share with a customer (prospect_url) versus the ' +
           'rep editor link (editor_url). Tools that spend Apollo credits or Claude tokens, or that discard existing ' +
