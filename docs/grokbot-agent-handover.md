@@ -2,7 +2,7 @@
 
 From Gergo (Deal Forge developer), October 2026. Give this to the agent that runs or configures Grokbot's Deal Forge work.
 
-**Live status.** These changes are built and tested but **not deployed yet**. That includes the slide fix: as of Oct 13 the live app still runs commit `f4eaa54`. Until Gergo pushes, `tools/list` on the Deal Forge MCP server won't show `get_progress`, `get_editable_fields`, `edit_fields`, `set_case_studies` or `tweak_webinar_deck`. Check for them before relying on this.
+**Live status.** Everything here is **live since Oct 13, 2026** (Deal Forge commit `091e202`), including the slide fix. If `tools/list` on the Deal Forge MCP server doesn't show `get_progress`, `get_editable_fields`, `edit_fields`, `set_case_studies` and `tweak_webinar_deck`, reconnect the MCP connector so Grokbot reloads the tool list.
 
 ---
 
