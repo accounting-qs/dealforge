@@ -1168,7 +1168,7 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
           </div>
           <div class="cal-meta-row">
             <svg class="cal-meta-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/></svg>
-            <div><div style="font-weight:500;" id="cal-host-name">Hosted by Your Speaker</div><div style="color:#70757a;font-size:12px;" id="cal-host-sub">Webinar Host</div></div>
+            <div><div style="font-weight:500;" id="cal-host-name">Hosted by Your Speaker</div></div>
           </div>
         </div>
 
@@ -5012,10 +5012,10 @@ function runPersonalization(session) {
     const hostLogo     = _wov.webinar_logo_url || brandData.favicon_url || brandData.logo_url || null;
     const hostCompany  = companyDisplay;
 
+    // Name only. The old sub-line glued the scraped page title to every
+    // industry chip plus " specialist", which read as garbage on the invite.
     const calHostName = document.getElementById('cal-host-name');
-    const calHostSub  = document.getElementById('cal-host-sub');
     if (calHostName) calHostName.textContent = 'Hosted by ' + hostName;
-    if (calHostSub)  calHostSub.textContent  = hostCompany + (icp.industry ? ' · ' + icp.industry + ' specialist' : '');
 
     const hostNameEl    = document.getElementById('host-name-el');
     const hostTitleEl   = document.getElementById('host-title-el');
@@ -5306,9 +5306,16 @@ function runPersonalization(session) {
     // extract has run. An explicit empty (`''` or `[]`) means the rep cleared
     // the chip and we MUST honor that — otherwise a re-run repaints the chip
     // from the legacy mirror field and the rep can never remove a filter.
-    const displayTitles = Array.isArray(icp.apollo_titles)
+    // Split comma-joined entries (older jobs saved "CEO, CFO, COO" as one chip;
+    // icp.role is a comma-joined string) so each title is its own chip.
+    const displayTitles = (Array.isArray(icp.apollo_titles)
       ? icp.apollo_titles
-      : (icp.role ? [icp.role] : []);
+      : (icp.role ? [icp.role] : []))
+      .flatMap(function(t){ return String(t == null ? '' : t).split(/[,;\n]+/); })
+      .map(function(t){ return t.trim(); })
+      .filter(function(t, i, a){
+        return t && a.findIndex(function(x){ return x.toLowerCase() === t.toLowerCase(); }) === i;
+      });
     var keywordList;
     if (Array.isArray(icp.apollo_keyword)) {
       keywordList = icp.apollo_keyword.map(function(s){ return String(s || '').trim(); }).filter(Boolean);
@@ -6362,11 +6369,20 @@ function addFilter(group, val) {
   val = (val || '').trim();
   if (!val) return;
   if (!Array.isArray(window._icpEditData[group])) window._icpEditData[group] = [];
-  // Case-insensitive dedup so "CEO" + "ceo" + "Ceo" don't appear as three
-  // chips with identical Apollo semantics. First-wins on casing.
-  var lc = val.toLowerCase();
-  if (window._icpEditData[group].some(function(v){ return String(v).toLowerCase() === lc; })) return;
-  window._icpEditData[group].push(val);
+  // A pasted "CEO, CFO, COO" becomes three title chips, so Apollo ORs them
+  // instead of searching for one literal title. Titles only: locations carry
+  // commas of their own ("Austin, Texas").
+  var vals = group === 'apollo_titles' ? val.split(/[,;\n]+/) : [val];
+  var list = window._icpEditData[group];
+  vals.forEach(function(v) {
+    v = v.trim();
+    if (!v) return;
+    // Case-insensitive dedup so "CEO" + "ceo" + "Ceo" don't appear as three
+    // chips with identical Apollo semantics. First-wins on casing.
+    var lc = v.toLowerCase();
+    if (list.some(function(x){ return String(x).toLowerCase() === lc; })) return;
+    list.push(v);
+  });
   renderFilterTags();
 }
 

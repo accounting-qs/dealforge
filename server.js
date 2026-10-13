@@ -4034,6 +4034,33 @@ function splitTitleParts(s) {
     .filter(p => p.length > 1);
 }
 
+// Rep-entered title lists: a chip or API value of "CEO, CFO, COO" must reach
+// Apollo as three OR'd person_titles, not one literal title. Splits on list
+// separators only (comma, semicolon, newline), unlike splitTitleParts, so a
+// real title such as "VP Sales & Marketing" survives intact. Dedupes
+// case-insensitively, first casing wins. Accepts an array or a string;
+// returns the input untouched when it is neither (null stays null).
+function splitTitleList(v) {
+  if (v == null) return v;
+  const arr = Array.isArray(v) ? v : (typeof v === 'string' ? [v] : null);
+  if (!arr) return v;
+  const out = [], seen = new Set();
+  for (const item of arr) {
+    for (const part of String(item == null ? '' : item).split(/[,;\n]+/)) {
+      const t = part.trim();
+      const k = t.toLowerCase();
+      if (t && !seen.has(k)) { seen.add(k); out.push(t); }
+    }
+  }
+  return out;
+}
+// In-place fix for a stored ICP, so jobs saved before the split existed
+// (one "CEO, CFO, COO" chip) search correctly on their next run.
+function normalizeIcpTitles(icp) {
+  if (icp && icp.apollo_titles != null) icp.apollo_titles = splitTitleList(icp.apollo_titles);
+  return icp;
+}
+
 // Harvest the job titles off a batch of fetched leads and fold them into the
 // title corpus. Real lead titles are frequently compound and messy ("Owner/CEO",
 // "CEO, CIO, COO, Janitor"), so we split each into atomic parts and snap EACH
@@ -4624,6 +4651,7 @@ async function apolloCountForPayload(payload) {
 async function fetchLeadsFromApollo(icp, progressCb) {
   const APOLLO_KEY = process.env.APOLLO_API_KEY;
   if (!APOLLO_KEY) { console.log('[Apollo] No API key — skipping'); return null; }
+  normalizeIcpTitles(icp);
 
   // Build the Apollo search payload from explicit Apollo-native ICP fields only.
   // If a field is missing or empty (e.g. apollo_geography, apollo_employee_ranges,
@@ -5892,7 +5920,7 @@ async function handleBrandScrape(task, job) {
 async function handleLeadList(task, job) {
   // Brief is stored in extracted_data — confirmed by rep before job was created
   const brief = job.extracted_data || {};
-  const icp   = brief.icp || {};
+  const icp   = normalizeIcpTitles(brief.icp || {});
 
   // Pass the full ICP — do NOT reconstruct a subset. apollo_geography, apollo_employee_ranges,
   // apollo_keyword, person_seniorities are all needed by fetchLeadsFromApollo.
@@ -6085,7 +6113,7 @@ async function estimateTamPure(icp) {
 
 async function handleTamEstimate(task, job) {
   const brief = job.extracted_data || {};
-  const icp   = brief.icp || {};
+  const icp   = normalizeIcpTitles(brief.icp || {});
   const tamMethod = brief.tam_method || 'llm';
 
   // ── Pure-LLM branch (tam_method='llm_pure') ── runs BEFORE the Apollo-specific
@@ -8860,6 +8888,9 @@ const server = http.createServer(async (req, res) => {
       const existingIcp = existingData.icp || {};
       const ICP_FIELDS = ['apollo_titles', 'apollo_keyword', 'apollo_geography', 'apollo_employee_ranges', 'person_seniorities', 'apollo_person_locations', 'apollo_revenue_range', 'target_audience_type'];
       const updatedIcp = { ...existingIcp };
+      // One "CEO, CFO, COO" entry (portal chip, MCP update_icp, Grokbot) is
+      // three titles, not one.
+      if (body.apollo_titles !== undefined) body.apollo_titles = splitTitleList(body.apollo_titles);
       // Track whether the rep actually changed something so we can clear stale
       // TAM overrides only on real edits (not on a no-op Save Filters click).
       let anyIcpFieldChanged = false;
