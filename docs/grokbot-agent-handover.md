@@ -53,7 +53,7 @@ Response shape: `{ "ok": true, "data": … }` or `{ "ok": false, "error": { "cod
   - `state`: `running`, `done` or `done_with_issues`.
   - `percent`, `eta_seconds` and `eta_text` (e.g. "about 3 min"), `steps_done` / `steps_total`.
   - `current`: what is happening right now.
-  - `steps`: each step's status (`done`, `running`, `queued`, `waiting`, `failed`, `needs_input`, `skipped`), with `seconds_left` for unfinished ones.
+  - `steps`: each step's status (`done`, `running`, `queued`, `waiting`, `failed`, `needs_input`, `skipped`, `not_run`), with `seconds_left` for unfinished ones. `not_run` means an earlier step failed, so this one never started. The job is then `done_with_issues`, and `message_for_rep` says it didn't finish and why.
   - `attention`: anything failed, stuck, needing input, or a rerun that stopped reporting.
   - `jobs_ahead_in_queue`: Deal Forge builds one step at a time across all jobs, so other jobs can be ahead.
   - `next_check_in_seconds`: wait this long before you check again (20–60 s; `null` when done).

@@ -1347,18 +1347,28 @@ async function jobProgress(job, tasks) {
     if (!byType[type]) { clock += (typical[type] || 45) + WORKER_TICK_SECONDS; finishAt[type] = clock; }
   }
 
+  // Once the job is completed or failed the orchestrator has stopped spawning
+  // steps, so one with no task row is never coming. An extract failure leaves
+  // every later step unspawned; reading those as "waiting" gave them an ETA and
+  // the job said "running, about 1 min left" forever. On a failed job they are
+  // not_run; on a completed one they were never needed (older jobs, no TAM).
+  const jobSettled = job.status === 'completed' || job.status === 'failed';
+
   const TERMINAL = ['completed', 'failed', 'needs_input', 'skipped'];
   let weightDone = 0, weightAll = 0;
   const steps = [], attention = [], current = [];
   for (const type of expected) {
     const t = byType[type];
+    if (!t && job.status === 'completed') continue;
     const typ = typical[type] || 45;
     const label = TASK_LABELS[type] || type;
     const name  = TASK_NAMES[type] || type;
     weightAll += typ;
-    const raw = t ? t.status : 'not_started';
+    const raw = t ? t.status : (jobSettled ? 'not_run' : 'not_started');
     const step = { step: type, label, status: raw === 'not_started' ? 'waiting' : raw === 'pending' ? 'queued' : raw === 'processing' ? 'running' : raw === 'completed' ? 'done' : raw };
-    if (t && TERMINAL.includes(t.status)) {
+    if (raw === 'not_run') {
+      weightDone += typ;
+    } else if (t && TERMINAL.includes(t.status)) {
       weightDone += typ;
       if (t.status === 'failed' || t.status === 'needs_input') {
         step.error = String(t.error_message || '').slice(0, 200) || null;
@@ -1409,6 +1419,7 @@ async function jobProgress(job, tasks) {
     : 0;
   const done = !running.length && !runningBg.length;
   const doneCount = steps.filter(s => s.status === 'done' || s.status === 'skipped').length;
+  const notRun = steps.filter(s => s.status === 'not_run');
   const company = job.prospect_company || job.prospect_email || 'This job';
   const base = (process.env.PUBLIC_BASE_URL || 'https://deal-forge-angel.onrender.com').replace(/\/+$/, '');
   const prospectUrl = `${base}/${job.id}/how-it-works`;
@@ -1418,6 +1429,9 @@ async function jobProgress(job, tasks) {
     const now1 = current.length ? current.join(' and ') : (steps.find(s => s.status === 'queued' || s.status === 'waiting') || {}).label || 'Working';
     message = `${company}: ${now1}. ${doneCount} of ${steps.length} steps done, ${etaText(etaSeconds)} left.`;
     if (jobsAhead.size && !current.length) message += ` ${jobsAhead.size} other job${jobsAhead.size > 1 ? 's are' : ' is'} ahead in the queue.`;
+  } else if (notRun.length) {
+    const why = attention.length ? attention.join('; ') : 'the job was marked failed';
+    message = `${company} didn't finish: ${why}. ${notRun.length === 1 ? 'One later step' : notRun.length + ' later steps'} never started because of it (${notRun.map(s => TASK_NAMES[s.step] || s.step).join(', ')}).`;
   } else if (attention.length) {
     message = `${company} finished, but ${attention.length === 1 ? 'one thing needs' : attention.length + ' things need'} a look: ${attention.join('; ')}. Everything else is ready: ${prospectUrl}`;
   } else {
@@ -1427,7 +1441,7 @@ async function jobProgress(job, tasks) {
 
   return {
     job_id: job.id,
-    state: done ? (attention.length ? 'done_with_issues' : 'done') : 'running',
+    state: done ? (attention.length || notRun.length ? 'done_with_issues' : 'done') : 'running',
     percent: done ? 100 : Math.min(99, Math.round((weightDone / Math.max(weightAll, 1)) * 100)),
     steps_done: doneCount,
     steps_total: steps.length,
@@ -9967,7 +9981,9 @@ const server = http.createServer(async (req, res) => {
       const job = await getJob(jobId);
       if (!job) { res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'Job not found' })); return; }
       const tasks = await getTasksByJobId(jobId);
-      await settleStaleJobStatus(job, tasks).catch(e => console.warn('[self-repair]', e.message));
+      // jobProgress reads job.status, so report the settled one straight away.
+      const settled = await settleStaleJobStatus(job, tasks).catch(e => { console.warn('[self-repair]', e.message); return null; });
+      if (settled) job.status = settled;
       res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
       res.end(JSON.stringify(await jobProgress(job, tasks)));
     } catch (e) {
