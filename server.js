@@ -1919,6 +1919,29 @@ async function updateJobStatus(jobId, status) {
   await supabaseRequest('PATCH', `/rest/v1/jobs?id=eq.${jobId}`, patch);
 }
 
+// Self-repair for a job whose steps all finished but whose status never
+// flipped. A 'skipped' tam_estimate used to block it (see isTerminal in
+// checkAndSpawnStageTasks), and the worker never revisits a finished job, so
+// such a job stayed "processing" and its portal polled forever. Run from the
+// read paths, it settles the next time anyone opens the job or checks its
+// progress. It must never race the worker: the pipeline has to be complete
+// (the Stage 3 calendar step exists) and nothing touched for two minutes.
+// No job_complete notification — the job finished long ago.
+const SETTLED_TASK_STATES = ['completed', 'failed', 'needs_input', 'skipped'];
+async function settleStaleJobStatus(job, tasks) {
+  if (!job || !['pending', 'processing'].includes(job.status) || !Array.isArray(tasks) || !tasks.length) return null;
+  if (!tasks.some(t => t.task_type === 'calendar_visual')) return null;
+  if (!tasks.every(t => SETTLED_TASK_STATES.includes(t.status))) return null;
+  const quietSince = Date.now() - 2 * 60 * 1000;
+  const touched = [job.updated_at, ...tasks.map(t => t.updated_at || t.completed_at)]
+    .map(v => Date.parse(v)).filter(Number.isFinite);
+  if (touched.some(t => t > quietSince)) return null;
+  const finalStatus = tasks.some(t => t.status === 'failed') ? 'failed' : 'completed';
+  await updateJobStatus(job.id, finalStatus);
+  console.log(`[self-repair] job ${job.id}: every step finished, status ${job.status} → ${finalStatus}`);
+  return finalStatus;
+}
+
 // ── Phase 4: In-app notification helper ───────────────────────────────────────
 async function createNotification({ type, title, body = null, callId = null, jobId = null, repId = null }) {
   try {
@@ -9518,6 +9541,9 @@ const server = http.createServer(async (req, res) => {
       const tasks = await getTasksByJobId(jobId);
       const taskMap = {};
       tasks.forEach(t => { taskMap[t.task_type] = { status: t.status, output: t.output_data, asset_url: t.asset_url, error: t.error_message }; });
+      // Report the settled status straight away, so the portal stops polling.
+      const settled = await settleStaleJobStatus(job, tasks).catch(e => { console.warn('[self-repair]', e.message); return null; });
+      if (settled) job.status = settled;
 
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
@@ -9941,6 +9967,7 @@ const server = http.createServer(async (req, res) => {
       const job = await getJob(jobId);
       if (!job) { res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'Job not found' })); return; }
       const tasks = await getTasksByJobId(jobId);
+      await settleStaleJobStatus(job, tasks).catch(e => console.warn('[self-repair]', e.message));
       res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
       res.end(JSON.stringify(await jobProgress(job, tasks)));
     } catch (e) {
