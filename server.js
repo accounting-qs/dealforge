@@ -1355,7 +1355,7 @@ async function jobProgress(job, tasks) {
   const jobSettled = job.status === 'completed' || job.status === 'failed';
 
   const TERMINAL = ['completed', 'failed', 'needs_input', 'skipped'];
-  let weightDone = 0, weightAll = 0;
+  let weightDone = 0, weightAll = 0, lastEnd = 0;
   const steps = [], attention = [], current = [];
   for (const type of expected) {
     const t = byType[type];
@@ -1370,6 +1370,13 @@ async function jobProgress(job, tasks) {
       weightDone += typ;
     } else if (t && TERMINAL.includes(t.status)) {
       weightDone += typ;
+      // When the step started (after the job was created) and how long it ran,
+      // so pipeline speed can be measured from the API. A rerun moves both.
+      const startedAt = Date.parse(t.started_at), endedAt = Date.parse(t.completed_at);
+      const jobStart = Date.parse(job.created_at);
+      if (Number.isFinite(startedAt) && Number.isFinite(jobStart)) step.started_after_seconds = Math.round((startedAt - jobStart) / 1000);
+      if (Number.isFinite(startedAt) && Number.isFinite(endedAt) && endedAt >= startedAt) step.took_seconds = Math.round((endedAt - startedAt) / 1000);
+      if (Number.isFinite(endedAt)) lastEnd = Math.max(lastEnd, endedAt);
       if (t.status === 'failed' || t.status === 'needs_input') {
         step.error = String(t.error_message || '').slice(0, 200) || null;
         attention.push(`${name} ${t.status === 'failed' ? 'failed' : 'needs input'}${step.error ? ': ' + step.error : ''}`);
@@ -1455,6 +1462,8 @@ async function jobProgress(job, tasks) {
     message_for_rep: message,
     // Slower checks for long waits — every check is a Grokbot step that costs tokens.
     next_check_in_seconds: done ? null : etaSeconds > 240 ? 60 : etaSeconds > 90 ? 30 : 20,
+    // Job created → last step finished. Only meaningful once done; reruns stretch it.
+    pipeline_seconds: done && lastEnd && Number.isFinite(Date.parse(job.created_at)) ? Math.round((lastEnd - Date.parse(job.created_at)) / 1000) : null,
     estimated_from: 'median real durations of recent runs, and the worker queue (one step at a time, oldest first)'
   };
 }
