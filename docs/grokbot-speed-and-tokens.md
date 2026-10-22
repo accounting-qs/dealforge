@@ -23,7 +23,10 @@ For Lloyd and Gary. What makes Grokbot slow and expensive when it works on a Dea
 
 **Rule of thumb for the team:** an edit through Grokbot should now be as fast as typing it. A new job, or regenerated copy, takes as long as it takes in Deal Forge itself, and Grokbot now says how long while it waits. Closers in a hurry can start those in Deal Forge and let Grokbot do the edits afterwards.
 
-**Possible next step if new jobs are still too slow:** let Deal Forge run a job's independent steps side by side, e.g. the transcript, host research and lead list together. Today it runs them one after another. That would cut a new job's time noticeably, but it needs care, because several steps write to the same job record.
+**Steps now run side by side (2026-10-22).**
+- **What changed:** Deal Forge runs a job's independent steps together, up to four at once across all jobs. Each step still starts only after every step it reads from has finished, so the output is the same.
+- **Measured on 80 recent jobs:** a typical new job drops from about 2.6 minutes to about 1.9. The slow cases, which were mostly jobs stuck behind another job started at the same moment, drop from 6.4 minutes to about 2.4 (the 90th percentile).
+- **The floor that remains:** reading the transcript (~56 s), then writing the invite copy (~47 s), then the calendar page (~9 s). Each of these needs the one before it.
 
 ## Cutting Grokbot's tokens (Grokbot-side changes)
 

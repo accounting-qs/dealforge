@@ -55,7 +55,7 @@ Response shape: `{ "ok": true, "data": … }` or `{ "ok": false, "error": { "cod
   - `current`: what is happening right now.
   - `steps`: each step's status (`done`, `running`, `queued`, `waiting`, `failed`, `needs_input`, `skipped`, `not_run`), with `seconds_left` for unfinished ones. `not_run` means an earlier step failed, so this one never started. The job is then `done_with_issues`, and `message_for_rep` says it didn't finish and why.
   - `attention`: anything failed, stuck, needing input, or a rerun that stopped reporting.
-  - `jobs_ahead_in_queue`: Deal Forge builds one step at a time across all jobs, so other jobs can be ahead.
+  - `jobs_ahead_in_queue`: Deal Forge builds up to four steps at once across all jobs. It is above 0 only when other jobs fill those slots and hold this one up.
   - `next_check_in_seconds`: wait this long before you check again (20–60 s; `null` when done).
   - The time left comes from how long each step really took on recent jobs, plus the queue ahead. It is an estimate; say "about".
 - **`get_portal_links`** returns the links. **`get_job_status`** gives raw task statuses, for debugging only.
@@ -135,7 +135,7 @@ Response shape: `{ "ok": true, "data": … }` or `{ "ok": false, "error": { "cod
 **How long things take** (tell the rep up front)
 - **An edit** (titles, TAM, slides, brief fields, case studies): instant.
 - **Rewriting the invite copy** (`regenerate_webinar_titles`) or **re-running the lead search** (`rerun_apollo`): about one to two minutes.
-- **A new Deal Forge, or "Regenerate" on the whole job**: a few minutes. Deal Forge builds one step at a time across all jobs, so it is longer when other jobs are queued. `get_progress` shows how many are ahead.
+- **A new Deal Forge, or "Regenerate" on the whole job**: about two minutes. Deal Forge runs a job's independent steps side by side, so it only takes longer when several jobs are building at once. `get_progress` shows how many are ahead.
 
 **"Change the invite title to X" / "make the webinar title X"**
 - One `edit_fields` call: `{"webinar.title": "X"}`. Use `{"invite.b.title": "X"}` for a single variant.

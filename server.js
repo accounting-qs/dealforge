@@ -1254,12 +1254,13 @@ async function readEditableFields(job, tasks) {
 // Lets Grokbot keep a closer posted while a job (or a regenerate) runs, instead
 // of going quiet for minutes. GET /api/jobs/:id/progress.
 //
-// THE WORKER IS ONE QUEUE. processNextTask runs one task at a time, oldest
-// first, across every job — so the honest ETA for this job includes the steps
-// of other jobs queued ahead of it. The estimate walks that queue using each
-// step's median real duration from recent history (TASK_DEFAULT_SECONDS until
-// there is enough of it). Stage 2/3 steps that do not exist yet go on the end,
-// which is where they will land once extract finishes.
+// THE WORKER RUNS STEPS SIDE BY SIDE (processNextTask): up to
+// WORKER_CONCURRENCY at once, each step starting once the steps it reads from
+// have settled (STEP_DEPENDS_ON). So a step's ETA is when the last step it waits
+// on finishes, plus its own median real duration from recent history
+// (TASK_DEFAULT_SECONDS until there is enough of it). Other jobs only hold this
+// one up when their steps fill every worker slot. Stage 2/3 steps that don't
+// exist yet are estimated the same way, after the steps they wait on.
 
 const TASK_LABELS = {
   extract:           'Reading the call transcript',
@@ -1325,26 +1326,33 @@ async function jobProgress(job, tasks) {
   expected.push('calendar_visual');
   Object.keys(byType).forEach(t => { if (!expected.includes(t)) expected.push(t); });
 
-  // Walk the worker's queue: the running task first, then pending oldest-first.
+  // Other jobs' unfinished steps. They only delay this job when they fill every
+  // worker slot; then their remaining work is shared across the slots.
   let queue = [];
   try {
     const r = await supabaseRequest('GET',
       '/rest/v1/tasks?status=in.(pending,processing)&select=id,job_id,task_type,status,created_at,started_at&order=created_at.asc&limit=300');
     queue = Array.isArray(r.body) ? r.body : [];
   } catch (e) { console.warn('[progress] queue unavailable:', e.message); }
-  queue.sort((a, b) => (a.status === 'processing' ? 0 : 1) - (b.status === 'processing' ? 0 : 1)
-                    || Date.parse(a.created_at) - Date.parse(b.created_at));
-  let clock = 0, reachedOwn = false;
-  const finishAt = {}, jobsAhead = new Set();
-  for (const t of queue) {
+  const leftOf = t => {
     const typ = typical[t.task_type] || 45;
     const elapsed = t.status === 'processing' && t.started_at ? (now - Date.parse(t.started_at)) / 1000 : 0;
-    clock += t.status === 'processing' ? Math.max(typ - elapsed, 5) : typ + WORKER_TICK_SECONDS;
-    if (t.job_id === job.id) { finishAt[t.task_type] = clock; reachedOwn = true; }
-    else if (!reachedOwn) jobsAhead.add(t.job_id);
-  }
+    return t.status === 'processing' ? Math.max(typ - elapsed, 5) : typ + WORKER_TICK_SECONDS;
+  };
+  const others = queue.filter(t => t.job_id !== job.id);
+  const queueDelay = others.length >= WORKER_CONCURRENCY
+    ? Math.round(others.reduce((s, t) => s + leftOf(t), 0) / WORKER_CONCURRENCY) : 0;
+  const jobsAhead = new Set(queueDelay ? others.map(t => t.job_id) : []);
+
+  // This job's steps: each finishes after the steps it waits on, plus its own
+  // time. `expected` lists every step after the ones it waits on.
+  const finishAt = {};
   for (const type of expected) {
-    if (!byType[type]) { clock += (typical[type] || 45) + WORKER_TICK_SECONDS; finishAt[type] = clock; }
+    const t = byType[type];
+    if (t && ['completed', 'failed', 'needs_input', 'skipped'].includes(t.status)) { finishAt[type] = 0; continue; }
+    if (t && t.status === 'processing') { finishAt[type] = leftOf(t); continue; }
+    const after = Math.max(0, ...(STEP_DEPENDS_ON[type] || []).map(d => finishAt[d] || 0));
+    finishAt[type] = Math.max(after, queueDelay) + (typical[type] || 45) + WORKER_TICK_SECONDS;
   }
 
   // Once the job is completed or failed the orchestrator has stopped spawning
@@ -1464,7 +1472,7 @@ async function jobProgress(job, tasks) {
     next_check_in_seconds: done ? null : etaSeconds > 240 ? 60 : etaSeconds > 90 ? 30 : 20,
     // Job created → last step finished. Only meaningful once done; reruns stretch it.
     pipeline_seconds: done && lastEnd && Number.isFinite(Date.parse(job.created_at)) ? Math.round((lastEnd - Date.parse(job.created_at)) / 1000) : null,
-    estimated_from: 'median real durations of recent runs, and the worker queue (one step at a time, oldest first)'
+    estimated_from: 'median real durations of recent runs, the steps each one waits on, and other jobs filling the worker slots'
   };
 }
 
@@ -7566,9 +7574,13 @@ async function checkAndSpawnStageTasks(jobId) {
   if (allTasks.length > 0 && allTasks.every(t => isTerminal(t.status))) {
     const anyFailed = allTasks.some(t => t.status === 'failed');
     const finalStatus = anyFailed ? 'failed' : 'completed';
+    // Notify only when the job actually becomes completed. Two steps finishing
+    // together each run this check (one after the other, under withJobLock),
+    // and the second must not send a second "Analysis complete".
+    const before = await getJob(jobId);
     await updateJobStatus(jobId, finalStatus);
     // Phase 4: fire job_complete notification
-    if (finalStatus === 'completed') {
+    if (finalStatus === 'completed' && before?.status !== 'completed') {
       const jobRow = await supabaseRequest('GET', `/rest/v1/jobs?id=eq.${jobId}&select=prospect_email,prospect_company,rep_name`);
       const j = (jobRow.body || [])[0] || {};
       const label = j.prospect_company || j.prospect_email || jobId;
@@ -7584,69 +7596,144 @@ async function checkAndSpawnStageTasks(jobId) {
 }
 
 // ── Worker loop ───────────────────────────────────────────────────────────────
-let workerBusy = false;
+// Runs a job's independent steps side by side, up to WORKER_CONCURRENCY at once
+// across all jobs. It used to run one step at a time, oldest first, so a job
+// waited on every step before it — and on every step of a job started a moment
+// earlier. A step still only starts once each step it reads from has settled
+// (STEP_DEPENDS_ON). That is the order the one-at-a-time queue produced, so no
+// step sees different inputs: the invite copy still reads the finished brand
+// and host research. Apollo steps stay one at a time across all jobs, so Apollo
+// load and credit use don't change (they are short and off the critical path).
+const WORKER_CONCURRENCY = Math.max(1, Number(process.env.WORKER_CONCURRENCY) || 4);
+const STEP_DEPENDS_ON = {
+  brand_scrape:    ['extract'],
+  lead_list:       ['extract'],
+  roi_model:       ['extract'],
+  tam_estimate:    ['extract'],
+  webinar_titles:  ['extract', 'brand_scrape', 'prospect_research'],   // reads brand_data + research_data
+  calendar_visual: ['webinar_titles', 'brand_scrape', 'prospect_research']
+};
+const ONE_AT_A_TIME_GROUPS = [['lead_list', 'tam_estimate']];          // both search Apollo
+const STEP_SETTLED = ['completed', 'failed', 'needs_input', 'skipped'];
+
+// A dependency that was never created doesn't hold a step back (as before).
+function stepReady(task, jobTasks) {
+  return (STEP_DEPENDS_ON[task.task_type] || []).every(dep => {
+    const d = jobTasks.find(t => t.task_type === dep);
+    return !d || STEP_SETTLED.includes(d.status);
+  });
+}
+
+async function getTasksForJobs(jobIds) {
+  if (!jobIds.length) return [];
+  const r = await supabaseRequest('GET',
+    `/rest/v1/tasks?job_id=in.(${jobIds.join(',')})&select=id,job_id,task_type,status`);
+  return Array.isArray(r.body) ? r.body : [];
+}
+
+// Two steps of one job can finish together. Their stage checks run one after
+// the other, so the next stage is spawned and the job completed (with its
+// notification) exactly once.
+const _jobLocks = new Map();
+function withJobLock(jobId, fn) {
+  const run = (_jobLocks.get(jobId) || Promise.resolve()).then(fn);
+  const tail = run.catch(() => {});
+  _jobLocks.set(jobId, tail);
+  tail.then(() => { if (_jobLocks.get(jobId) === tail) _jobLocks.delete(jobId); });
+  return run;
+}
+
+const runningTasks = new Map();   // task id → task_type, for steps running in this process
+let schedulerBusy = false, rescanRequested = false;
+let workerStopping = false;       // set on SIGTERM: a step finishing while we drain must not claim more
 
 async function processNextTask() {
-  if (workerBusy) return;
-  workerBusy = true;
+  if (workerStopping) return;
+  if (schedulerBusy) { rescanRequested = true; return; }
+  if (runningTasks.size >= WORKER_CONCURRENCY) return;
+  schedulerBusy = true;
   try {
-    const pending = await getPendingTasks(1);
+    const pending = await getPendingTasks(50);
     if (!pending.length) return;
+    const jobTasks = {};
+    (await getTasksForJobs([...new Set(pending.map(t => t.job_id))]))
+      .forEach(t => { (jobTasks[t.job_id] = jobTasks[t.job_id] || []).push(t); });
 
-    const task = pending[0];
-    const claimed = await claimTask(task.id);
-    if (!claimed) return; // another worker claimed it (shouldn't happen on single-server but safe)
-
-    const job = await getJob(task.job_id);
-    if (!job) { await retryOrFailTask(task, 'Parent job not found'); return; }
-
-    console.log(`[worker] Running ${task.task_type} (task ${task.id}) for job ${task.job_id}`);
-
-    try {
-      let output = null;
-      let assetUrl = null;
-
-      switch (task.task_type) {
-        case 'extract':           output = await handleExtract(task, job);           break;
-        case 'prospect_research': output = await handleProspectResearch(task, job);  break;
-        case 'brand_scrape':      output = await handleBrandScrape(task, job);       break;
-        case 'lead_list':         output = await handleLeadList(task, job);          break;
-        case 'tam_estimate':      output = await handleTamEstimate(task, job);       break;
-        case 'webinar_titles':    output = await handleWebinarTitles(task, job);     break;
-        case 'roi_model':         output = await handleRoiModel(task, job);          break;
-        case 'calendar_visual':   output = await handleCalendarVisual(task, job);    break;
-        default: throw new Error(`Unknown task type: ${task.task_type}`);
-      }
-
-      // null output = handler set its own status (needs_input) — don't override
-      if (output !== null) {
-        if (output?.url) assetUrl = output.url;
-        await completeTask(task.id, output, assetUrl);
-        console.log(`[worker] ✓ ${task.task_type} completed`);
-      }
-
-    } catch(e) {
-      console.error(`[worker] ✗ ${task.task_type} failed:`, e.message);
-      // DEPS_PENDING = dependency not ready yet, reschedule in ~15s (not a real failure)
-      if (e.message?.includes('not yet completed') || e.message?.includes('DEPS_PENDING')) {
-        await supabaseRequest('PATCH', `/rest/v1/tasks?id=eq.${task.id}`, {
-          status: 'pending', started_at: null, updated_at: new Date().toISOString()
+    for (const task of pending) {             // oldest first, as before
+      if (runningTasks.size >= WORKER_CONCURRENCY) break;
+      if (runningTasks.has(task.id)) continue;  // recovery reset it while it still runs here
+      if (!stepReady(task, jobTasks[task.job_id] || [])) continue;
+      const group = ONE_AT_A_TIME_GROUPS.find(g => g.includes(task.task_type));
+      if (group && [...runningTasks.values()].some(type => group.includes(type))) continue;
+      if (!(await claimTask(task.id))) continue; // another instance took it (deploy overlap)
+      runningTasks.set(task.id, task.task_type);
+      runTask(task)
+        .catch(e => console.error('[worker] Uncaught error:', e.message))
+        .finally(() => {
+          runningTasks.delete(task.id);
+          // A finished step may unblock others: look now, not on the next tick.
+          processNextTask().catch(e => console.error('[worker] Scheduler error:', e.message));
         });
-        console.log(`[worker] ↻ ${task.task_type} rescheduled (deps not ready)`);
-      } else {
-        // Retry up to max_attempts, then fail permanently
-        await retryOrFailTask(task, e.message);
-      }
+    }
+  } catch (e) {
+    console.error('[worker] Scheduler error:', e.message);
+  } finally {
+    schedulerBusy = false;
+    if (rescanRequested) {
+      rescanRequested = false;
+      setImmediate(() => processNextTask().catch(e => console.error('[worker] Scheduler error:', e.message)));
+    }
+  }
+}
+
+// One claimed step, start to finish. Runs alongside others (processNextTask).
+async function runTask(task) {
+  // Read the job after the claim: every step this one waits on has settled, so
+  // their writes (brand_data, research_data, the brief) are already here.
+  const job = await getJob(task.job_id);
+  if (!job) { await retryOrFailTask(task, 'Parent job not found'); return; }
+
+  console.log(`[worker] Running ${task.task_type} (task ${task.id}) for job ${task.job_id} — ${runningTasks.size} running`);
+
+  try {
+    let output = null;
+    let assetUrl = null;
+
+    switch (task.task_type) {
+      case 'extract':           output = await handleExtract(task, job);           break;
+      case 'prospect_research': output = await handleProspectResearch(task, job);  break;
+      case 'brand_scrape':      output = await handleBrandScrape(task, job);       break;
+      case 'lead_list':         output = await handleLeadList(task, job);          break;
+      case 'tam_estimate':      output = await handleTamEstimate(task, job);       break;
+      case 'webinar_titles':    output = await handleWebinarTitles(task, job);     break;
+      case 'roi_model':         output = await handleRoiModel(task, job);          break;
+      case 'calendar_visual':   output = await handleCalendarVisual(task, job);    break;
+      default: throw new Error(`Unknown task type: ${task.task_type}`);
     }
 
-    // Always check if new stage tasks should be spawned
-    await checkAndSpawnStageTasks(task.job_id);
+    // null output = handler set its own status (needs_input) — don't override
+    if (output !== null) {
+      if (output?.url) assetUrl = output.url;
+      await completeTask(task.id, output, assetUrl);
+      console.log(`[worker] ✓ ${task.task_type} completed`);
+    }
 
   } catch(e) {
-    console.error('[worker] Uncaught error:', e.message);
-  } finally {
-    workerBusy = false;
+    console.error(`[worker] ✗ ${task.task_type} failed:`, e.message);
+    // DEPS_PENDING = dependency not ready yet, reschedule in ~15s (not a real failure)
+    if (e.message?.includes('not yet completed') || e.message?.includes('DEPS_PENDING')) {
+      await supabaseRequest('PATCH', `/rest/v1/tasks?id=eq.${task.id}`, {
+        status: 'pending', started_at: null, updated_at: new Date().toISOString()
+      });
+      console.log(`[worker] ↻ ${task.task_type} rescheduled (deps not ready)`);
+    } else {
+      // Retry up to max_attempts, then fail permanently
+      await retryOrFailTask(task, e.message);
+    }
   }
+
+  // Always check if new stage tasks should be spawned
+  await withJobLock(task.job_id, () => checkAndSpawnStageTasks(task.job_id));
 }
 
 // ── Recovery cron — reset stuck processing tasks (>10 min) ───────────────────
@@ -7871,7 +7958,7 @@ if (USE_SUPABASE && process.env.DISABLE_WORKER !== '1') {
     } catch (e) { console.warn('[beacon] conflict check failed:', e.message); }
   });
   const _heartbeatTimer = setInterval(() => workerHeartbeat().catch(e => console.error('[beacon] heartbeat error:', e.message)), 60 * 1000);
-  console.log(`[worker] Started (3s interval) — build ${BUILD_SHA} on ${SERVICE_NAME}/${INSTANCE_ID}`);
+  console.log(`[worker] Started (3s interval, up to ${WORKER_CONCURRENCY} steps at once) — build ${BUILD_SHA} on ${SERVICE_NAME}/${INSTANCE_ID}`);
   console.log('[recovery] Started (2min interval)');
   console.log('[CallLib] 6-hour background sync scheduled');
 
@@ -7892,6 +7979,7 @@ if (USE_SUPABASE && process.env.DISABLE_WORKER !== '1') {
     const hardExit = setTimeout(() => process.exit(0), 9000);
     if (hardExit.unref) hardExit.unref();
 
+    workerStopping = true;
     clearInterval(_taskTimer); clearInterval(_recoveryTimer);
     clearInterval(_calllibTimer); clearInterval(_heartbeatTimer);
 
@@ -7909,10 +7997,10 @@ if (USE_SUPABASE && process.env.DISABLE_WORKER !== '1') {
     // would otherwise wait for resetStuckTasks on another instance, ~10 min).
     // Bounded by the hard-exit timer above; clearInterval already stopped NEW claims.
     const drainDeadline = Date.now() + 6000;
-    while (workerBusy && Date.now() < drainDeadline) {
+    while (runningTasks.size && Date.now() < drainDeadline) {
       await new Promise(r => setTimeout(r, 200));
     }
-    if (workerBusy) console.warn('[worker] exiting with a task still in flight — resetStuckTasks will recover it');
+    if (runningTasks.size) console.warn(`[worker] exiting with ${runningTasks.size} task(s) still in flight — resetStuckTasks will recover them`);
     process.exit(0);
   }
   process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
@@ -9737,7 +9825,7 @@ const server = http.createServer(async (req, res) => {
         }
         const leadTotal = tasks.find(t => t.task_type === 'lead_list')?.output_data?.total ?? null;
         // Re-evaluate the job's status now that this task is terminal.
-        await checkAndSpawnStageTasks(jobId).catch(e => console.warn(`[rerun-tam] status check: ${e.message}`));
+        await withJobLock(jobId, () => checkAndSpawnStageTasks(jobId)).catch(e => console.warn(`[rerun-tam] status check: ${e.message}`));
         console.log(`[rerun-tam] ${jobId} → apollo (skipped tam_estimate; lead_list total ${leadTotal})`);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true, tam_method: 'apollo', output: { tam_total: leadTotal, tam_source: 'apollo_api_live' } }));
