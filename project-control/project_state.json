@@ -2,7 +2,7 @@
   "project_name": "Deal Forge",
   "description": "AI pipeline that generates 7 custom prospect assets after Call 1 to increase Call 2 show rates for Quantum Scaling reps",
   "business_entity": "quantum_scaling",
-  "last_updated": "2026-10-14T00:00:00Z",
+  "last_updated": "2026-10-22T00:00:00Z",
   "current_state": {
     "phase_name": "Phase 2 - Build & Test",
     "status": "V2 feature-complete and reviewed twice by Gary. Rep controls which case studies appear, which one the tab opens on, and can override the ROI quality floor deliberately. Deck generates 8/9 prospect-specific beats with a missing Proof beat hidden from prospects. All 7 Grok fixes done. Static handler hardened."
@@ -91,6 +91,10 @@
     }
   ],
   "recent_milestones": [
+    {
+      "date": "2026-10-22",
+      "description": "Industries split on commas like Job Titles (Ryan, Oct 20). Pasting a comma list into the portal's Lead List Industry chip row made ONE chip, so Apollo got a single sentence-long q_organization_keyword_tags entry and the TAM collapsed; the new-job brief's 'Industries (comma separated)' field (dashboard + Call Library modal) also sent the whole field as one string. Now: pasted industries become one chip/value per comma in the portal chip editor, the portal Prospect Info field, and both new-job forms (which now send apollo_keyword as an array, industry as the joined string). Apollo names that contain commas stay whole: INDUSTRY_COMMA_NAMES (29 names, old + new LinkedIn lists, 17 confirmed via /api/apollo/suggest; matching ignores case, punctuation and &/and). A 'Don't split on commas' tick box adds the text as one industry (portal: one-shot, unticks after each add; forms: whole field). Picking an Apollo dropdown suggestion never splits (titles too). Helper is duplicated inline in mockup-portal.html, mockup-dashboard.html and calls.html (the static handler only serves images from assets/). Tested in jsdom: chip editor, tick box, suggestion picks, Prospect Info round-trip, the POST /api/jobs body from both forms, and the Call Library panel's add/remove/save (PATCH /icp body). Also fixed the Call Library's Apollo Filters panel, which treated apollo_keyword as one string: adding an industry replaced the whole list and removing one cleared it, and Save then overwrote the job. It now keeps a list (an older job's single string becomes its first item), splits pasted industries with the same tick box, and splits pasted titles like the portal; locations and employee ranges keep their commas."
+    },
     {
       "date": "2026-10-14",
       "description": "Progress API reported failed jobs as 'running' forever. When extract fails the orchestrator marks the job failed and never spawns Stage 2/3, but jobProgress read those missing steps as 'waiting' with an ETA, so GET /api/jobs/:id/progress (and Grokbot's get_progress) said 'running, about 1 min left' indefinitely (seen live on the Oct 2 probe jobs). jobProgress now reads job.status: on a failed job, unspawned steps are 'not_run' with no ETA, state is done_with_issues and message_for_rep says the job didn't finish and why; on a completed job, unspawned steps are dropped (older jobs without TAM). The progress route now applies settleStaleJobStatus's result before computing. Tested in isolation on 7 cases (old code reproduces the live bug); docs/grokbot-agent-handover.md lists the new not_run step status."

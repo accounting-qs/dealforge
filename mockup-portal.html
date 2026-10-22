@@ -84,6 +84,9 @@ html[data-mode="prospect"] .rep-only { display: none !important; }
 .filter-tag .ft-warn { display: inline-block; margin-left: 5px; color: #fbbf24; font-size: 11px; font-weight: 700; line-height: 1; cursor: help; }
 .filter-add-input { display: none; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.1); border-radius: 6px; padding: 3px 8px; font-size: 11px; color: #d1d5db; outline: none; width: 130px; font-family: inherit; }
 .filter-add-input:focus { border-color: rgba(245,158,11,0.4); }
+/* "Don't split on commas" tick box beside the Industry input. */
+.filter-keep-whole { display: inline-flex; align-items: center; gap: 5px; font-size: 10px; color: #71717a; cursor: pointer; user-select: none; }
+.filter-keep-whole input { margin: 0; accent-color: #f59e0b; cursor: pointer; }
 .filter-num-input { display: inline-block; width: 64px; -moz-appearance: textfield; }
 .filter-num-input::-webkit-outer-spin-button, .filter-num-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 .filter-revenue-label { font-size: 10px; color: #71717a; text-transform: uppercase; letter-spacing: 0.04em; }
@@ -2233,7 +2236,7 @@ input[type=number].roi-field-input::-webkit-outer-spin-button { -webkit-appearan
           <label class="pi-label"><span>Apollo titles (comma-separated)</span><input id="pi-apollo-titles" class="pi-input" type="text" data-brief="icp.apollo_titles" data-csv="1" placeholder="Founder, CEO, Managing Partner"></label>
         </div>
         <div class="pi-grid" style="margin-top:12px;">
-          <label class="pi-label"><span>Industry / apollo_keyword (comma-separated for OR)</span><input id="pi-industry" class="pi-input" type="text" data-brief="icp.apollo_keyword" data-csv="1" data-mirror="icp.industry" data-mirror-join="1" placeholder="real estate, property management"></label>
+          <label class="pi-label"><span>Industry / apollo_keyword (comma-separated for OR)</span><input id="pi-industry" class="pi-input" type="text" data-brief="icp.apollo_keyword" data-csv="1" data-split="industry" data-mirror="icp.industry" data-mirror-join="1" placeholder="real estate, property management"></label>
           <label class="pi-label"><span>Company size (target client)</span><input id="pi-company-size" class="pi-input" type="text" data-brief="icp.company_size" placeholder="$50M–$500M AUM / 10–100 employees"></label>
           <label class="pi-label" style="grid-column:1/-1;"><span>Geography (comma-separated countries)</span><input id="pi-geography" class="pi-input" type="text" data-brief="icp.apollo_geography" data-csv="1" data-mirror="icp.geography" data-mirror-join="1" placeholder="United States, Canada"></label>
         </div>
@@ -6861,13 +6864,18 @@ function renderFilterTags() {
   html += makeRow('Employee Ranges', empChips);
 
   // Industry — multi-tag OR. Apollo's q_organization_keyword_tags arrays OR
-  // across entries, so adding more chips broadens the pool. Identical chip
-  // behavior to Titles/Geographies.
+  // across entries, so adding more chips broadens the pool. A pasted list
+  // splits on commas like Titles; the tick box adds the text as one industry.
   var indChips = '';
   if (Array.isArray(d.apollo_keyword) && d.apollo_keyword.length) {
     indChips += d.apollo_keyword.map(function(v){ return makeTag(v, 'apollo_keyword'); }).join('');
   }
-  indChips += makeAddInputWithSuggest('apollo_keyword', 'e.g. property management', 'industry');
+  indChips += makeAddInputWithSuggest('apollo_keyword', 'Add industries…', 'industry');
+  if (editMode) {
+    indChips += '<label class="filter-keep-whole" title="A pasted list becomes one chip per comma. Apollo names that contain commas, like Health, Wellness &amp; Fitness, stay whole. Tick this to add your text as one industry, commas and all. It unticks after each add.">'
+      + '<input type="checkbox"' + (window._industryKeepWhole ? ' checked' : '') + ' onchange="window._industryKeepWhole = this.checked">'
+      + 'Don’t split on commas</label>';
+  }
   html += makeRow('Industry', indChips);
 
   // Geographies — company HQ location (Apollo's organization_locations).
@@ -6993,8 +7001,10 @@ function onSuggestKey(e, input) {
     opts[prev].scrollIntoView({ block: 'nearest' });
   } else if (e.key === 'Enter') {
     e.preventDefault();
-    var picked = (activeIdx >= 0 && opts[activeIdx]) ? opts[activeIdx].dataset.value : input.value;
-    if (picked) addFilter(input.dataset.group, picked);
+    // A highlighted option is one Apollo value, so it is never split on commas.
+    var pickedOpt = activeIdx >= 0 ? opts[activeIdx] : null;
+    var picked = pickedOpt ? pickedOpt.dataset.value : input.value;
+    if (picked) addFilter(input.dataset.group, picked, !!pickedOpt);
     input.value = '';
     if (drop) drop.hidden = true;
   } else if (e.key === 'Escape') {
@@ -7023,7 +7033,7 @@ function _renderSuggestDropdown(drop, suggestions, input) {
 function onSuggestPick(optEl, group) {
   var wrap = optEl.closest('.filter-input-wrap');
   var input = wrap ? wrap.querySelector('.filter-add-input') : null;
-  addFilter(group, optEl.dataset.value);
+  addFilter(group, optEl.dataset.value, true);
   if (input) input.value = '';
   var drop = optEl.parentElement;
   if (drop) drop.hidden = true;
@@ -7058,15 +7068,84 @@ function removeFilter(group, val) {
   renderFilterTags();
 }
 
-function addFilter(group, val) {
+// ── Industry list splitting ──────────────────────────────────────────────────
+// A pasted "Dairy, Textiles, Wholesale" is three industries, so it becomes three
+// values that Apollo ORs. Some Apollo industry names carry commas of their own
+// (old and new LinkedIn lists, checked against /api/apollo/suggest); those stay
+// whole. `extraKnown` keeps more names whole, e.g. the job's current values.
+// Same list and helper in mockup-dashboard.html and calls.html.
+var INDUSTRY_COMMA_NAMES = [
+  'health, wellness & fitness', 'leisure, travel & tourism',
+  'glass, ceramics & concrete', 'glass, ceramics & concrete manufacturing',
+  'pottery, ceramics, and plumbing fixture manufacturing',
+  'appliances, electrical, & electronics manufacturing',
+  'retail appliances, electrical, & electronic equipment',
+  'wholesale appliances, electrical, & electronics',
+  'wholesale hardware, plumbing, heating equipment',
+  'transportation, logistics, supply chain & storage',
+  'automotive parts, accessories, and tire retailers',
+  'farming, ranching, forestry', 'beef cattle ranching and farming, including feedlots',
+  'museums, historical sites, & zoos', 'highway, street, and bridge construction',
+  'engine, turbine, and power transmission equipment manufacturing',
+  'air, water, & waste program management', 'oil, gas, and mining',
+  'electric power transmission, control, and distribution',
+  'water, waste, steam, and air conditioning services',
+  'boilers, tanks, and shipping container manufacturing',
+  'metal valve, ball, and roller manufacturing',
+  'agriculture, construction, mining machinery manufacturing',
+  'paint, coating, and adhesive manufacturing', 'movies, videos, and sound',
+  'claims adjusting, actuarial services', 'physical, occupational and speech therapists',
+  'bed-and-breakfasts, hostels, homestays', 'bars, taverns, and nightclubs'
+];
+// "&" and "and", case and punctuation don't matter when matching a name.
+function _industryKey(s) {
+  return String(s == null ? '' : s).toLowerCase().replace(/&/g, ' and ').replace(/[^a-z0-9]+/g, ' ').trim();
+}
+function splitIndustryList(raw, extraKnown) {
+  var known = {}, maxParts = 1, out = [], seen = {};
+  INDUSTRY_COMMA_NAMES.concat(extraKnown || []).forEach(function(name) {
+    var count = String(name == null ? '' : name).split(',').length;
+    if (count < 2) return;
+    known[_industryKey(name)] = true;
+    if (count > maxParts) maxParts = count;
+  });
+  String(raw == null ? '' : raw).split(/[;\n]+/).forEach(function(segment) {
+    var parts = segment.split(',').map(function(p) { return p.trim(); }).filter(Boolean);
+    for (var i = 0; i < parts.length; ) {
+      // Longest run of parts that spells a known comma name wins.
+      var take = 1;
+      for (var n = Math.min(maxParts, parts.length - i); n > 1; n--) {
+        if (known[_industryKey(parts.slice(i, i + n).join(', '))]) { take = n; break; }
+      }
+      var value = parts.slice(i, i + take).join(', ');
+      if (!seen[value.toLowerCase()]) { seen[value.toLowerCase()] = true; out.push(value); }
+      i += take;
+    }
+  });
+  return out;
+}
+
+// keepWhole: add `val` as one chip, commas and all (a value picked from the
+// Apollo dropdown, or an industry added with "Don't split on commas" ticked).
+function addFilter(group, val, keepWhole) {
   val = (val || '').trim();
   if (!val) return;
   if (!Array.isArray(window._icpEditData[group])) window._icpEditData[group] = [];
-  // A pasted "CEO, CFO, COO" becomes three title chips, so Apollo ORs them
-  // instead of searching for one literal title. Titles only: locations carry
-  // commas of their own ("Austin, Texas").
-  var vals = group === 'apollo_titles' ? val.split(/[,;\n]+/) : [val];
   var list = window._icpEditData[group];
+  // A pasted "CEO, CFO, COO" becomes three title chips, and a pasted industry
+  // list one chip per industry, so Apollo ORs them instead of searching for one
+  // literal value. Locations keep theirs: "Austin, Texas" is one place.
+  var vals;
+  if (group === 'apollo_keyword') {
+    // The tick box covers one add, then the next paste splits again.
+    var whole = keepWhole || !!window._industryKeepWhole;
+    window._industryKeepWhole = false;
+    vals = whole ? [val] : splitIndustryList(val, list);
+  } else if (group === 'apollo_titles' && !keepWhole) {
+    vals = val.split(/[,;\n]+/);
+  } else {
+    vals = [val];
+  }
   vals.forEach(function(v) {
     v = v.trim();
     if (!v) return;
@@ -7734,6 +7813,9 @@ function _initProspectInfoTab(session) {
       const raw = _piGetByPath(brief, briefPath);
       if (Array.isArray(raw)) v = raw.join(', ');
       else if (raw != null) v = String(raw);
+      // Remember the saved industries so one added with commas ("Foo, Bar")
+      // comes back as one value when the form is saved.
+      if (el.dataset.split === 'industry') el._industryKnown = Array.isArray(raw) ? raw : (raw != null ? [raw] : []);
     }
     el.value = v;
     // Say why a field is empty. Display only — the stored value stays null, so
@@ -7849,7 +7931,9 @@ function _piCollectFields() {
   document.querySelectorAll('#prospect-info-form [data-col],#prospect-info-form [data-brief]').forEach(el => {
     let raw = (el.value || '').trim();
     if (el.dataset.csv === '1') {
-      const arr = raw ? raw.split(',').map(s => s.trim()).filter(Boolean) : [];
+      const arr = !raw ? []
+        : el.dataset.split === 'industry' ? splitIndustryList(raw, el._industryKnown)
+        : raw.split(',').map(s => s.trim()).filter(Boolean);
       if (el.dataset.col) out[el.dataset.col] = arr;
       if (el.dataset.brief) _piSetByPath(out.brief, el.dataset.brief, arr.length ? arr : null);
       // Mirror to a sibling field if requested (e.g. icp.geography mirrors apollo_geography)

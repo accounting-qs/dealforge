@@ -155,6 +155,9 @@
   }
   /* Clearly dim placeholder so empty ≠ filled */
   .nj-input::placeholder { color: #71717a; opacity: 1; }
+  /* "Don't split on commas" tick box under the Industries field. */
+  .nj-keep-whole { display: inline-flex; align-items: center; gap: 6px; margin-top: 6px; font-size: 11px; color: #71717a; cursor: pointer; user-select: none; }
+  .nj-keep-whole input { margin: 0; accent-color: #8b5cf6; cursor: pointer; }
 
   .nj-contact-card {
     background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08);
@@ -385,7 +388,7 @@
             <div style="display:grid;gap:10px;">
               <div><div class="nj-label">Target Titles <span style="color:#3f3f46;font-weight:400;">(Apollo API — comma separated)</span></div><input id="bf-apollo-titles" class="nj-input" placeholder="CEO, Director of Strategy, Head of Operations"></div>
               <div class="brief-grid-2">
-                <div><div class="nj-label">Industries <span style="color:#3f3f46;font-weight:400;">(comma separated)</span></div><input id="bf-industry" class="nj-input" placeholder="government administration, financial services"></div>
+                <div><div class="nj-label">Industries <span style="color:#3f3f46;font-weight:400;">(comma separated)</span></div><input id="bf-industry" class="nj-input" placeholder="government administration, financial services"><label class="nj-keep-whole" title="Each comma starts a new industry. Apollo names that contain commas, like Health, Wellness &amp; Fitness, stay whole. Tick this if the whole field is one industry."><input type="checkbox" id="bf-industry-whole">Don’t split on commas</label></div>
                 <div><div class="nj-label">Geography <span style="color:#3f3f46;font-weight:400;">(countries / regions)</span></div><input id="bf-geography" class="nj-input" placeholder="Estonia, Latvia, Lithuania"></div>
               </div>
               <div><div class="nj-label">Company Size (target clients)</div><input id="bf-company-size" class="nj-input" placeholder="50-500 employees"></div>
@@ -1122,6 +1125,8 @@ function njReset() {
     var el = document.getElementById(id);
     if (el) el.value = '';
   });
+  var industryWhole = document.getElementById('bf-industry-whole');
+  if (industryWhole) industryWhole.checked = false;
   var genErr = document.getElementById('nj-gen-error');
   if (genErr) genErr.style.display = 'none';
 }
@@ -1565,9 +1570,11 @@ function njPopulateStep2(extract) {
   setVal('bf-website',      njExtractContact.website || prospect.website);
   setVal('bf-offer',        prospect.offer_description);
   setVal('bf-apollo-titles', Array.isArray(icp.apollo_titles) ? icp.apollo_titles.join(', ') : (icp.apollo_titles || ''));
-  // Industry: apollo_keyword (single free-text phrase, e.g. "property management").
-  // Falls back to legacy apollo_industries[0] for jobs created before the cutover.
-  setVal('bf-industry', (typeof icp.apollo_keyword === 'string' && icp.apollo_keyword.trim())
+  // Industry: apollo_keyword, a phrase or a list of them. Falls back to legacy
+  // apollo_industries[0] for jobs created before the cutover.
+  setVal('bf-industry', (Array.isArray(icp.apollo_keyword) && icp.apollo_keyword.length)
+    ? icp.apollo_keyword.join(', ')
+    : (typeof icp.apollo_keyword === 'string' && icp.apollo_keyword.trim())
     ? icp.apollo_keyword.trim()
     : (Array.isArray(icp.apollo_industries) && icp.apollo_industries.length
         ? String(icp.apollo_industries[0] || '').trim()
@@ -1749,6 +1756,63 @@ function njSetTamMethod(m) {
   if (hint) hint.textContent = _NJ_TAM_HINTS[_njTamMethod];
 }
 
+// ── Industry list splitting ──────────────────────────────────────────────────
+// A pasted "Dairy, Textiles, Wholesale" is three industries, so it becomes three
+// values that Apollo ORs. Some Apollo industry names carry commas of their own
+// (old and new LinkedIn lists, checked against /api/apollo/suggest); those stay
+// whole. `extraKnown` keeps more names whole, e.g. the job's current values.
+// Same list and helper in mockup-portal.html and calls.html.
+var INDUSTRY_COMMA_NAMES = [
+  'health, wellness & fitness', 'leisure, travel & tourism',
+  'glass, ceramics & concrete', 'glass, ceramics & concrete manufacturing',
+  'pottery, ceramics, and plumbing fixture manufacturing',
+  'appliances, electrical, & electronics manufacturing',
+  'retail appliances, electrical, & electronic equipment',
+  'wholesale appliances, electrical, & electronics',
+  'wholesale hardware, plumbing, heating equipment',
+  'transportation, logistics, supply chain & storage',
+  'automotive parts, accessories, and tire retailers',
+  'farming, ranching, forestry', 'beef cattle ranching and farming, including feedlots',
+  'museums, historical sites, & zoos', 'highway, street, and bridge construction',
+  'engine, turbine, and power transmission equipment manufacturing',
+  'air, water, & waste program management', 'oil, gas, and mining',
+  'electric power transmission, control, and distribution',
+  'water, waste, steam, and air conditioning services',
+  'boilers, tanks, and shipping container manufacturing',
+  'metal valve, ball, and roller manufacturing',
+  'agriculture, construction, mining machinery manufacturing',
+  'paint, coating, and adhesive manufacturing', 'movies, videos, and sound',
+  'claims adjusting, actuarial services', 'physical, occupational and speech therapists',
+  'bed-and-breakfasts, hostels, homestays', 'bars, taverns, and nightclubs'
+];
+// "&" and "and", case and punctuation don't matter when matching a name.
+function _industryKey(s) {
+  return String(s == null ? '' : s).toLowerCase().replace(/&/g, ' and ').replace(/[^a-z0-9]+/g, ' ').trim();
+}
+function splitIndustryList(raw, extraKnown) {
+  var known = {}, maxParts = 1, out = [], seen = {};
+  INDUSTRY_COMMA_NAMES.concat(extraKnown || []).forEach(function(name) {
+    var count = String(name == null ? '' : name).split(',').length;
+    if (count < 2) return;
+    known[_industryKey(name)] = true;
+    if (count > maxParts) maxParts = count;
+  });
+  String(raw == null ? '' : raw).split(/[;\n]+/).forEach(function(segment) {
+    var parts = segment.split(',').map(function(p) { return p.trim(); }).filter(Boolean);
+    for (var i = 0; i < parts.length; ) {
+      // Longest run of parts that spells a known comma name wins.
+      var take = 1;
+      for (var n = Math.min(maxParts, parts.length - i); n > 1; n--) {
+        if (known[_industryKey(parts.slice(i, i + n).join(', '))]) { take = n; break; }
+      }
+      var value = parts.slice(i, i + take).join(', ');
+      if (!seen[value.toLowerCase()]) { seen[value.toLowerCase()] = true; out.push(value); }
+      i += take;
+    }
+  });
+  return out;
+}
+
 function njGenerate() {
   var btn = document.getElementById('nj-gen-btn');
   var rep = document.getElementById('nj-rep').value;
@@ -1780,9 +1844,13 @@ function njGenerate() {
       offering_name:     njExtractedProspect.offering_name || null
     },
     icp: (function() {
-      // apollo_keyword is a single free-text phrase — store the raw value, no splitting.
+      // apollo_keyword: one entry per industry, so Apollo ORs them. Ticking
+      // "Don't split on commas" keeps the whole field as one industry.
       var industryRaw = getVal('bf-industry');
-      var apolloKeyword = industryRaw ? industryRaw.trim() : null;
+      var industryWholeEl = document.getElementById('bf-industry-whole');
+      var industryList = !industryRaw ? []
+        : (industryWholeEl && industryWholeEl.checked) ? [industryRaw]
+        : splitIndustryList(industryRaw, Array.isArray(njExtractedIcp.apollo_keyword) ? njExtractedIcp.apollo_keyword : null);
       var geoRaw = getVal('bf-geography');
       var apolloGeoArr = geoRaw
         ? geoRaw.split(',').map(function(s){ return s.trim(); }).filter(function(s){ return s.length > 0; })
@@ -1790,8 +1858,8 @@ function njGenerate() {
       return {
         role:                 apolloTitlesArr ? apolloTitlesArr.join(', ') : null,
         apollo_titles:        apolloTitlesArr,
-        apollo_keyword:       apolloKeyword,
-        industry:             apolloKeyword,
+        apollo_keyword:       industryList.length ? industryList : null,
+        industry:             industryList.length ? industryList.join(', ') : null,
         company_size:         getVal('bf-company-size'),
         // Not on this form: carry the extracted values. These used to read the
         // prefetch result, which has no brief, so they were always sent as null.
